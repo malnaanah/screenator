@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Screenator
+GenericName=Screen Annotation
+Comment=Vibe-coded on-screen annotation tool based on Gromit-MPX
+Exec=screenator
+Icon=screenator
+Terminal=false
+StartupNotify=false
+Categories=Graphics;
+Keywords=annotation;presentation;overlay;markup;pointer;draw;

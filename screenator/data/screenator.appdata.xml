@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.malnaanah.Screenator</id>
+
+  <name>Screenator</name>
+  <summary>Vibe-coded screen annotation tool</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+
+  <content_rating type="oars-1.0">
+  </content_rating>
+
+  <developer_name>Mahmoud Alnaanah</developer_name>
+
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+
+  <description>
+    <p>
+      Screenator is a vibe-coded screen annotation tool for X11. It is based on
+      Gromit-MPX 1.4.2.
+    </p>
+    <p>
+      Draw over any running application with a pen, arrow, text, shapes or
+      eraser, change line colour, thickness and opacity, choose the text font
+      and shape fill from the floating icon or the tray menu, and keep the
+      annotations on screen for as long as you need them.
+    </p>
+    <p>Key features include:</p>
+    <ul>
+      <li><em>Floating icon.</em>A small draggable icon opens the tool and settings menu.</li>
+      <li><em>Hotkey-based.</em>Toggle painting, clear the screen, toggle visibility or quit from the keyboard.</li>
+      <li><em>Tray menu.</em>The same menu is available from the system tray.</li>
+      <li><em>Configurable.</em>Line colour, thickness, opacity, text font, shape fill and floating icon size are remembered across restarts.</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">screenator.desktop</launchable>
+
+  <releases>
+    <release version="1.0" date="2026-10-27">
+      <description>
+        <p>First release. Fork of Gromit-MPX 1.4.2 with a floating icon menu, tray menu, configurable pen settings, a translucent marker, a text tool with a selectable font, free and angled line and arrow tools, shape tools with an optional fill colour, an adjustable eraser, and a reset option.</p>
+      </description>
+    </release>
+  </releases>
+</component>

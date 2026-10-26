@@ -1,0 +1,118 @@
+Screenator 1.0
+==============
+
+Screenator is a vibe-coded screen annotation tool for X11, developed by
+Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
+and keeps the upstream GPL-2.0 license and attribution.
+
+Packages:
+  - screenator 1.0 (amd64)
+  - Screenator-1.0-x86_64.AppImage
+
+Layout:
+  screenator/           Source code, data files, documentation and build script.
+  screenator/src/       C sources (screenator.c/h, callbacks, config, input,
+                        cursors).
+  screenator/data/      Icons, default tool configuration, desktop and AppStream
+                        metadata.
+  screenator/build.sh   Builds the .deb and the AppImage.
+  screenator/CMakeLists.txt
+                        CMake build definition.
+  build/                Built packages:
+                          screenator_1.0_amd64.deb
+                          Screenator-1.0-x86_64.AppImage
+  info.txt              This file.
+
+Features:
+  - Pen, marker, arrow, text, shape and eraser tools.
+  - The Shapes submenu holds the Marker, Free Line, Arrow, Angled Line, Angled
+    Arrow, Rectangle, Ellipse and Rounded Rectangle tools.  Shapes are drawn
+    by dragging; Free Line and Arrow follow the drag direction, while Angled
+    Line and Angled Arrow snap to 0, 30, 45, 60, 90, 120, 135 and 150
+    degrees.  Arrow and Angled Arrow add an arrowhead at the end point.
+  - The Marker draws a yellow highlighter stroke with a fixed 32 px width and
+    50% opacity.  It keeps its own settings, so the global colour, thickness
+    and opacity are not changed when it is selected.
+  - A Shapes Fill Color submenu fills rectangles, ellipses and rounded
+    rectangles with one of the line colours, or leaves them unfilled (the
+    default).  The angled line is never filled.
+  - The Text tool shows an I-beam cursor and lets you write directly on the
+    screen: click where the text should start and type in the small inline
+    editor that appears there.  The text uses the pen colour and the selected
+    font; Enter places it and Escape cancels.  Right-to-left text such as
+    Arabic extends to the left of the click position.
+  - A small draggable floating icon.  Left or right click opens the menu.
+  - The same menu is available from the system tray icon.
+  - Line colour, line thickness, eraser size, opacity, text font, shape fill
+    and floating icon size can be changed from the menu and are remembered
+    across restarts.  The eraser cursor is drawn as a circle that matches the
+    selected eraser size.
+  - Pen strokes are smoothed with curved segments, and motion event
+    compression is disabled so fast strokes stay smooth.
+  - Reset Settings restores red, 6 px, 100% opacity, no shape fill, Arial Bold
+    24, a 40 px eraser and a 48x48 icon.
+  - Undo/redo, clear screen, show/hide drawing and show/hide floating icon.
+  - Hotkeys: F9 toggles painting, SHIFT-F9 clears, CTRL-F9 toggles visibility,
+    ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.
+  - Multi-pointer support inherited from Gromit-MPX.
+
+Configuration:
+  ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser
+                                    width, opacity, shape fill, text font, icon
+                                    size).
+  ~/.config/screenator.cfg          User tool configuration.
+  /etc/screenator/screenator.cfg    System-wide tool configuration, used when
+                                    the user configuration does not exist.
+
+  Inside the AppImage, AppRun exports SCREENATOR_CFG and SCREENATOR_DATADIR so the
+  bundled configuration and icons are found even though the AppImage is
+  mounted at a temporary path.
+
+Differences from Gromit-MPX 1.4.2:
+  - The application, files, identifiers, configuration paths, desktop entry,
+    icons and X11 selection atoms were renamed to Screenator, and the version
+    was changed to 1.0.
+  - Unused code was removed: the introduction assistant, the support/donation
+    handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
+    pressure offset, and their prototypes, keys and configuration entries.
+  - Width, colour and opacity from the menu are applied to every pen tool,
+    including the tools defined in screenator.cfg.  The Line Thickness submenu
+    marks the entry closest to the current width.
+  - A Text tool with an I-beam cursor and a Change Font dialog were added.
+    Text is typed directly on screen at the click position in the pen colour
+    and the chosen Pango font; Enter places it and Escape cancels.  The font is
+    saved with the other menu settings.
+  - A Shapes submenu was added with Free Line, Arrow, Angled Line, Angled
+    Arrow, Rectangle, Ellipse and Rounded Rectangle tools.  Shapes are
+    drag-drawn; the free line and the arrow follow the drag direction while
+    the angled line and angled arrow snap to fixed angles.  The arrow tools
+    draw an arrowhead at the end point.  Rectangles, ellipses and rounded
+    rectangles can optionally be filled with a shape fill colour, which is
+    saved with the other menu settings.
+  - A Marker tool was added to the Shapes submenu.  It draws a translucent
+    yellow highlighter stroke with a fixed 32 px width and does not change the
+    global colour, thickness or opacity.
+  - The eraser has its own 20/40/60 px size menu and a circular cursor that
+    matches the erasing area.  The default font is Arial Bold, menu icons are
+    scaled to 16 px, the Shapes submenu sits below Eraser, Undo/Redo sit above
+    Change Font, and pen strokes are smoothed with curved segments.
+  - The About dialog names the author and states that Screenator is a vibe-coded
+    screen annotation app based on Gromit-MPX 1.4.2.
+
+Build:
+  cd screenator
+  ./build.sh
+
+  The script downloads and stages the development headers under
+  /tmp/opencode/screenator-build-stage (no root required), compiles with CMake,
+  builds the .deb, and then builds the AppImage with linuxdeploy, the
+  linuxdeploy GTK plugin and appimagetool.  The tools are cached in
+  /tmp/opencode/screenator-appimage-tools.
+
+  Both outputs are written to build/ at the project root.  The packages are
+  not installed and the GUI is not tested by the build script.
+
+License:
+  GNU General Public License version 2.  See screenator/COPYING.  Screenator
+  contains code from Gromit-MPX 1.4.2 (Copyright 2009-2022 Christian Beier)
+  and from Gromit (Copyright 2000 Simon Budig).

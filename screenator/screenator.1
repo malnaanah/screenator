@@ -1,0 +1,157 @@
+.\"                                      Hey, vim: ft=nroff
+.TH SCREENATOR 1 "October 27, 2026"
+.SH NAME
+Screenator \- vibe-coded screen annotation tool
+.SH SYNOPSIS
+.B screenator
+.RI [ options ]
+.br
+.SH DESCRIPTION
+\fBScreenator\fP lets you draw annotations over all your running applications.
+It can run in the background and be activated on demand. The drawing stays on
+screen as long as you want, and you can continue to use your applications
+while it is visible.
+.br
+\fBScreenator\fP is a fork of Gromit-MPX 1.4.2. It adds a small draggable
+on-screen icon whose left/right click opens a menu with the drawing tools
+(pen, marker, shapes, text and eraser) and the settings (line colour,
+thickness, eraser size, opacity, shape fill, text font and floating icon
+size). The same menu is available from the system tray icon.
+.br
+The Marker draws a yellow highlighter stroke with a fixed 32 pixel width and
+50% opacity. Its settings are independent of the line colour, thickness and
+opacity chosen for the other tools.
+.br
+The Shapes submenu contains the Marker, Free Line, Arrow, Angled Line, Angled
+Arrow, Rectangle, Ellipse and Rounded Rectangle tools. Shapes are drawn by
+dragging from the start point to the end point; the free line and the arrow
+follow the drag direction, while the Angled Line and Angled Arrow snap to 0,
+30, 45, 60, 90, 120, 135 and 150 degrees. The arrow tools add a head at the
+end point. Rectangles, ellipses and rounded rectangles can be filled using
+the "Shapes Fill Color" submenu; the default is no fill.
+.br
+The eraser size can be set to 20, 40 or 60 pixels from the menu. The erasing
+area and the circular eraser cursor both match the selected size.
+.br
+The Text tool lets you write directly on the screen. Click where the text
+should start and type: a small borderless editor appears at that position,
+using the pen colour and the font selected by "Change Font". Press Enter to
+place the text or Escape to cancel it.
+.br
+The pen and font settings are remembered in
+.I ~/.config/screenator.ini
+and can be restored to their defaults with the "Reset Settings" menu entry.
+.br
+.SH KEYBOARD CONTROL
+By default, Screenator grabs the "F9" key (this can be changed using the
+"\-\-key" option), making it unavailable to other applications. The
+available shortcuts are:
+.TP
+.B F9
+toggle painting
+.TP
+.B SHIFT-F9
+clear screen
+.TP
+.B CTRL-F9
+toggle visibility
+.TP
+.B ALT-F9
+quit Screenator
+.TP
+.B F8
+undo last stroke
+.TP
+.B SHIFT-F8
+redo last undone stroke
+.PP
+.SH OPTIONS (STARTUP)
+A short summary of the available command line arguments for starting Screenator;
+see below for the options to control an already running Screenator process:
+.TP
+.B \-a, \-\-active
+start Screenator and immediately activate it.
+.TP
+.B \-d, \-\-debug
+gives some debug output.
+.TP
+.B \-k <keysym>, \-\-key <keysym>
+change the key used to grab the mouse. <keysym> can e.g. be "F9", "F12",
+"Control_R" or "Print". To determine the keysym for different keys you can use
+the \fBxev\fP(1) command. You can specify "none" to prevent Screenator from
+grabbing a key.
+.TP
+.B \-K <keycode>, \-\-keycode <keycode>
+change the key used to grab the mouse by keycode instead of keysym.
+.TP
+.B \-o, \-\-opacity <value>
+set the initial drawing opacity using a value between 0 and 1.
+.TP
+.B \-u <keysym>, \-\-undo\-key <keysym>
+change the key used to undo/redo strokes.
+.TP
+.B \-U <keycode>, \-\-undo\-keycode <keycode>
+change the undo/redo key by keycode instead of keysym.
+.TP
+.B \-V, \-\-version
+show the Screenator version.
+.SH OPTIONS (CONTROL)
+A short summary of the available command line arguments to control an already
+running Screenator process:
+.TP
+.B \-c, \-\-clear
+clear the screen.
+.TP
+.B \-q, \-\-quit
+cause the running Screenator process to quit.
+.TP
+.B \-t, \-\-toggle
+toggle the grabbing of the pointer.
+.TP
+.B \-v, \-\-visibility
+toggle the visibility of the drawing.
+.TP
+.B \-r, \-\-reload
+reload the tool configuration.
+.TP
+.B \-y, \-\-redo
+redo the last undone drawing stroke.
+.TP
+.B \-z, \-\-undo
+undo the last drawing stroke.
+.SH ENVIRONMENT
+.TP
+.B XDG_CURRENT_DESKTOP
+Screenator uses this to determine which desktop environment it is running on.
+.TP
+.B XDG_CURRENT_SESSION
+Screenator uses this to determine whether it is running under X11 or Wayland.
+.TP
+.B XDG_CONFIG_HOME
+Directory to search for the user's configuration files, defaults to
+.BI ~ /.config/ .
+.TP
+.B GDK_CORE_DEVICE_EVENTS
+If set, GDK does not use the XInput extension and only reacts to core X input
+events, which renders Screenator unusable.
+.SH FILES
+.TP
+.I ~/.config/screenator.cfg
+User tool configuration: defines pens and maps mouse buttons and modifiers to
+them.
+.TP
+.I /etc/screenator/screenator.cfg
+System-wide tool configuration, used when the user configuration does not
+exist.
+.TP
+.I ~/.config/screenator.ini
+Saved menu settings (line colour, thickness, opacity, shape fill, floating
+icon size, text font and the selected tool).
+.SH NOTES
+Screenator is X11-only. Under Wayland it runs through XWayland.
+.SH AUTHORS
+Mahmoud Alnaanah <malnaanah@gmail.com>
+.PP
+Screenator is based on Gromit-MPX 1.4.2 by Christian Beier
+<dontmind@freeshell.org> and on the original Gromit by Simon Budig
+<simon@gimp.org>.
