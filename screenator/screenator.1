@@ -1,5 +1,5 @@
 .\"                                      Hey, vim: ft=nroff
-.TH SCREENATOR 1 "October 27, 2026"
+.TH SCREENATOR 1 "October 28, 2026"
 .SH NAME
 Screenator \- vibe-coded screen annotation tool
 .SH SYNOPSIS
@@ -22,16 +22,50 @@ The Marker draws a yellow highlighter stroke with a fixed 32 pixel width and
 50% opacity. Its settings are independent of the line colour, thickness and
 opacity chosen for the other tools.
 .br
-The Shapes submenu contains the Marker, Free Line, Arrow, Angled Line, Angled
-Arrow, Rectangle, Ellipse and Rounded Rectangle tools. Shapes are drawn by
-dragging from the start point to the end point; the free line and the arrow
-follow the drag direction, while the Angled Line and Angled Arrow snap to 0,
-30, 45, 60, 90, 120, 135 and 150 degrees. The arrow tools add a head at the
-end point. Rectangles, ellipses and rounded rectangles can be filled using
-the "Shapes Fill Color" submenu; the default is no fill.
+The Shapes submenu contains the Marker, Free Line, Spline, Polygon, Triangle,
+Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
+Paint Bucket tools.
+Shapes are drawn by dragging from the start point to the end point; the free
+line and the arrow follow the drag direction, while the Angled Line and Angled
+Arrow snap to 0, 30, 45, 60, 90, 120, 135 and 150 degrees. The arrow tools add a
+head at the end point. Rectangles, ellipses, rounded rectangles, polygons and
+triangles can be filled using the "Shapes Fill Color" submenu; the default is
+no fill and green is its first colour.
 .br
-The eraser size can be set to 20, 40 or 60 pixels from the menu. The erasing
-area and the circular eraser cursor both match the selected size.
+The Spline tool is placed click by click instead: every click adds a node, the
+nodes are joined by a smooth Bezier curve, and dragging a node moves it. Every
+node has two round Bezier handles; dragging one mirrors the other so the curve
+stays smooth, and holding Ctrl while dragging moves only that side, which gives
+the node a corner. Click the last node again, double-click or right-click to
+finish the curve.
+.br
+The Polygon tool places a shape with a single click and keeps it editable with
+four handles: the square handle controls the number of sides from 3 to 16
+(pressing it resets the shape to 3 sides; moving away from it in any direction
+adds sides and moving back towards it removes them, down to 3 at the handle),
+one round handle sets the radius, one sets the rotation, and one moves the
+inner vertices outwards until the shape becomes a regular polygon. Drag inside
+the shape to move it. Clicking empty space commits it and places the next one;
+double-click or right-click commits it.
+.br
+The Triangle tool places an equilateral triangle with a single click and keeps
+it editable with three round handles, one on every vertex. Dragging a handle
+moves that vertex, so the triangle can be stretched and skewed freely; drag
+inside the triangle to move the whole shape. Clicking empty space commits it
+and places the next one, and a double-click or right-click commits it.
+.br
+The Rounded Rectangle keeps a roundness handle on its top edge after it has
+been dragged out. Dragging the handle away from the corner rounds the corners
+more; dragging it towards the corner makes them sharper. The shape stays
+editable until you click outside it, double-click or right-click.
+.br
+The Paint Bucket fills the closed area under the click with the Shapes Fill
+Color. The area must be enclosed by drawn strokes and must not reach the screen
+edge; otherwise nothing is filled, so clicking outside a shape cannot flood the
+whole screen. The tool shows a bucket cursor.
+.br
+The eraser size can be set to 20, 40, 60 or 120 pixels from the menu. The
+erasing area and the circular eraser cursor both match the selected size.
 .br
 The Text tool lets you write directly on the screen. Click where the text
 should start and type: a small borderless editor appears at that position,
@@ -41,6 +75,11 @@ place the text or Escape to cancel it.
 The pen and font settings are remembered in
 .I ~/.config/screenator.ini
 and can be restored to their defaults with the "Reset Settings" menu entry.
+.br
+Selecting a tool shows a short hint about the mouse buttons. The hint can be
+turned off with "Never show this message again"; the Spline hint, which also
+explains how to move its handles, has its own option.
+Reset Settings leaves both choices untouched.
 .br
 .SH KEYBOARD CONTROL
 By default, Screenator grabs the "F9" key (this can be changed using the
@@ -65,6 +104,12 @@ undo last stroke
 .B SHIFT-F8
 redo last undone stroke
 .PP
+While painting mode is active, the usual
+.B Ctrl+Z
+and
+.B Ctrl+Shift+Z
+shortcuts also undo and redo. The keys are only grabbed while painting, so
+they keep their normal meaning in other applications.
 .SH OPTIONS (STARTUP)
 A short summary of the available command line arguments for starting Screenator;
 see below for the options to control an already running Screenator process:

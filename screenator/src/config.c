@@ -460,7 +460,8 @@ read_pen_tool (GKeyFile *key_file)
     static const gchar * const names[] = { "none", "pen", "arrow", "eraser",
 					   "text", "rectangle", "ellipse",
 					   "rounded-rectangle", "angled-line",
-					   "free-line", "angled-arrow", "marker" };
+					   "free-line", "angled-arrow", "marker",
+					   "spline", "bucket", "polygon", "triangle" };
     gchar *value = g_key_file_get_string (key_file, "Drawing", "Tool", NULL);
     gint tool = 0;
 
@@ -474,6 +475,11 @@ read_pen_tool (GKeyFile *key_file)
 			tool = i;
 			break;
 		    }
+
+	    /* Older versions saved the Polygon tool as "star". */
+	    if (g_ascii_strcasecmp (value, "star") == 0)
+		tool = 14;
+
 	    g_free (value);
 	}
 
@@ -497,8 +503,10 @@ void read_keyfile(ScreenatorData *data)
     data->icon_size = KEY_DFLT_ICON_SIZE;
     data->font = g_strdup (KEY_DFLT_FONT);
     data->shape_fill_enabled = FALSE;
-    gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_PEN_COLOR);
+    gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
     data->shape_fill_color.alpha = 1.0;
+    data->hide_tool_hint = FALSE;
+    data->hide_spline_hint = FALSE;
 
     /*
       read actual settings
@@ -586,6 +594,14 @@ void read_keyfile(ScreenatorData *data)
 	    g_free (fill);
 	}
 
+    if (g_key_file_has_key (key_file, "Drawing", "HideToolHint", NULL))
+	data->hide_tool_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideToolHint", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "HideSplineHint", NULL))
+	data->hide_spline_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideSplineHint", NULL);
+
     data->pen_tool = read_pen_tool (key_file);
 
  cleanup:
@@ -609,7 +625,8 @@ void write_keyfile(ScreenatorData *data)
     static const gchar * const tool_names[] = { "none", "pen", "arrow", "eraser",
 					       "text", "rectangle", "ellipse",
 					       "rounded-rectangle", "angled-line",
-					       "free-line", "angled-arrow", "marker" };
+					       "free-line", "angled-arrow", "marker",
+					       "spline", "bucket", "polygon", "triangle" };
     gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
 				 g_get_user_config_dir(), "screenator.ini", NULL);
 
@@ -633,6 +650,10 @@ void write_keyfile(ScreenatorData *data)
 			   (data->pen_tool >= 0 &&
 			    data->pen_tool < (gint) G_N_ELEMENTS (tool_names))
 			   ? tool_names[data->pen_tool] : "none");
+    g_key_file_set_boolean (key_file, "Drawing", "HideToolHint",
+			    data->hide_tool_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HideSplineHint",
+			    data->hide_spline_hint);
     g_free (color);
     g_free (fill);
 

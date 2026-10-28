@@ -370,11 +370,118 @@ gboolean screenator_any_grabbed (ScreenatorData *data)
     return get_are_some_grabbed (data);
 }
 
+/* Ctrl+Z undoes and Ctrl+Shift+Z redoes while painting mode is active.  The
+ * keys are grabbed only while a device is grabbed, so they keep their usual
+ * meaning everywhere else.  They go through XInput2 like the configured
+ * hotkeys because the keyboard focus belongs to the application below the
+ * overlay. */
+static void
+grab_undo_shortcut (ScreenatorData *data, gboolean grab)
+{
+  GdkKeymapKey *keys = NULL;
+  gint n_keys = 0;
+  guint keycode = data->undo_ctrl_keycode;
+  GList *devices, *d;
+
+  if (!GDK_IS_X11_DISPLAY (data->display))
+    return;
+
+  /* Already grabbed; acquire_grab() can be called again by a tool switch. */
+  if (grab && keycode)
+    return;
+
+  if (grab && !keycode)
+    {
+      gint i;
+
+      if (!gdk_keymap_get_entries_for_keyval (
+	      gdk_keymap_get_for_display (data->display), GDK_KEY_z,
+	      &keys, &n_keys))
+	return;
+
+      for (i = 0; i < n_keys; i++)
+	if (keys[i].level == 0)
+	  {
+	    keycode = keys[i].keycode;
+	    break;
+	  }
+
+      if (!keycode && n_keys > 0)
+	keycode = keys[0].keycode;
+
+      g_free (keys);
+
+      if (!keycode)
+	return;
+
+      data->undo_ctrl_keycode = keycode;
+    }
+  else if (!grab && !keycode)
+    return;
+
+  devices = gdk_device_manager_list_devices (
+      gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
+
+  for (d = devices; d; d = d->next)
+    {
+      XIEventMask mask;
+      unsigned char bits[4] = { 0, 0, 0, 0 };
+
+      if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
+	continue;
+
+      XIGrabModifiers modifiers[] =
+	{
+	  { ControlMask, 0 },
+	  { ControlMask | ShiftMask, 0 }
+	};
+
+      mask.mask = bits;
+      mask.mask_len = sizeof (bits);
+      XISetMask (bits, XI_KeyPress);
+      XISetMask (bits, XI_KeyRelease);
+
+      gdk_x11_display_error_trap_push (data->display);
+
+      if (grab)
+	XIGrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+		       gdk_x11_device_get_id (d->data), keycode,
+		       GDK_WINDOW_XID (data->root),
+		       GrabModeAsync, GrabModeAsync, True,
+		       &mask, (int) G_N_ELEMENTS (modifiers), modifiers);
+      else
+	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+			 gdk_x11_device_get_id (d->data), keycode,
+			 GDK_WINDOW_XID (data->root),
+			 (int) G_N_ELEMENTS (modifiers), modifiers);
+
+      XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
+      /* A failed grab means another client already owns the shortcut. */
+      {
+	gint trap = gdk_x11_display_error_trap_pop (data->display);
+	(void) trap;
+      }
+    }
+
+  g_list_free (devices);
+
+  if (!grab)
+    data->undo_ctrl_keycode = 0;
+}
+
 void release_grab (ScreenatorData *data, 
 		   GdkDevice *dev)
 {
   /* Commit a stroke that is still in progress before painting is stopped. */
   stroke_finish_all (data);
+
+  /* Editable shapes are committed when painting stops. */
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+
+  /* An unfinished spline is not committed; drop its preview as well. */
+  spline_cancel_all (data);
 
   char *xdg_session_type = getenv("XDG_SESSION_TYPE");
   if (xdg_session_type && strcmp(xdg_session_type, "wayland") == 0) {
@@ -419,6 +526,7 @@ void release_grab (ScreenatorData *data,
         g_printerr ("DEBUG: Ungrabbed all Devices.\n");
 
       indicate_active(data, FALSE);
+      grab_undo_shortcut (data, FALSE);
 
       if (!data->painted)
 	  hide_window (data);
@@ -442,7 +550,10 @@ void release_grab (ScreenatorData *data,
         g_printerr ("DEBUG: Ungrabbed Device '%s'.\n", gdk_device_get_name(devdata->device));
 
       if(!get_are_some_grabbed(data))
+	{
 	  indicate_active(data, FALSE);
+	  grab_undo_shortcut (data, FALSE);
+	}
     }
 
   if (!data->painted)
@@ -490,12 +601,7 @@ void acquire_grab (ScreenatorData *data,
 	  if (data->forced_context)
 	    devdata->cur_context = data->forced_context;
 
-	  if(devdata->cur_context && devdata->cur_context->type == SCREENATOR_ERASER)
-	    cursor = data->erase_cursor; 
-	  else if (devdata->cur_context && devdata->cur_context->type == SCREENATOR_TEXT)
-	    cursor = data->text_cursor;
-	  else
-	    cursor = data->paint_cursor; 
+	  cursor = get_tool_cursor (data, devdata->cur_context);
 
 	
 	  if(gdk_device_grab(devdata->device,
@@ -521,6 +627,7 @@ void acquire_grab (ScreenatorData *data,
         g_printerr("DEBUG: Grabbed all Devices.\n");
 
       indicate_active(data, TRUE);
+      grab_undo_shortcut (data, TRUE);
 
       return;
     }
@@ -531,14 +638,8 @@ void acquire_grab (ScreenatorData *data,
 
   if (!devdata->is_grabbed)
     {
-      GdkCursor *cursor;
-      if(devdata->cur_context && devdata->cur_context->type == SCREENATOR_ERASER)
-	cursor = data->erase_cursor; 
-      else if (devdata->cur_context && devdata->cur_context->type == SCREENATOR_TEXT)
-	cursor = data->text_cursor;
-      else
-	cursor = data->paint_cursor; 
-      
+      GdkCursor *cursor = get_tool_cursor (data, devdata->cur_context);
+
       if(gdk_device_grab(devdata->device,
 			 gtk_widget_get_window(data->win),
 			 GDK_OWNERSHIP_NONE,
@@ -561,6 +662,7 @@ void acquire_grab (ScreenatorData *data,
         g_printerr("DEBUG: Grabbed Device '%s'.\n", gdk_device_get_name(devdata->device));
 
       indicate_active(data, TRUE);
+      grab_undo_shortcut (data, TRUE);
 
     }
 
@@ -627,6 +729,27 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	g_printerr("DEBUG: Received undokey press from device '%s'\n", gdk_device_get_name(dev));
 
       if (data->hidden)
+        return FALSE;
+      if (event->state & GDK_SHIFT_MASK)
+        redo_drawing (data);
+      else
+        undo_drawing (data);
+
+      return TRUE;
+    }
+
+  /* Ctrl+Z / Ctrl+Shift+Z while painting mode is active.  The keys are only
+   * grabbed while a device is grabbed, so these events only arrive then. */
+  if (event->type == GDK_KEY_PRESS &&
+      data->undo_ctrl_keycode &&
+      event->hardware_keycode == data->undo_ctrl_keycode &&
+      (event->state & GDK_CONTROL_MASK))
+    {
+      if(data->debug)
+	g_printerr("DEBUG: Received Ctrl+Z from device '%s'\n", gdk_device_get_name(dev));
+
+      /* The inline text editor keeps its own Ctrl+Z for text undo. */
+      if (data->hidden || data->text_editor_active)
         return FALSE;
       if (event->state & GDK_SHIFT_MASK)
         redo_drawing (data);

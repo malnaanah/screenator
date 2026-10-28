@@ -145,6 +145,15 @@ void on_icon_arrow (GtkMenuItem *menuitem,
 void on_icon_free_line (GtkMenuItem *menuitem,
 			gpointer     user_data);
 
+void on_icon_spline (GtkMenuItem *menuitem,
+		     gpointer     user_data);
+
+void on_icon_polygon (GtkMenuItem *menuitem,
+		      gpointer     user_data);
+
+void on_icon_triangle (GtkMenuItem *menuitem,
+		       gpointer     user_data);
+
 void on_icon_angled_arrow (GtkMenuItem *menuitem,
 			   gpointer     user_data);
 
@@ -156,6 +165,9 @@ void on_icon_ellipse (GtkMenuItem *menuitem,
 
 void on_icon_rounded_rectangle (GtkMenuItem *menuitem,
 				gpointer     user_data);
+
+void on_icon_bucket (GtkMenuItem *menuitem,
+		     gpointer     user_data);
 
 void on_icon_angled_line (GtkMenuItem *menuitem,
 			  gpointer     user_data);

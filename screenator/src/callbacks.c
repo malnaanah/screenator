@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <math.h>
 #include "screenator.h"
 #include "input.h"
 #include "callbacks.h"
@@ -52,6 +53,15 @@ schedule_tray_menu_refresh (ScreenatorData *data)
 }
 
 static void on_icon_eraser_size (GtkMenuItem *menuitem, gpointer user_data);
+static GArray *spline_preview_points (ScreenatorDeviceData *devdata);
+static void spline_draw_handles (ScreenatorData *data, cairo_t *cr,
+				 GArray *nodes, guint count);
+static void star_draw_handles (ScreenatorData *data, cairo_t *cr,
+			       const ScreenatorStar *star);
+static void triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
+				   const ScreenatorTriangle *triangle);
+static void rounded_draw_handle (ScreenatorData *data, cairo_t *cr,
+				 const ScreenatorRoundedRect *rect);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -95,14 +105,45 @@ gboolean on_expose (GtkWidget *widget,
     {
       ScreenatorDeviceData *devdata = value;
 
-      if (!devdata->shape_active)
+      if (!devdata->shape_active && !devdata->star_active &&
+	  !devdata->triangle_active && !devdata->rounded_active)
 	continue;
 
       cairo_save (cr);
       cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
-      draw_shape (data, cr, data->shape_type,
-		  devdata->shape_x0, devdata->shape_y0,
-		  devdata->shape_x1, devdata->shape_y1);
+      if (data->shape_type == SCREENATOR_SHAPE_STAR && devdata->star_active)
+	{
+	  draw_star (data, cr, &devdata->star);
+	  star_draw_handles (data, cr, &devdata->star);
+	}
+      else if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE &&
+	       devdata->triangle_active)
+	{
+	  draw_triangle (data, cr, &devdata->triangle);
+	  triangle_draw_handles (data, cr, &devdata->triangle);
+	}
+      else if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
+	       devdata->rounded_active)
+	{
+	  draw_rounded_rect (data, cr,
+			     devdata->rounded.x0, devdata->rounded.y0,
+			     devdata->rounded.x1, devdata->rounded.y1,
+			     devdata->rounded.radius);
+	  rounded_draw_handle (data, cr, &devdata->rounded);
+	}
+      else if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
+	{
+	  GArray *points = spline_preview_points (devdata);
+	  guint count = devdata->shape_points ? devdata->shape_points->len : 0;
+
+	  draw_spline (data, cr, points);
+	  spline_draw_handles (data, cr, points, count);
+	  g_array_free (points, TRUE);
+	}
+      else if (devdata->shape_active)
+	draw_shape (data, cr, data->shape_type,
+		    devdata->shape_x0, devdata->shape_y0,
+		    devdata->shape_x1, devdata->shape_y1);
       cairo_restore (cr);
     }
 
@@ -620,6 +661,967 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 }
 
 
+/* The spline tool places nodes with single clicks.  Every node carries two
+ * Bezier handles that can be dragged to shape the curve; the handles mirror
+ * each other until one is dragged with Ctrl held.  The curve is committed when
+ * the user double-clicks or right-clicks.  While the spline is being placed,
+ * the pointer position is appended as a temporary last node so the next
+ * segment is previewed. */
+static GArray *
+spline_preview_points (ScreenatorDeviceData *devdata)
+{
+  GArray *nodes = g_array_new (FALSE, FALSE, sizeof (ScreenatorSplineNode));
+  ScreenatorSplineNode cursor;
+
+  if (devdata->shape_points && devdata->shape_points->len > 0)
+    g_array_append_vals (nodes, devdata->shape_points->data,
+			 devdata->shape_points->len);
+
+  memset (&cursor, 0, sizeof (cursor));
+  cursor.point.x = devdata->shape_x1;
+  cursor.point.y = devdata->shape_y1;
+
+  if (nodes->len == 0)
+    g_array_append_val (nodes, cursor);
+  else
+    {
+      ScreenatorSplineNode last =
+	g_array_index (nodes, ScreenatorSplineNode, nodes->len - 1);
+
+      if (last.point.x != cursor.point.x ||
+	  last.point.y != cursor.point.y)
+	g_array_append_val (nodes, cursor);
+    }
+
+  /* Recompute the automatic handles on the copy so the preview matches what
+   * will be committed when the next node is clicked. */
+  spline_update_auto (nodes);
+
+  return nodes;
+}
+
+
+static void
+spline_preview_bounds (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		       GdkRectangle *bounds)
+{
+  GArray *points = spline_preview_points (devdata);
+
+  spline_get_bounds (data, points, bounds);
+  g_array_free (points, TRUE);
+}
+
+
+static void
+spline_invalidate (ScreenatorData *data, const GdkRectangle *bounds)
+{
+  if (bounds->width > 0 && bounds->height > 0)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				bounds, 0);
+}
+
+
+/* Add a node at the click position and redraw the affected area. */
+static void
+spline_add_node (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		 gint x, gint y)
+{
+  GdkRectangle old_bounds, new_bounds, dirty;
+  ScreenatorSplineNode node;
+
+  spline_preview_bounds (data, devdata, &old_bounds);
+
+  if (!devdata->shape_points)
+    devdata->shape_points = g_array_new (FALSE, FALSE,
+					 sizeof (ScreenatorSplineNode));
+  else if (devdata->shape_points->len > 0)
+    {
+      ScreenatorSplineNode last =
+	g_array_index (devdata->shape_points, ScreenatorSplineNode,
+		       devdata->shape_points->len - 1);
+
+      /* Clicking the same spot again must not add a duplicate node. */
+      if (last.point.x == x && last.point.y == y)
+	return;
+    }
+
+  memset (&node, 0, sizeof (node));
+  node.point.x = x;
+  node.point.y = y;
+  node.in = node.point;
+  node.out = node.point;
+  g_array_append_val (devdata->shape_points, node);
+
+  spline_update_auto (devdata->shape_points);
+
+  devdata->shape_x1 = x;
+  devdata->shape_y1 = y;
+  devdata->shape_active = TRUE;
+
+  spline_preview_bounds (data, devdata, &new_bounds);
+  gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
+  spline_invalidate (data, &dirty);
+}
+
+
+/* Return the index of the node under (x, y), or FALSE when the pointer is not
+ * close enough to a node. */
+static gboolean
+spline_node_at (ScreenatorDeviceData *devdata, gint x, gint y, gint *index)
+{
+  const gint radius = 8;
+  guint i;
+
+  if (!devdata->shape_points)
+    return FALSE;
+
+  for (i = 0; i < devdata->shape_points->len; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (devdata->shape_points, ScreenatorSplineNode, i);
+      gint dx = node->point.x - x;
+      gint dy = node->point.y - y;
+
+      if (dx * dx + dy * dy <= radius * radius)
+	{
+	  *index = (gint) i;
+	  return TRUE;
+	}
+    }
+
+  return FALSE;
+}
+
+
+/* Return the handle under (x, y).  "outgoing" tells which side of the node
+ * the handle belongs to.  The closest handle wins so overlapping handles of
+ * neighbouring nodes stay usable. */
+static gboolean
+spline_handle_at (GArray *nodes, gint x, gint y,
+		  gint *index, gboolean *outgoing)
+{
+  const gint radius = 9;
+  gint best = radius * radius + 1;
+  gboolean found = FALSE;
+  guint i;
+
+  if (!nodes)
+    return FALSE;
+
+  for (i = 0; i < nodes->len; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+      GdkPoint handles[2];
+      guint h;
+
+      handles[0] = node->in;
+      handles[1] = node->out;
+
+      for (h = 0; h < 2; h++)
+	{
+	  gint dx = handles[h].x - x;
+	  gint dy = handles[h].y - y;
+	  gint dist = dx * dx + dy * dy;
+
+	  /* A zero-length handle sits on the node and cannot be grabbed. */
+	  if (handles[h].x == node->point.x &&
+	      handles[h].y == node->point.y)
+	    continue;
+
+	  if (dist < best)
+	    {
+	      best = dist;
+	      *index = (gint) i;
+	      *outgoing = (h == 1);
+	      found = TRUE;
+	    }
+	}
+    }
+
+  return found;
+}
+
+
+/* Park the preview cursor on the last node, so dragging an earlier node does
+ * not leave a rubber-band segment behind. */
+static void
+spline_park_cursor (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle old_bounds, new_bounds, dirty;
+  ScreenatorSplineNode last;
+
+  if (!devdata->shape_points || devdata->shape_points->len == 0)
+    return;
+
+  last = g_array_index (devdata->shape_points, ScreenatorSplineNode,
+			devdata->shape_points->len - 1);
+  if (devdata->shape_x1 == last.point.x && devdata->shape_y1 == last.point.y)
+    return;
+
+  spline_preview_bounds (data, devdata, &old_bounds);
+  devdata->shape_x1 = last.point.x;
+  devdata->shape_y1 = last.point.y;
+  spline_preview_bounds (data, devdata, &new_bounds);
+  gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
+  spline_invalidate (data, &dirty);
+}
+
+
+/* Move one of the placed nodes together with its handles, then refresh the
+ * automatic handles of the other nodes, which depend on their neighbours. */
+static void
+spline_move_node (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  gint index, gint x, gint y)
+{
+  GdkRectangle old_bounds, new_bounds, dirty;
+  ScreenatorSplineNode *nodes, *node;
+  ScreenatorSplineNode last;
+  gint dx, dy;
+
+  if (!devdata->shape_points || index < 0 ||
+      index >= (gint) devdata->shape_points->len)
+    return;
+
+  nodes = (ScreenatorSplineNode *) devdata->shape_points->data;
+  node = &nodes[index];
+  if (node->point.x == x && node->point.y == y)
+    return;
+
+  spline_preview_bounds (data, devdata, &old_bounds);
+
+  dx = x - node->point.x;
+  dy = y - node->point.y;
+  node->point.x = x;
+  node->point.y = y;
+  node->in.x += dx;
+  node->in.y += dy;
+  node->out.x += dx;
+  node->out.y += dy;
+
+  spline_update_auto (devdata->shape_points);
+
+  /* If the last node moved, the parked cursor follows it. */
+  last = nodes[devdata->shape_points->len - 1];
+  devdata->shape_x1 = last.point.x;
+  devdata->shape_y1 = last.point.y;
+
+  spline_preview_bounds (data, devdata, &new_bounds);
+  gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
+  spline_invalidate (data, &dirty);
+}
+
+
+/* Move one handle of a node.  Without "independent" the opposite handle is
+ * mirrored through the node, so the curve stays smooth; holding Ctrl while
+ * dragging keeps the other side in place and gives the node a corner. */
+static void
+spline_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		    gint index, gboolean outgoing, gint x, gint y,
+		    gboolean independent)
+{
+  GdkRectangle old_bounds, new_bounds, dirty;
+  ScreenatorSplineNode *nodes, *node;
+  GdkPoint *side, *other;
+
+  if (!devdata->shape_points || index < 0 ||
+      index >= (gint) devdata->shape_points->len)
+    return;
+
+  nodes = (ScreenatorSplineNode *) devdata->shape_points->data;
+  node = &nodes[index];
+  side = outgoing ? &node->out : &node->in;
+  other = outgoing ? &node->in : &node->out;
+
+  if (side->x == x && side->y == y)
+    return;
+
+  spline_preview_bounds (data, devdata, &old_bounds);
+
+  node->manual = TRUE;
+  side->x = x;
+  side->y = y;
+
+  if (!independent)
+    {
+      other->x = 2 * node->point.x - x;
+      other->y = 2 * node->point.y - y;
+    }
+
+  spline_preview_bounds (data, devdata, &new_bounds);
+  gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
+  spline_invalidate (data, &dirty);
+}
+
+
+/* Draw the Bezier handles of every placed node while the spline is being
+ * edited.  The handles are only part of the preview and are not committed. */
+static void
+spline_draw_handles (ScreenatorData *data, cairo_t *cr, GArray *nodes,
+		     guint count)
+{
+  GdkRGBA color = data->pen_color;
+  guint i;
+
+  if (!nodes)
+    return;
+
+  count = MIN (count, nodes->len);
+
+  color.alpha = 1.0;
+
+  for (i = 0; i < count; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+      GdkPoint handles[2];
+      guint h;
+
+      handles[0] = node->in;
+      handles[1] = node->out;
+
+      for (h = 0; h < 2; h++)
+	{
+	  if (handles[h].x == node->point.x &&
+	      handles[h].y == node->point.y)
+	    continue;
+
+	  /* A white halo under a dark line keeps the handle visible on both
+	   * light and dark backgrounds. */
+	  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.8);
+	  cairo_set_line_width (cr, 3.0);
+	  cairo_move_to (cr, node->point.x, node->point.y);
+	  cairo_line_to (cr, handles[h].x, handles[h].y);
+	  cairo_stroke (cr);
+
+	  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.7);
+	  cairo_set_line_width (cr, 1.0);
+	  cairo_move_to (cr, node->point.x, node->point.y);
+	  cairo_line_to (cr, handles[h].x, handles[h].y);
+	  cairo_stroke (cr);
+
+	  /* Handle grip: a white disc with a dark ring. */
+	  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.95);
+	  cairo_arc (cr, handles[h].x, handles[h].y, 5.0, 0, 2 * G_PI);
+	  cairo_fill (cr);
+
+	  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.85);
+	  cairo_set_line_width (cr, 1.5);
+	  cairo_arc (cr, handles[h].x, handles[h].y, 5.0, 0, 2 * G_PI);
+	  cairo_stroke (cr);
+	}
+    }
+
+  /* Square node markers are drawn last so they stay on top of the handles. */
+  for (i = 0; i < count; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+
+      /* Dark border, white ring and a pen-coloured core: the marker stays
+       * visible whatever the pen colour and the screen behind it. */
+      cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.85);
+      cairo_rectangle (cr, node->point.x - 6.0, node->point.y - 6.0,
+		       12.0, 12.0);
+      cairo_fill (cr);
+
+      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.95);
+      cairo_rectangle (cr, node->point.x - 5.0, node->point.y - 5.0,
+		       10.0, 10.0);
+      cairo_fill (cr);
+
+      gdk_cairo_set_source_rgba (cr, &color);
+      cairo_rectangle (cr, node->point.x - 3.0, node->point.y - 3.0,
+		       6.0, 6.0);
+      cairo_fill (cr);
+    }
+}
+
+
+/* Commit the placed nodes to the backbuffer.  A spline with fewer than two
+ * nodes is discarded. */
+static void
+spline_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle preview_bounds, curve_bounds, dirty;
+
+  if (!devdata->shape_active)
+    return;
+
+  spline_preview_bounds (data, devdata, &preview_bounds);
+  devdata->shape_active = FALSE;
+  devdata->spline_node_drag = FALSE;
+  devdata->spline_handle_drag = FALSE;
+  devdata->spline_finish_pending = FALSE;
+  curve_bounds = preview_bounds;
+
+  if (devdata->shape_points && devdata->shape_points->len >= 2)
+    {
+      cairo_t *cr;
+
+      spline_update_auto (devdata->shape_points);
+
+      snap_undo_state (data);
+      cr = cairo_create (data->backbuffer);
+      draw_spline (data, cr, devdata->shape_points);
+      cairo_destroy (cr);
+
+      data->modified = 1;
+      data->painted = 1;
+
+      spline_get_bounds (data, devdata->shape_points, &curve_bounds);
+    }
+
+  if (devdata->shape_points)
+    g_array_set_size (devdata->shape_points, 0);
+
+  gdk_rectangle_union (&preview_bounds, &curve_bounds, &dirty);
+  spline_invalidate (data, &dirty);
+}
+
+
+/* The Polygon tool places a star shape with a single click and keeps it
+ * editable until it is committed.  Four handles control the number of sides,
+ * the radius, the rotation and the inner radius, which turns the star into a
+ * regular polygon as it grows.  Clicking empty space commits the current shape
+ * and places a new one; a double-click or a right-click commits it and stays
+ * in the tool. */
+
+#define STAR_DEFAULT_RADIUS 64.0
+#define STAR_DEFAULT_INNER  0.45
+#define STAR_MIN_RADIUS     8.0
+#define STAR_POINTS_HANDLE_OFFSET 28.0
+#define POLYGON_SIDES_PER_PIXEL 12.0
+
+/* Radius of the equilateral triangle placed by a single click. */
+#define TRIANGLE_DEFAULT_RADIUS 64.0
+
+/* Position of one star handle in screen coordinates.  The points handle sits
+ * outside the star so it never covers the shape; the rotation handle sits at
+ * half the radius, between two vertices. */
+static void
+star_handle_position (const ScreenatorStar *star, ScreenatorStarHandle handle,
+		      GdkPoint *pos)
+{
+  gdouble angle;
+  gdouble r;
+
+  switch (handle)
+    {
+    case SCREENATOR_STAR_HANDLE_RADIUS:
+      angle = star->rotation;
+      r = star->radius;
+      break;
+    case SCREENATOR_STAR_HANDLE_INNER:
+      angle = star->rotation + G_PI / star->points;
+      r = star->radius * CLAMP (star->inner, 0.0, 1.0);
+      break;
+    case SCREENATOR_STAR_HANDLE_ROTATION:
+      angle = star->rotation + G_PI / 2.0;
+      r = star->radius * 0.5;
+      break;
+    case SCREENATOR_STAR_HANDLE_POINTS:
+      angle = star->rotation + G_PI;
+      r = star->radius + STAR_POINTS_HANDLE_OFFSET;
+      break;
+    default:
+      angle = 0.0;
+      r = 0.0;
+      break;
+    }
+
+  pos->x = (gint) round (star->cx + r * cos (angle));
+  pos->y = (gint) round (star->cy + r * sin (angle));
+}
+
+/* Repaint the area covered by the shape and its handles. */
+static void
+star_invalidate (ScreenatorData *data, const ScreenatorStar *star)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + 64;
+
+  if (!data->win)
+    return;
+
+  star_get_bounds (star, pad, &bounds);
+  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+			      &bounds, 0);
+}
+
+/* Return the star handle under (x, y), or NONE.  The square points handle is
+ * the outermost one and is tested first so it wins when handles overlap. */
+static ScreenatorStarHandle
+star_handle_at (const ScreenatorStar *star, gint x, gint y)
+{
+  static const ScreenatorStarHandle order[] =
+    {
+      SCREENATOR_STAR_HANDLE_POINTS,
+      SCREENATOR_STAR_HANDLE_ROTATION,
+      SCREENATOR_STAR_HANDLE_INNER,
+      SCREENATOR_STAR_HANDLE_RADIUS
+    };
+  const gint radius = 11;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (order); i++)
+    {
+      GdkPoint pos;
+      gint dx, dy;
+
+      star_handle_position (star, order[i], &pos);
+      dx = pos.x - x;
+      dy = pos.y - y;
+
+      if (dx * dx + dy * dy <= radius * radius)
+	return order[i];
+    }
+
+  return SCREENATOR_STAR_HANDLE_NONE;
+}
+
+/* One vertex of the star polygon: even indices are on the outer radius, odd
+ * indices on the inner radius. */
+static void
+star_vertex (const ScreenatorStar *star, gint index, gdouble *x, gdouble *y)
+{
+  gdouble angle = star->rotation + index * G_PI / star->points;
+  gdouble r = (index % 2 == 0)
+    ? star->radius : star->radius * CLAMP (star->inner, 0.0, 1.0);
+
+  *x = star->cx + r * cos (angle);
+  *y = star->cy + r * sin (angle);
+}
+
+/* Point-in-polygon test, used to decide whether a press grabs the star and
+ * moves it or places a new one. */
+static gboolean
+star_contains (const ScreenatorStar *star, gint x, gint y)
+{
+  gint i, j, n;
+  gboolean inside = FALSE;
+
+  if (!star || star->points < 3 || star->radius < 1.0)
+    return FALSE;
+
+  n = star->points * 2;
+
+  for (i = 0, j = n - 1; i < n; j = i++)
+    {
+      gdouble xi, yi, xj, yj;
+
+      star_vertex (star, i, &xi, &yi);
+      star_vertex (star, j, &xj, &yj);
+
+      if (((yi > y) != (yj > y)) &&
+	  (x < (xj - xi) * (y - yi) / (yj - yi) + xi))
+	inside = !inside;
+    }
+
+  return inside;
+}
+
+/* Start a new shape centred on the click.  A default radius makes a single
+ * click useful; the handles refine it afterwards. */
+static void
+star_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
+	    gint x, gint y)
+{
+  devdata->star.cx = x;
+  devdata->star.cy = y;
+  devdata->star.radius = STAR_DEFAULT_RADIUS;
+  devdata->star.inner = STAR_DEFAULT_INNER;
+  devdata->star.rotation = -G_PI / 2.0;
+  devdata->star.points = 5;
+
+  devdata->star_active = TRUE;
+
+  /* Pressing and dragging on the freshly placed star moves it, so it can be
+   * positioned without a separate centre handle. */
+  devdata->star_drag = SCREENATOR_STAR_HANDLE_CENTRE;
+  devdata->star_press_x = x;
+  devdata->star_press_y = y;
+  devdata->star_press_cx = x;
+  devdata->star_press_cy = y;
+
+  star_invalidate (data, &devdata->star);
+}
+
+/* Move the grabbed handle to (x, y).  The side-count handle always starts at
+ * three when it is pressed; dragging away from the press point in any
+ * direction adds sides. */
+static void
+star_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  gint x, gint y)
+{
+  ScreenatorStar *star = &devdata->star;
+  gdouble dx = x - star->cx;
+  gdouble dy = y - star->cy;
+  gdouble dist = sqrt (dx * dx + dy * dy);
+
+  if (!devdata->star_active ||
+      devdata->star_drag == SCREENATOR_STAR_HANDLE_NONE)
+    return;
+
+  star_invalidate (data, star);
+
+  switch (devdata->star_drag)
+    {
+    case SCREENATOR_STAR_HANDLE_RADIUS:
+      star->radius = CLAMP (dist, STAR_MIN_RADIUS, 100000.0);
+      break;
+    case SCREENATOR_STAR_HANDLE_INNER:
+      if (star->radius > 0.0)
+	star->inner = CLAMP (dist / star->radius, 0.0, 1.0);
+      break;
+    case SCREENATOR_STAR_HANDLE_ROTATION:
+      if (dist > 0.0)
+	star->rotation = atan2 (dy, dx) - G_PI / 2.0;
+      break;
+    case SCREENATOR_STAR_HANDLE_POINTS:
+      {
+	/* The distance from the handle sets the number of points: at the
+	 * handle the star has three points, and moving away in any
+	 * direction adds more.  Moving back towards the handle removes
+	 * them again. */
+	gdouble px = x - devdata->star_press_x;
+	gdouble py = y - devdata->star_press_y;
+	gdouble moved = sqrt (px * px + py * py);
+
+	star->points = CLAMP (3 + (gint) (moved / POLYGON_SIDES_PER_PIXEL),
+			      3, 16);
+      }
+      break;
+    case SCREENATOR_STAR_HANDLE_CENTRE:
+      star->cx = devdata->star_press_cx + (x - devdata->star_press_x);
+      star->cy = devdata->star_press_cy + (y - devdata->star_press_y);
+      break;
+    default:
+      break;
+    }
+
+  star_invalidate (data, star);
+}
+
+/* Draw one round handle grip with a dark ring and a white fill so it stays
+ * visible on any background. */
+static void
+star_draw_grip (cairo_t *cr, gint x, gint y)
+{
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.85);
+  cairo_arc (cr, x, y, 6.0, 0, 2 * G_PI);
+  cairo_fill (cr);
+
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.95);
+  cairo_arc (cr, x, y, 5.0, 0, 2 * G_PI);
+  cairo_fill (cr);
+}
+
+/* Draw a line from the centre to a handle, with a light halo so it does not
+ * disappear over dark or busy content. */
+static void
+star_draw_spoke (cairo_t *cr, const ScreenatorStar *star, gint x, gint y)
+{
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.8);
+  cairo_set_line_width (cr, 3.0);
+  cairo_move_to (cr, star->cx, star->cy);
+  cairo_line_to (cr, x, y);
+  cairo_stroke (cr);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.7);
+  cairo_set_line_width (cr, 1.0);
+  cairo_move_to (cr, star->cx, star->cy);
+  cairo_line_to (cr, x, y);
+  cairo_stroke (cr);
+}
+
+/* Draw the four star handles while the star is editable.  The number of
+ * points is written next to its square handle. */
+static void
+star_draw_handles (ScreenatorData *data, cairo_t *cr,
+		   const ScreenatorStar *star)
+{
+  static const ScreenatorStarHandle spokes[] =
+    {
+      SCREENATOR_STAR_HANDLE_RADIUS,
+      SCREENATOR_STAR_HANDLE_INNER,
+      SCREENATOR_STAR_HANDLE_ROTATION
+    };
+  GdkPoint pos;
+  guint i;
+
+  if (!star)
+    return;
+
+  for (i = 0; i < G_N_ELEMENTS (spokes); i++)
+    {
+      star_handle_position (star, spokes[i], &pos);
+      star_draw_spoke (cr, star, pos.x, pos.y);
+      star_draw_grip (cr, pos.x, pos.y);
+    }
+
+  /* The points handle is square and labelled with the current count. */
+  star_handle_position (star, SCREENATOR_STAR_HANDLE_POINTS, &pos);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.85);
+  cairo_rectangle (cr, pos.x - 7.0, pos.y - 7.0, 14.0, 14.0);
+  cairo_fill (cr);
+
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.95);
+  cairo_rectangle (cr, pos.x - 6.0, pos.y - 6.0, 12.0, 12.0);
+  cairo_fill (cr);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.9);
+  cairo_set_line_width (cr, 1.0);
+  cairo_rectangle (cr, pos.x - 6.0, pos.y - 6.0, 12.0, 12.0);
+  cairo_stroke (cr);
+
+  {
+    gchar label[8];
+    cairo_text_extents_t ext;
+    gdouble tx, ty;
+
+    g_snprintf (label, sizeof (label), "%d", star->points);
+
+    cairo_select_font_face (cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+			    CAIRO_FONT_WEIGHT_BOLD);
+    cairo_set_font_size (cr, 11.0);
+    cairo_text_extents (cr, label, &ext);
+
+    /* Right of the handle, vertically centred on it. */
+    tx = pos.x + 11.0;
+    ty = pos.y - ext.y_bearing - ext.height / 2.0;
+
+    cairo_move_to (cr, tx, ty);
+    cairo_text_path (cr, label);
+
+    cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.9);
+    cairo_set_line_width (cr, 3.0);
+    cairo_stroke_preserve (cr);
+
+    cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.95);
+    cairo_fill (cr);
+  }
+}
+
+
+/* Repaint the area covered by the triangle and its handles. */
+static void
+triangle_invalidate (ScreenatorData *data, const ScreenatorTriangle *triangle)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + 64;
+
+  if (!data->win)
+    return;
+
+  triangle_get_bounds (triangle, pad, &bounds);
+  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+			      &bounds, 0);
+}
+
+/* Return the vertex handle under (x, y), or NONE. */
+static ScreenatorTriangleHandle
+triangle_handle_at (const ScreenatorTriangle *triangle, gint x, gint y)
+{
+  const gint radius = 11;
+  gint i;
+
+  for (i = 0; i < 3; i++)
+    {
+      gint dx = triangle->v[i].x - x;
+      gint dy = triangle->v[i].y - y;
+
+      if (dx * dx + dy * dy <= radius * radius)
+	return (ScreenatorTriangleHandle) (SCREENATOR_TRIANGLE_HANDLE_V0 + i);
+    }
+
+  return SCREENATOR_TRIANGLE_HANDLE_NONE;
+}
+
+/* Point-in-triangle test, used to decide whether a press grabs the triangle
+ * and moves it. */
+static gboolean
+triangle_contains (const ScreenatorTriangle *triangle, gint x, gint y)
+{
+  gint i, j;
+  gboolean inside = FALSE;
+
+  for (i = 0, j = 2; i < 3; j = i++)
+    {
+      gint xi = triangle->v[i].x, yi = triangle->v[i].y;
+      gint xj = triangle->v[j].x, yj = triangle->v[j].y;
+
+      if (((yi > y) != (yj > y)) &&
+	  (x < (gdouble) (xj - xi) * (y - yi) / (yj - yi) + xi))
+	inside = !inside;
+    }
+
+  return inside;
+}
+
+/* Start a new equilateral triangle centred on the click.  The three vertex
+ * handles refine it afterwards. */
+static void
+triangle_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		gint x, gint y)
+{
+  static const gdouble angles[3] =
+    { -G_PI / 2.0, G_PI / 6.0, 5.0 * G_PI / 6.0 };
+  gint i;
+
+  for (i = 0; i < 3; i++)
+    {
+      devdata->triangle.v[i].x =
+	(gint) round (x + TRIANGLE_DEFAULT_RADIUS * cos (angles[i]));
+      devdata->triangle.v[i].y =
+	(gint) round (y + TRIANGLE_DEFAULT_RADIUS * sin (angles[i]));
+      devdata->triangle_press_v[i] = devdata->triangle.v[i];
+    }
+
+  devdata->triangle_active = TRUE;
+
+  /* Pressing and dragging on the fresh triangle moves it, so it can be
+   * positioned without a separate centre handle. */
+  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_CENTRE;
+  devdata->triangle_press_x = x;
+  devdata->triangle_press_y = y;
+
+  triangle_invalidate (data, &devdata->triangle);
+}
+
+/* Move one vertex of the triangle, or the whole triangle, to (x, y). */
+static void
+triangle_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		      gint x, gint y)
+{
+  ScreenatorTriangle *triangle = &devdata->triangle;
+
+  if (!devdata->triangle_active ||
+      devdata->triangle_drag == SCREENATOR_TRIANGLE_HANDLE_NONE)
+    return;
+
+  triangle_invalidate (data, triangle);
+
+  switch (devdata->triangle_drag)
+    {
+    case SCREENATOR_TRIANGLE_HANDLE_V0:
+      triangle->v[0].x = x;
+      triangle->v[0].y = y;
+      break;
+    case SCREENATOR_TRIANGLE_HANDLE_V1:
+      triangle->v[1].x = x;
+      triangle->v[1].y = y;
+      break;
+    case SCREENATOR_TRIANGLE_HANDLE_V2:
+      triangle->v[2].x = x;
+      triangle->v[2].y = y;
+      break;
+    case SCREENATOR_TRIANGLE_HANDLE_CENTRE:
+      {
+	gint dx = x - devdata->triangle_press_x;
+	gint dy = y - devdata->triangle_press_y;
+	gint i;
+
+	for (i = 0; i < 3; i++)
+	  {
+	    triangle->v[i].x = devdata->triangle_press_v[i].x + dx;
+	    triangle->v[i].y = devdata->triangle_press_v[i].y + dy;
+	  }
+      }
+      break;
+    default:
+      break;
+    }
+
+  triangle_invalidate (data, triangle);
+}
+
+/* Draw the three vertex handles of the editable triangle. */
+static void
+triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
+		       const ScreenatorTriangle *triangle)
+{
+  gint i;
+
+  (void) data;
+
+  for (i = 0; i < 3; i++)
+    star_draw_grip (cr, triangle->v[i].x, triangle->v[i].y);
+}
+
+
+/* Position of the roundness handle: on the top edge, radius pixels from the
+ * top-left corner. */
+static void
+rounded_handle_position (const ScreenatorRoundedRect *rect, GdkPoint *pos)
+{
+  gint x = MIN (rect->x0, rect->x1);
+  gint y = MIN (rect->y0, rect->y1);
+  gint w = ABS (rect->x1 - rect->x0);
+  gint h = ABS (rect->y1 - rect->y0);
+  gdouble max_radius = MIN (w, h) / 2.0;
+
+  pos->x = (gint) round (x + CLAMP (rect->radius, 0.0, max_radius));
+  pos->y = y;
+}
+
+/* Return TRUE when (x, y) is on the roundness handle. */
+static gboolean
+rounded_handle_at (const ScreenatorRoundedRect *rect, gint x, gint y)
+{
+  const gint radius = 11;
+  GdkPoint pos;
+  gint dx, dy;
+
+  rounded_handle_position (rect, &pos);
+  dx = pos.x - x;
+  dy = pos.y - y;
+
+  return dx * dx + dy * dy <= radius * radius;
+}
+
+/* Point-in-rectangle test, used to decide whether a press moves the rounded
+ * rectangle. */
+static gboolean
+rounded_contains (const ScreenatorRoundedRect *rect, gint x, gint y)
+{
+  return x >= MIN (rect->x0, rect->x1) &&
+	 x <= MAX (rect->x0, rect->x1) &&
+	 y >= MIN (rect->y0, rect->y1) &&
+	 y <= MAX (rect->y0, rect->y1);
+}
+
+/* Repaint the area covered by the rounded rectangle and its handle. */
+static void
+rounded_invalidate (ScreenatorData *data, const ScreenatorRoundedRect *rect)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + 64;
+
+  if (!data->win)
+    return;
+
+  rounded_rect_get_bounds (rect, pad, &bounds);
+  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+			      &bounds, 0);
+}
+
+/* Draw the roundness handle on the top edge.  Its distance from the top-left
+ * corner is the corner radius. */
+static void
+rounded_draw_handle (ScreenatorData *data, cairo_t *cr,
+		     const ScreenatorRoundedRect *rect)
+{
+  GdkPoint pos;
+
+  (void) data;
+
+  rounded_handle_position (rect, &pos);
+  star_draw_grip (cr, pos.x, pos.y);
+}
+
+
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
@@ -637,9 +1639,46 @@ gboolean on_buttonpress (GtkWidget *win,
   if (!devdata->is_grabbed)
     return FALSE;
 
-  /* Right-click exits painting mode and returns to normal. */
+  /* Right-click finishes a spline or a star that is being edited.  Otherwise
+   * it exits painting mode and returns to normal. */
   if (ev->button == 3)
     {
+      if (devdata->cur_context &&
+	  devdata->cur_context->type == SCREENATOR_SHAPE &&
+	  data->shape_type == SCREENATOR_SHAPE_SPLINE &&
+	  devdata->shape_active)
+	{
+	  spline_finish (data, devdata);
+	  return TRUE;
+	}
+
+      if (devdata->cur_context &&
+	  devdata->cur_context->type == SCREENATOR_SHAPE &&
+	  data->shape_type == SCREENATOR_SHAPE_STAR &&
+	  devdata->star_active)
+	{
+	  star_finish (data, devdata);
+	  return TRUE;
+	}
+
+      if (devdata->cur_context &&
+	  devdata->cur_context->type == SCREENATOR_SHAPE &&
+	  data->shape_type == SCREENATOR_SHAPE_TRIANGLE &&
+	  devdata->triangle_active)
+	{
+	  triangle_finish (data, devdata);
+	  return TRUE;
+	}
+
+      if (devdata->cur_context &&
+	  devdata->cur_context->type == SCREENATOR_SHAPE &&
+	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
+	  devdata->rounded_active)
+	{
+	  rounded_rect_finish (data, devdata);
+	  return TRUE;
+	}
+
       release_grab (data, NULL);
       return TRUE;
     }
@@ -687,12 +1726,202 @@ gboolean on_buttonpress (GtkWidget *win,
     }
 
   /* Shapes are drawn by dragging.  Only remember the anchor here and show a
-   * preview until the button is released. */
+   * preview until the button is released.  The spline is different: every
+   * click places a node and the curve is finished with a double-click or a
+   * right-click. */
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_SHAPE)
     {
       if (ev->button == 1)
 	{
+	  /* The paint bucket acts on a single click: it floods the enclosed
+	   * region under the pointer and leaves no preview behind. */
+	  if (data->shape_type == SCREENATOR_SHAPE_BUCKET)
+	    {
+	      fill_bucket (data, (gint) ev->x, (gint) ev->y);
+	      return TRUE;
+	    }
+
+	  if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
+	    {
+	      gint index;
+	      gboolean outgoing;
+	      GArray *preview;
+
+	      if (ev->type == GDK_2BUTTON_PRESS)
+		{
+		  spline_finish (data, devdata);
+		  return TRUE;
+		}
+
+	      /* Test the handles against the preview that is on screen, so
+	       * the handle the user aimed at is the one that gets grabbed. */
+	      preview = spline_preview_points (devdata);
+	      if (spline_handle_at (preview, ev->x, ev->y,
+				    &index, &outgoing))
+		{
+		  g_array_free (preview, TRUE);
+
+		  /* Pressing a Bezier handle starts a handle drag.  The
+		   * rubber-band segment is dropped first so later previews
+		   * keep the handles in place. */
+		  spline_park_cursor (data, devdata);
+		  devdata->spline_handle_drag = TRUE;
+		  devdata->spline_drag_index = index;
+		  devdata->spline_drag_out = outgoing;
+		  return TRUE;
+		}
+	      g_array_free (preview, TRUE);
+
+	      spline_park_cursor (data, devdata);
+
+	      if (spline_node_at (devdata, ev->x, ev->y, &index))
+		{
+		  /* Pressing a node starts a node drag.  Clicking the last
+		   * node again (without moving) finishes the curve. */
+		  devdata->spline_node_drag = TRUE;
+		  devdata->spline_drag_index = index;
+		  devdata->spline_finish_pending =
+		    (index == (gint) devdata->shape_points->len - 1);
+		  devdata->spline_press_x = ev->x;
+		  devdata->spline_press_y = ev->y;
+		}
+	      else
+		{
+		  spline_add_node (data, devdata, ev->x, ev->y);
+		}
+
+	      return TRUE;
+	    }
+
+	  if (data->shape_type == SCREENATOR_SHAPE_STAR)
+	    {
+	      ScreenatorStarHandle handle;
+
+	      if (ev->type == GDK_2BUTTON_PRESS)
+		{
+		  star_finish (data, devdata);
+		  return TRUE;
+		}
+
+	      if (devdata->star_active)
+		{
+		  handle = star_handle_at (&devdata->star, ev->x, ev->y);
+
+		  if (handle != SCREENATOR_STAR_HANDLE_NONE)
+		    {
+		      devdata->star_drag = handle;
+		      devdata->star_press_x = ev->x;
+		      devdata->star_press_y = ev->y;
+
+		      /* The side handle starts at three sides; moving the
+		       * pointer away from here adds more. */
+		      if (handle == SCREENATOR_STAR_HANDLE_POINTS)
+			{
+			  devdata->star.points = 3;
+			  star_invalidate (data, &devdata->star);
+			}
+		      return TRUE;
+		    }
+
+		  /* A press inside the star grabs it and moves it. */
+		  if (star_contains (&devdata->star, ev->x, ev->y))
+		    {
+		      devdata->star_drag = SCREENATOR_STAR_HANDLE_CENTRE;
+		      devdata->star_press_x = ev->x;
+		      devdata->star_press_y = ev->y;
+		      devdata->star_press_cx = devdata->star.cx;
+		      devdata->star_press_cy = devdata->star.cy;
+		      return TRUE;
+		    }
+
+		  /* A press outside commits the current star and places the
+		   * next one at the click position. */
+		  star_finish (data, devdata);
+		}
+
+	      star_begin (data, devdata, ev->x, ev->y);
+	      return TRUE;
+	    }
+
+	  if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE)
+	    {
+	      ScreenatorTriangleHandle handle;
+
+	      if (ev->type == GDK_2BUTTON_PRESS)
+		{
+		  triangle_finish (data, devdata);
+		  return TRUE;
+		}
+
+	      if (devdata->triangle_active)
+		{
+		  handle = triangle_handle_at (&devdata->triangle,
+					       ev->x, ev->y);
+
+		  if (handle != SCREENATOR_TRIANGLE_HANDLE_NONE)
+		    {
+		      devdata->triangle_drag = handle;
+		      return TRUE;
+		    }
+
+		  /* A press inside the triangle grabs it and moves it. */
+		  if (triangle_contains (&devdata->triangle, ev->x, ev->y))
+		    {
+		      gint i;
+
+		      devdata->triangle_drag =
+			SCREENATOR_TRIANGLE_HANDLE_CENTRE;
+		      devdata->triangle_press_x = ev->x;
+		      devdata->triangle_press_y = ev->y;
+
+		      for (i = 0; i < 3; i++)
+			devdata->triangle_press_v[i] = devdata->triangle.v[i];
+
+		      return TRUE;
+		    }
+
+		  /* A press outside commits the current triangle and places
+		   * the next one at the click position. */
+		  triangle_finish (data, devdata);
+		}
+
+	      triangle_begin (data, devdata, ev->x, ev->y);
+	      return TRUE;
+	    }
+
+	  /* A rounded rectangle that is already placed keeps its roundness
+	   * handle until the user presses outside it. */
+	  if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
+	      devdata->rounded_active)
+	    {
+	      if (ev->type == GDK_2BUTTON_PRESS)
+		{
+		  rounded_rect_finish (data, devdata);
+		  return TRUE;
+		}
+
+	      if (rounded_handle_at (&devdata->rounded, ev->x, ev->y))
+		{
+		  devdata->rounded_radius_drag = TRUE;
+		  return TRUE;
+		}
+
+	      /* A press inside the rectangle grabs it and moves it. */
+	      if (rounded_contains (&devdata->rounded, ev->x, ev->y))
+		{
+		  devdata->rounded_move_drag = TRUE;
+		  devdata->rounded_press_x = ev->x;
+		  devdata->rounded_press_y = ev->y;
+		  devdata->rounded_press = devdata->rounded;
+		  return TRUE;
+		}
+
+	      /* A press outside commits it; the code below starts a new
+	       * rectangle at the click position. */
+	      rounded_rect_finish (data, devdata);
+	    }
+
 	  devdata->shape_active = TRUE;
 	  devdata->shape_x0 = devdata->shape_x1 = ev->x;
 	  devdata->shape_y0 = devdata->shape_y1 = ev->y;
@@ -757,6 +1986,107 @@ gboolean on_motion (GtkWidget *win,
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_SHAPE)
     {
+      if (data->shape_type == SCREENATOR_SHAPE_BUCKET)
+	return TRUE;
+
+      if (data->shape_type == SCREENATOR_SHAPE_STAR)
+	{
+	  if (devdata->star_active &&
+	      devdata->star_drag != SCREENATOR_STAR_HANDLE_NONE)
+	    star_move_handle (data, devdata, ev->x, ev->y);
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE)
+	{
+	  if (devdata->triangle_active &&
+	      devdata->triangle_drag != SCREENATOR_TRIANGLE_HANDLE_NONE)
+	    triangle_move_handle (data, devdata, ev->x, ev->y);
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
+	  devdata->rounded_active)
+	{
+	  if (devdata->rounded_radius_drag)
+	    {
+	      gint x0 = MIN (devdata->rounded.x0, devdata->rounded.x1);
+	      gint w = ABS (devdata->rounded.x1 - devdata->rounded.x0);
+	      gint h = ABS (devdata->rounded.y1 - devdata->rounded.y0);
+	      gdouble max_radius = MIN (w, h) / 2.0;
+
+	      rounded_invalidate (data, &devdata->rounded);
+	      devdata->rounded.radius =
+		CLAMP ((gdouble) (ev->x - x0), 0.0, max_radius);
+	      rounded_invalidate (data, &devdata->rounded);
+	      return TRUE;
+	    }
+
+	  if (devdata->rounded_move_drag)
+	    {
+	      gint dx = ev->x - devdata->rounded_press_x;
+	      gint dy = ev->y - devdata->rounded_press_y;
+
+	      rounded_invalidate (data, &devdata->rounded);
+	      devdata->rounded.x0 = devdata->rounded_press.x0 + dx;
+	      devdata->rounded.y0 = devdata->rounded_press.y0 + dy;
+	      devdata->rounded.x1 = devdata->rounded_press.x1 + dx;
+	      devdata->rounded.y1 = devdata->rounded_press.y1 + dy;
+	      rounded_invalidate (data, &devdata->rounded);
+	      return TRUE;
+	    }
+
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
+	{
+	  if (devdata->shape_active)
+	    {
+	      GdkRectangle old_bounds, new_bounds, dirty;
+
+	      if (devdata->spline_handle_drag)
+		{
+		  spline_move_handle (data, devdata,
+				      devdata->spline_drag_index,
+				      devdata->spline_drag_out,
+				      ev->x, ev->y,
+				      (ev->state & GDK_CONTROL_MASK) != 0);
+		  return TRUE;
+		}
+
+	      if (devdata->spline_node_drag)
+		{
+		  if (devdata->spline_finish_pending)
+		    {
+		      gint dx = ev->x - devdata->spline_press_x;
+		      gint dy = ev->y - devdata->spline_press_y;
+
+		      /* A tiny movement is still a click on the last node,
+		       * which finishes the spline on release. */
+		      if (dx * dx + dy * dy < 16)
+			return TRUE;
+
+		      devdata->spline_finish_pending = FALSE;
+		    }
+
+		  spline_move_node (data, devdata,
+				    devdata->spline_drag_index,
+				    ev->x, ev->y);
+		  return TRUE;
+		}
+
+	      spline_preview_bounds (data, devdata, &old_bounds);
+	      devdata->shape_x1 = ev->x;
+	      devdata->shape_y1 = ev->y;
+	      spline_preview_bounds (data, devdata, &new_bounds);
+
+	      gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
+	      spline_invalidate (data, &dirty);
+	    }
+	  return TRUE;
+	}
+
       if (devdata->shape_active)
 	{
 	  GdkRectangle old_bounds, new_bounds, dirty;
@@ -890,10 +2220,68 @@ gboolean on_buttonrelease (GtkWidget *win,
     }
 
   /* Commit the dragged shape to the backbuffer.  A click without any drag
-   * does not create an annotation. */
+   * does not create an annotation.  The spline is finished by a double-click
+   * or a right-click instead, so releasing its button does nothing. */
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_SHAPE)
     {
+      if (data->shape_type == SCREENATOR_SHAPE_BUCKET)
+	return TRUE;
+
+      if (data->shape_type == SCREENATOR_SHAPE_STAR)
+	{
+	  /* Releasing a handle ends the drag; the star stays editable. */
+	  if (devdata->star_drag != SCREENATOR_STAR_HANDLE_NONE)
+	    {
+	      devdata->star_drag = SCREENATOR_STAR_HANDLE_NONE;
+	      return TRUE;
+	    }
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
+	{
+	  if (devdata->spline_handle_drag)
+	    {
+	      devdata->spline_handle_drag = FALSE;
+	      return TRUE;
+	    }
+
+	  if (devdata->spline_node_drag)
+	    {
+	      gboolean finish = devdata->spline_finish_pending;
+
+	      devdata->spline_node_drag = FALSE;
+	      devdata->spline_finish_pending = FALSE;
+
+	      /* A click on the last node, without dragging it, finishes. */
+	      if (finish)
+		spline_finish (data, devdata);
+	    }
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE)
+	{
+	  /* Releasing a vertex handle ends the drag; the triangle stays
+	   * editable until it is committed. */
+	  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_NONE;
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
+	  devdata->rounded_active)
+	{
+	  /* Releasing the roundness handle or the body ends the drag; the
+	   * rectangle stays editable until it is committed. */
+	  if (devdata->rounded_radius_drag || devdata->rounded_move_drag)
+	    {
+	      devdata->rounded_radius_drag = FALSE;
+	      devdata->rounded_move_drag = FALSE;
+	      return TRUE;
+	    }
+	}
+
       if (devdata->shape_active)
 	{
 	  GdkRectangle bounds;
@@ -904,6 +2292,24 @@ gboolean on_buttonrelease (GtkWidget *win,
 
 	  if (dx > 0 || dy > 0)
 	    {
+	      /* A rounded rectangle stays editable after the drag so its
+	       * roundness handle can adjust the corners. */
+	      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+		{
+		  gint w = ABS (devdata->shape_x1 - devdata->shape_x0);
+		  gint h = ABS (devdata->shape_y1 - devdata->shape_y0);
+
+		  devdata->rounded.x0 = devdata->shape_x0;
+		  devdata->rounded.y0 = devdata->shape_y0;
+		  devdata->rounded.x1 = devdata->shape_x1;
+		  devdata->rounded.y1 = devdata->shape_y1;
+		  devdata->rounded.radius = MIN (w, h) / 4.0;
+		  devdata->rounded_active = TRUE;
+
+		  rounded_invalidate (data, &devdata->rounded);
+		  return TRUE;
+		}
+
 	      cairo_t *cr;
 
 	      snap_undo_state (data);
@@ -1134,18 +2540,46 @@ void on_redo(GtkMenuItem *menuitem,
 }
 
 
+/* Some themes use a very dim colour for links.  The About dialog is the only
+ * place where Screenator shows a link, so use the normal text colour there to
+ * keep the licence line readable. */
+static void
+install_about_link_style (void)
+{
+  static gboolean installed = FALSE;
+  GtkCssProvider *provider;
+
+  if (installed)
+    return;
+
+  provider = gtk_css_provider_new ();
+  gtk_css_provider_load_from_data (provider,
+				   "*:link, *:visited { color: @theme_fg_color; }",
+				   -1, NULL);
+  gtk_style_context_add_provider_for_screen (gdk_screen_get_default (),
+					     GTK_STYLE_PROVIDER (provider),
+					     GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  g_object_unref (provider);
+  installed = TRUE;
+}
+
+
 void on_about(GtkMenuItem *menuitem,
 	      gpointer     user_data)
 {
-    const gchar *authors [] = { "Mahmoud Alnaanah <malnaanah@gmail.com>",
-                                "Christian Beier (Gromit-MPX 1.4.2)",
-                                "Simon Budig (Gromit)",
-                                 NULL };
+    const gchar *authors [] = {
+        "Mahmoud Alnaanah <a href=\"mailto:malnaanah@gmail.com\">malnaanah@gmail.com</a>",
+        "Christian Beier (Gromit-MPX 1.4.2)",
+        "Simon Budig (Gromit)",
+        NULL };
+
+    install_about_link_style ();
+
     gtk_show_about_dialog (NULL,
 			   "program-name", "Screenator",
 			   "logo-icon-name", "screenator",
 			   "title", "About Screenator",
-			   "comments", "Screenator is a vibe-coded screen annotation tool for X11, developed by Mahmoud Alnaanah, based on Gromit-MPX 1.4.2.",
+			   "comments", "Screenator is a vibe-coded screen annotation tool for X11, developed by Mahmoud Alnaanah (malnaanah@gmail.com), based on Gromit-MPX 1.4.2.",
 			   "version", VERSION,
 			   "authors", authors,
 			   "copyright", "2026 Mahmoud Alnaanah\nBased on Gromit-MPX 1.4.2, Copyright 2009-2022 Christian Beier, Copyright 2000 Simon Budig",
@@ -1477,7 +2911,7 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   g_free (data->font);
   data->font = g_strdup (KEY_DFLT_FONT);
   data->shape_fill_enabled = FALSE;
-  gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_PEN_COLOR);
+  gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
   data->shape_fill_color.alpha = 1.0;
 
   apply_pen_settings (data);
@@ -1633,12 +3067,16 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
       {
 	{ "Marker",             "marker.png",             G_CALLBACK (on_icon_marker) },
 	{ "Free Line",          "free-line.png",          G_CALLBACK (on_icon_free_line) },
+	{ "Spline",             "spline.png",             G_CALLBACK (on_icon_spline) },
+	{ "Polygon",            "polygon.png",            G_CALLBACK (on_icon_polygon) },
+	{ "Triangle",           "triangle.png",           G_CALLBACK (on_icon_triangle) },
 	{ "Arrow",              "arrow.png",              G_CALLBACK (on_icon_arrow) },
 	{ "Angled Line",        "angled-line.png",        G_CALLBACK (on_icon_angled_line) },
 	{ "Angled Arrow",       "angled-arrow.png",       G_CALLBACK (on_icon_angled_arrow) },
 	{ "Rectangle",          "rectangle.png",          G_CALLBACK (on_icon_rectangle) },
 	{ "Ellipse",            "ellipse.png",            G_CALLBACK (on_icon_ellipse) },
-	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) }
+	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
+	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) }
       };
     guint i;
 
@@ -1761,12 +3199,12 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     static const struct { const gchar *label; const gchar *name; } colors[] =
       {
 	{ "None", "none" },
-	{ "Red", "#FF0000" },
 	{ "Green", "#00AA00" },
 	{ "Blue", "#0000FF" },
 	{ "Yellow", "#FFFF00" },
 	{ "Black", "#000000" },
-	{ "White", "#FFFFFF" }
+	{ "White", "#FFFFFF" },
+	{ "Red", "#FF0000" }
       };
     GtkWidget *items[G_N_ELEMENTS (colors)];
     GtkWidget *active_item = NULL;
@@ -1816,8 +3254,8 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint widths[] = { 20, 40, 60 };
-    static const gchar * const labels[] = { "20 px", "40 px", "60 px" };
+    static const guint widths[] = { 20, 40, 60, 120 };
+    static const gchar * const labels[] = { "20 px", "40 px", "60 px", "120 px" };
     GtkWidget *items[G_N_ELEMENTS (widths)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -2089,6 +3527,107 @@ gboolean on_icon_button_release (GtkWidget   *win,
   return TRUE;
 }
 
+/* Show the tool hints.  The general hint appears when any tool is selected;
+ * the spline hint is added for the Spline tool.  Each hint has its own
+ * "Never show this message again" check box.  Reset Settings deliberately
+ * leaves both flags alone, so a hint the user turned off stays off. */
+static void
+show_tool_hint (ScreenatorData *data, gboolean spline)
+{
+  gboolean show_general = !data->hide_tool_hint;
+  gboolean show_spline = spline && !data->hide_spline_hint;
+  gboolean was_grabbed;
+  gboolean changed = FALSE;
+  GtkWidget *dialog, *content, *box, *label;
+  GtkWidget *general_check = NULL;
+  GtkWidget *spline_check = NULL;
+
+  if (!show_general && !show_spline)
+    return;
+
+  /* A modal dialog cannot be used while the pointer is grabbed. */
+  was_grabbed = screenator_any_grabbed (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  dialog = gtk_dialog_new_with_buttons ("Screenator",
+					NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"OK", GTK_RESPONSE_OK,
+					NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  if (show_general)
+    {
+      label = gtk_label_new ("Left click to draw, middle click to erase, "
+			     "and right click to exit tool");
+      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+      general_check =
+	gtk_check_button_new_with_label ("Never show this message again");
+      gtk_box_pack_start (GTK_BOX (box), general_check, FALSE, FALSE, 0);
+    }
+
+  if (show_general && show_spline)
+    {
+      GtkWidget *separator =
+	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
+      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
+    }
+
+  if (show_spline)
+    {
+      label = gtk_label_new ("Move handles using left mouse button, and hold "
+			     "CTRL to move each handle control point "
+			     "separately.");
+      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+      spline_check =
+	gtk_check_button_new_with_label ("Never show this message again");
+      gtk_box_pack_start (GTK_BOX (box), spline_check, FALSE, FALSE, 0);
+    }
+
+  gtk_widget_show_all (dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+
+  if (general_check &&
+      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (general_check)))
+    {
+      data->hide_tool_hint = TRUE;
+      changed = TRUE;
+    }
+
+  if (spline_check &&
+      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (spline_check)))
+    {
+      data->hide_spline_hint = TRUE;
+      changed = TRUE;
+    }
+
+  gtk_widget_destroy (dialog);
+
+  if (changed)
+    write_keyfile (data);
+
+  if (was_grabbed)
+    acquire_grab (data, NULL);
+}
+
 void on_icon_pen (GtkMenuItem *menuitem,
 		  gpointer     user_data)
 {
@@ -2097,6 +3636,10 @@ void on_icon_pen (GtkMenuItem *menuitem,
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+  spline_cancel_all (data);
   data->forced_context = data->default_pen;
   data->pen_tool = 1;
   data->default_pen->arrowsize = 0;
@@ -2110,6 +3653,7 @@ void on_icon_pen (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
+  show_tool_hint (data, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -2122,6 +3666,10 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+  spline_cancel_all (data);
   data->forced_context = data->default_shape;
   data->shape_type = shape;
   data->pen_tool = pen_tool;
@@ -2133,6 +3681,7 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
       devdata->state = 0;
     }
 
+  show_tool_hint (data, shape == SCREENATOR_SHAPE_SPLINE);
   acquire_grab (data, NULL);
 }
 
@@ -2146,6 +3695,25 @@ void on_icon_free_line (GtkMenuItem *menuitem,
 			gpointer     user_data)
 {
   select_shape_tool ((ScreenatorData *) user_data, 9, SCREENATOR_SHAPE_FREE_LINE);
+}
+
+void on_icon_spline (GtkMenuItem *menuitem,
+		     gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 12, SCREENATOR_SHAPE_SPLINE);
+}
+
+void on_icon_polygon (GtkMenuItem *menuitem,
+		      gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 14, SCREENATOR_SHAPE_STAR);
+}
+
+void on_icon_triangle (GtkMenuItem *menuitem,
+		       gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 15,
+		     SCREENATOR_SHAPE_TRIANGLE);
 }
 
 void on_icon_angled_arrow (GtkMenuItem *menuitem,
@@ -2176,6 +3744,13 @@ void on_icon_rounded_rectangle (GtkMenuItem *menuitem,
 		     SCREENATOR_SHAPE_ROUNDED_RECTANGLE);
 }
 
+void on_icon_bucket (GtkMenuItem *menuitem,
+		     gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 13,
+		     SCREENATOR_SHAPE_BUCKET);
+}
+
 void on_icon_angled_line (GtkMenuItem *menuitem,
 			  gpointer     user_data)
 {
@@ -2191,6 +3766,10 @@ void on_icon_text (GtkMenuItem *menuitem,
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+  spline_cancel_all (data);
   data->forced_context = data->default_text;
   data->pen_tool = 4;
 
@@ -2201,6 +3780,7 @@ void on_icon_text (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
+  show_tool_hint (data, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -2212,6 +3792,10 @@ void on_icon_eraser (GtkMenuItem *menuitem,
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+  spline_cancel_all (data);
   data->forced_context = data->default_eraser;
   data->pen_tool = 3;
 
@@ -2222,6 +3806,7 @@ void on_icon_eraser (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
+  show_tool_hint (data, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -2235,6 +3820,10 @@ void on_icon_marker (GtkMenuItem *menuitem,
 
   /* The marker keeps its own fixed colour, opacity and width.  Selecting it
    * must not change the global pen settings. */
+  star_finish_all (data);
+  triangle_finish_all (data);
+  rounded_rect_finish_all (data);
+  spline_cancel_all (data);
   data->forced_context = data->default_marker;
   data->pen_tool = 11;
 
@@ -2245,5 +3834,6 @@ void on_icon_marker (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
+  show_tool_hint (data, FALSE);
   acquire_grab (data, NULL);
 }

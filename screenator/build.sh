@@ -14,8 +14,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_1.0_amd64.deb"
-APPIMAGE="$BUILD/Screenator-1.0-x86_64.AppImage"
+DEB="$BUILD/screenator_2.0_amd64.deb"
+APPIMAGE="$BUILD/Screenator-2.0-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -126,7 +126,7 @@ install -m 0644 "$SRC"/data/screenator.png \
    "$PKROOT"/usr/share/icons/hicolor/256x256/apps/screenator.png
 install -m 0644 "$SRC"/data/screenator.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator.svg
-for icon in pen arrow text free-line rectangle ellipse rounded-rectangle \
+for icon in pen arrow text free-line spline polygon triangle bucket rectangle ellipse rounded-rectangle \
             angled-line angled-arrow marker eraser redo undo trash \
             reset-settings hide hide-menu font-settings shapes; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
@@ -140,7 +140,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 1.0
+Version: 2.0
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -229,7 +229,7 @@ install -m 0644 "$SRC"/data/screenator.appdata.xml \
    "$APPDIR"/usr/share/metainfo/screenator.appdata.xml
 install -m 0644 "$SRC"/data/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
-for icon in pen arrow text free-line rectangle ellipse rounded-rectangle \
+for icon in pen arrow text free-line spline polygon triangle bucket rectangle ellipse rounded-rectangle \
             angled-line angled-arrow marker eraser redo undo trash \
             reset-settings hide hide-menu font-settings shapes; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
@@ -238,7 +238,7 @@ done
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=1.0
+export LINUXDEPLOY_OUTPUT_VERSION=2.0
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

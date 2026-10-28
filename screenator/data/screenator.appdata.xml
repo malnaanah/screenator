@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="2.0" date="2026-10-28">
+      <description>
+        <p>Adds a paint bucket to the Shapes menu that fills enclosed areas with the shape fill colour, a node-based Bezier spline tool with editable symmetric handles (hold Ctrl to move one side only), a polygon tool with handles for its sides, radius, rotation and inner radius, a triangle tool with a handle on each vertex, a roundness handle for the rounded rectangle, Ctrl+Z and Ctrl+Shift+Z undo and redo while painting, a 120 px eraser size, and an About dialog that credits the author. Green is now the first shape fill colour and the default fill. Selecting a tool shows a short hint about the mouse buttons, and the Spline hint explains how to move its handles; both hints can be switched off and are kept when the settings are reset.</p>
+      </description>
+    </release>
     <release version="1.0" date="2026-10-27">
       <description>
         <p>First release. Fork of Gromit-MPX 1.4.2 with a floating icon menu, tray menu, configurable pen settings, a translucent marker, a text tool with a selectable font, free and angled line and arrow tools, shape tools with an optional fill colour, an adjustable eraser, and a reset option.</p>

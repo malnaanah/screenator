@@ -35,8 +35,9 @@
 #include "screenator.h"
 #include "build-config.h"
 
-#include "paint_cursor.xpm"
-#include "text_cursor.xpm"
+#include "../data/paint_cursor.xpm"
+#include "../data/text_cursor.xpm"
+#include "../data/bucket_cursor.xpm"
 
 
 
@@ -249,6 +250,22 @@ void apply_pen_settings (ScreenatorData *data)
       break;
     case 11:
       data->forced_context = data->default_marker;
+      break;
+    case 12:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_SPLINE;
+      break;
+    case 13:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_BUCKET;
+      break;
+    case 14:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_STAR;
+      break;
+    case 15:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_TRIANGLE;
       break;
     default:
       data->forced_context = NULL;
@@ -524,6 +541,23 @@ gint reshape (gpointer user_data)
 }
 
 
+/* Cursor that belongs to a paint context.  The paint bucket shares the shape
+ * context with the other shapes, so its type is checked separately. */
+GdkCursor *get_tool_cursor (ScreenatorData *data,
+			    ScreenatorPaintContext *context)
+{
+  if (context && context->type == SCREENATOR_ERASER)
+    return data->erase_cursor;
+  if (context && context->type == SCREENATOR_TEXT)
+    return data->text_cursor;
+  if (context && context->type == SCREENATOR_SHAPE &&
+      data->shape_type == SCREENATOR_SHAPE_BUCKET)
+    return data->bucket_cursor;
+
+  return data->paint_cursor;
+}
+
+
 /* Point the device grab at the cursor that belongs to the given tool.  The
  * grab cursor has to be replaced by grabbing again; gdk_window_set_cursor()
  * has no effect while the device is grabbed. */
@@ -536,12 +570,7 @@ void set_device_cursor (ScreenatorData *data,
   if (!device || !gtk_widget_get_window (data->win))
     return;
 
-  if (context && context->type == SCREENATOR_ERASER)
-    cursor = data->erase_cursor;
-  else if (context && context->type == SCREENATOR_TEXT)
-    cursor = data->text_cursor;
-  else
-    cursor = data->paint_cursor;
+  cursor = get_tool_cursor (data, context);
 
   gdk_device_grab (device,
 		   gtk_widget_get_window (data->win),
@@ -811,6 +840,8 @@ void devdata_free (ScreenatorDeviceData *devdata)
     cairo_destroy (devdata->stroke_ctx);
   if (devdata->strokebuffer)
     cairo_surface_destroy (devdata->strokebuffer);
+  if (devdata->shape_points)
+    g_array_free (devdata->shape_points, TRUE);
 
   g_free (devdata);
 }
@@ -1344,6 +1375,14 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
   w = ABS (x1 - x0);
   h = ABS (y1 - y0);
 
+  /* The rounded rectangle has a corner radius the user can adjust after the
+   * drag, so it is drawn by its own function. */
+  if (type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+    {
+      draw_rounded_rect (data, cr, x0, y0, x1, y1, MIN (w, h) / 4.0);
+      return;
+    }
+
   if (type == SCREENATOR_SHAPE_RECTANGLE)
     cairo_rectangle (cr, x, y, w, h);
   else if (type == SCREENATOR_SHAPE_ELLIPSE)
@@ -1355,27 +1394,6 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
       cairo_scale (cr, w / 2.0, h / 2.0);
       cairo_arc (cr, 0, 0, 1, 0, 2 * G_PI);
       cairo_restore (cr);
-    }
-  else if (type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
-    {
-      gdouble radius = MIN (w, h) / 4.0;
-
-      if (w < 1 || h < 1)
-	return;
-      if (radius < 2.0)
-	radius = 2.0;
-      if (radius > 60.0)
-	radius = 60.0;
-      if (radius > w / 2.0)
-	radius = w / 2.0;
-      if (radius > h / 2.0)
-	radius = h / 2.0;
-      cairo_new_sub_path (cr);
-      cairo_arc (cr, x + w - radius, y + radius, radius, -G_PI_2, 0);
-      cairo_arc (cr, x + w - radius, y + h - radius, radius, 0, G_PI_2);
-      cairo_arc (cr, x + radius, y + h - radius, radius, G_PI_2, G_PI);
-      cairo_arc (cr, x + radius, y + radius, radius, G_PI, 3 * G_PI_2);
-      cairo_close_path (cr);
     }
   else
     return;
@@ -1413,6 +1431,876 @@ shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 }
 
 
+/* Build the rounded-rectangle path.  A radius of zero gives a sharp
+ * rectangle; the radius is clamped to half the shorter side, where the shape
+ * becomes a stadium. */
+static void
+rounded_rect_path (cairo_t *cr, gint x0, gint y0, gint x1, gint y1,
+		   gdouble radius)
+{
+  gint x = MIN (x0, x1);
+  gint y = MIN (y0, y1);
+  gint w = ABS (x1 - x0);
+  gint h = ABS (y1 - y0);
+  gdouble max_radius = MIN (w, h) / 2.0;
+
+  radius = CLAMP (radius, 0.0, max_radius);
+
+  if (radius < 0.5)
+    {
+      cairo_rectangle (cr, x, y, w, h);
+      return;
+    }
+
+  cairo_new_sub_path (cr);
+  cairo_arc (cr, x + w - radius, y + radius, radius, -G_PI_2, 0);
+  cairo_arc (cr, x + w - radius, y + h - radius, radius, 0, G_PI_2);
+  cairo_arc (cr, x + radius, y + h - radius, radius, G_PI_2, G_PI);
+  cairo_arc (cr, x + radius, y + radius, radius, G_PI, 3 * G_PI_2);
+  cairo_close_path (cr);
+}
+
+
+/* Draw a rounded rectangle with an explicit corner radius.  Used for the
+ * editable shape whose roundness handle changes the radius. */
+void
+draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
+		   gint x0, gint y0, gint x1, gint y1, gdouble radius)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+  gint w = ABS (x1 - x0);
+  gint h = ABS (y1 - y0);
+
+  if (w < 1 || h < 1)
+    return;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  rounded_rect_path (cr, x0, y0, x1, y1, radius);
+
+  if (data->shape_fill_enabled)
+    {
+      GdkRGBA fill = data->shape_fill_color;
+
+      fill.alpha = data->opacity;
+      gdk_cairo_set_source_rgba (cr, &fill);
+      cairo_fill_preserve (cr);
+      gdk_cairo_set_source_rgba (cr, &color);
+    }
+
+  cairo_stroke (cr);
+}
+
+
+/* Bounding box of a rounded rectangle, padded for the stroke width and for
+ * the roundness handle. */
+void
+rounded_rect_get_bounds (const ScreenatorRoundedRect *rect, gint pad,
+			 GdkRectangle *bounds)
+{
+  if (!rect)
+    {
+      bounds->x = bounds->y = bounds->width = bounds->height = 0;
+      return;
+    }
+
+  bounds->x = MIN (rect->x0, rect->x1) - pad;
+  bounds->y = MIN (rect->y0, rect->y1) - pad;
+  bounds->width = ABS (rect->x1 - rect->x0) + 2 * pad;
+  bounds->height = ABS (rect->y1 - rect->y0) + 2 * pad;
+}
+
+
+/* Commit one editable rounded rectangle to the backbuffer. */
+void
+rounded_rect_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + 64;
+  gint w, h;
+
+  if (!devdata || !devdata->rounded_active)
+    return;
+
+  rounded_rect_get_bounds (&devdata->rounded, pad, &bounds);
+  devdata->rounded_active = FALSE;
+  devdata->rounded_radius_drag = FALSE;
+  devdata->rounded_move_drag = FALSE;
+
+  w = ABS (devdata->rounded.x1 - devdata->rounded.x0);
+  h = ABS (devdata->rounded.y1 - devdata->rounded.y0);
+
+  if (w > 0 && h > 0)
+    {
+      cairo_t *cr;
+
+      snap_undo_state (data);
+      cr = cairo_create (data->backbuffer);
+      draw_rounded_rect (data, cr,
+			 devdata->rounded.x0, devdata->rounded.y0,
+			 devdata->rounded.x1, devdata->rounded.y1,
+			 devdata->rounded.radius);
+      cairo_destroy (cr);
+
+      data->modified = 1;
+      data->painted = 1;
+    }
+
+  if (data->win && bounds.width > 0 && bounds.height > 0)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				&bounds, 0);
+}
+
+
+/* Commit every editable rounded rectangle, e.g. when painting mode ends or
+ * another tool is chosen. */
+void
+rounded_rect_finish_all (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    rounded_rect_finish (data, value);
+}
+
+
+/* Recompute the automatic handles of every node the user has not edited.
+ * The tangent matches the Catmull-Rom spline that Screenator used before the
+ * handles were editable, so a freshly placed spline looks the same as it
+ * always did.  A short tangent is stretched to a minimum length so the handle
+ * stays big enough to grab when nodes are close together. */
+void
+spline_update_auto (GArray *nodes)
+{
+  const gdouble min_handle = 12.0;
+  guint i, n;
+
+  if (!nodes)
+    return;
+
+  n = nodes->len;
+
+  for (i = 0; i < n; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+      GdkPoint prev, next;
+      gdouble tx, ty, len;
+
+      if (node->manual)
+	continue;
+
+      if (n == 1)
+	{
+	  node->in = node->point;
+	  node->out = node->point;
+	  continue;
+	}
+
+      prev = g_array_index (nodes, ScreenatorSplineNode,
+			    i > 0 ? i - 1 : i).point;
+      next = g_array_index (nodes, ScreenatorSplineNode,
+			    i + 1 < n ? i + 1 : i).point;
+
+      tx = (next.x - prev.x) / 6.0;
+      ty = (next.y - prev.y) / 6.0;
+      len = sqrt (tx * tx + ty * ty);
+
+      /* The endpoints of a two node spline stay on the chord, so stretching
+       * their handles does not bend the straight line between the nodes. */
+      if (len > 0.0 && len < min_handle)
+	{
+	  tx *= min_handle / len;
+	  ty *= min_handle / len;
+	}
+      else if (len == 0.0)
+	{
+	  GdkPoint other = g_array_index (nodes, ScreenatorSplineNode,
+					  i + 1 < n ? i + 1 : i - 1).point;
+	  gdouble dx = other.x - node->point.x;
+	  gdouble dy = other.y - node->point.y;
+
+	  len = sqrt (dx * dx + dy * dy);
+	  if (len > 0.0)
+	    {
+	      tx = dx * min_handle / len;
+	      ty = dy * min_handle / len;
+	    }
+	}
+
+      node->out.x = (gint) round (node->point.x + tx);
+      node->out.y = (gint) round (node->point.y + ty);
+      node->in.x = (gint) round (node->point.x - tx);
+      node->in.y = (gint) round (node->point.y - ty);
+    }
+}
+
+
+/* Draw the spline through the given nodes.  Every node is an on-curve point
+ * and its two handles are the Bezier control points of the neighbouring
+ * segments, so the curve always passes exactly through the placed nodes. */
+void
+draw_spline (ScreenatorData *data, cairo_t *cr, GArray *nodes)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+  guint i, n;
+
+  if (!nodes || nodes->len == 0)
+    return;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  n = nodes->len;
+
+  if (n == 1)
+    {
+      GdkPoint p = g_array_index (nodes, ScreenatorSplineNode, 0).point;
+
+      cairo_arc (cr, p.x, p.y, line_width / 2.0, 0, 2 * G_PI);
+      cairo_fill (cr);
+      return;
+    }
+
+  {
+    GdkPoint p0 = g_array_index (nodes, ScreenatorSplineNode, 0).point;
+
+    cairo_move_to (cr, p0.x, p0.y);
+  }
+
+  for (i = 0; i < n - 1; i++)
+    {
+      ScreenatorSplineNode *a =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+      ScreenatorSplineNode *b =
+	&g_array_index (nodes, ScreenatorSplineNode, i + 1);
+
+      cairo_curve_to (cr,
+		      a->out.x, a->out.y,
+		      b->in.x, b->in.y,
+		      b->point.x, b->point.y);
+    }
+
+  cairo_stroke (cr);
+}
+
+
+/* Bounding box of the spline, padded for the stroke width.  The control
+ * polygon of every segment is a superset of the curve, so its box covers the
+ * whole stroke and the editable handles. */
+void
+spline_get_bounds (ScreenatorData *data, GArray *nodes, GdkRectangle *bounds)
+{
+  gint pad = (gint) data->pen_width * 2 + 4;
+  gdouble minx, miny, maxx, maxy;
+  guint i, n;
+
+  if (!nodes || nodes->len == 0)
+    {
+      bounds->x = bounds->y = bounds->width = bounds->height = 0;
+      return;
+    }
+
+  n = nodes->len;
+  {
+    GdkPoint p0 = g_array_index (nodes, ScreenatorSplineNode, 0).point;
+
+    minx = maxx = p0.x;
+    miny = maxy = p0.y;
+  }
+
+  for (i = 0; i < n; i++)
+    {
+      ScreenatorSplineNode *node =
+	&g_array_index (nodes, ScreenatorSplineNode, i);
+
+      minx = MIN (minx, MIN (node->point.x, MIN (node->in.x, node->out.x)));
+      miny = MIN (miny, MIN (node->point.y, MIN (node->in.y, node->out.y)));
+      maxx = MAX (maxx, MAX (node->point.x, MAX (node->in.x, node->out.x)));
+      maxy = MAX (maxy, MAX (node->point.y, MAX (node->in.y, node->out.y)));
+    }
+
+  bounds->x = (gint) floor (minx) - pad;
+  bounds->y = (gint) floor (miny) - pad;
+  bounds->width = (gint) ceil (maxx) - (gint) floor (minx) + 2 * pad;
+  bounds->height = (gint) ceil (maxy) - (gint) floor (miny) + 2 * pad;
+}
+
+
+/* Drop a spline that is still being placed, e.g. when painting mode ends or
+ * another tool is chosen.  The placed nodes are discarded; nothing is
+ * committed to the backbuffer. */
+void
+spline_cancel_all (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+  gboolean had_preview = FALSE;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->shape_active)
+	had_preview = TRUE;
+      devdata->shape_active = FALSE;
+      devdata->spline_node_drag = FALSE;
+      devdata->spline_handle_drag = FALSE;
+      devdata->spline_finish_pending = FALSE;
+      if (devdata->shape_points)
+	g_array_set_size (devdata->shape_points, 0);
+    }
+
+  if (had_preview && data->win)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win), NULL, 0);
+}
+
+
+/* Margin around the star that covers the outer handles and their grips.  It is
+ * added to the radius whenever the preview has to be invalidated. */
+#define STAR_HANDLE_MARGIN 64
+
+/* Build the closed star polygon on the current cairo path.  The vertices
+ * alternate between the outer and inner radius, so a full turn covers
+ * 2 * points vertices. */
+static void
+star_build_path (cairo_t *cr, const ScreenatorStar *star)
+{
+  gint i, n;
+  gdouble inner;
+
+  n = star->points * 2;
+  inner = CLAMP (star->inner, 0.0, 1.0);
+
+  for (i = 0; i < n; i++)
+    {
+      gdouble angle = star->rotation + i * G_PI / star->points;
+      gdouble r = (i % 2 == 0) ? star->radius : star->radius * inner;
+      gdouble x = star->cx + r * cos (angle);
+      gdouble y = star->cy + r * sin (angle);
+
+      if (i == 0)
+	cairo_move_to (cr, x, y);
+      else
+	cairo_line_to (cr, x, y);
+    }
+
+  cairo_close_path (cr);
+}
+
+
+/* Draw the star with the current pen colour and, when shape filling is on,
+ * the shape fill colour. */
+void
+draw_star (ScreenatorData *data, cairo_t *cr, const ScreenatorStar *star)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+
+  if (!star || star->points < 3 || star->radius < 1.0)
+    return;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  star_build_path (cr, star);
+
+  if (data->shape_fill_enabled)
+    {
+      GdkRGBA fill = data->shape_fill_color;
+
+      fill.alpha = data->opacity;
+      gdk_cairo_set_source_rgba (cr, &fill);
+      cairo_fill_preserve (cr);
+      gdk_cairo_set_source_rgba (cr, &color);
+    }
+
+  cairo_stroke (cr);
+}
+
+
+/* Bounding box of the star, padded for the stroke width and for the handles
+ * when "pad" includes them. */
+void
+star_get_bounds (const ScreenatorStar *star, gint pad, GdkRectangle *bounds)
+{
+  gdouble r;
+
+  if (!star)
+    {
+      bounds->x = bounds->y = bounds->width = bounds->height = 0;
+      return;
+    }
+
+  /* A star that is still being dragged out has no radius yet; keep a small
+   * box around the centre so its handles are erased when it is dropped. */
+  r = MAX (star->radius, 8.0) + pad;
+
+  bounds->x = (gint) floor (star->cx - r);
+  bounds->y = (gint) floor (star->cy - r);
+  bounds->width = (gint) ceil (2.0 * r);
+  bounds->height = (gint) ceil (2.0 * r);
+}
+
+
+/* Commit one editable star to the backbuffer.  A star whose radius never grew
+ * past the click threshold is dropped without drawing anything. */
+void
+star_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + STAR_HANDLE_MARGIN;
+
+  if (!devdata || !devdata->star_active)
+    return;
+
+  star_get_bounds (&devdata->star, pad, &bounds);
+  devdata->star_active = FALSE;
+  devdata->star_drag = SCREENATOR_STAR_HANDLE_NONE;
+
+  if (devdata->star.radius >= 8.0)
+    {
+      cairo_t *cr;
+
+      snap_undo_state (data);
+      cr = cairo_create (data->backbuffer);
+      draw_star (data, cr, &devdata->star);
+      cairo_destroy (cr);
+
+      data->modified = 1;
+      data->painted = 1;
+    }
+
+  if (data->win && bounds.width > 0 && bounds.height > 0)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				&bounds, 0);
+}
+
+
+/* Commit every editable star, e.g. when painting mode ends or another tool is
+ * chosen. */
+void
+star_finish_all (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    star_finish (data, value);
+}
+
+
+/* Build the triangle path from its three vertices. */
+static void
+triangle_build_path (cairo_t *cr, const ScreenatorTriangle *triangle)
+{
+  cairo_move_to (cr, triangle->v[0].x, triangle->v[0].y);
+  cairo_line_to (cr, triangle->v[1].x, triangle->v[1].y);
+  cairo_line_to (cr, triangle->v[2].x, triangle->v[2].y);
+  cairo_close_path (cr);
+}
+
+
+/* Draw the triangle with the current pen colour and, when shape filling is
+ * on, the shape fill colour. */
+void
+draw_triangle (ScreenatorData *data, cairo_t *cr,
+	       const ScreenatorTriangle *triangle)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+
+  if (!triangle)
+    return;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  triangle_build_path (cr, triangle);
+
+  if (data->shape_fill_enabled)
+    {
+      GdkRGBA fill = data->shape_fill_color;
+
+      fill.alpha = data->opacity;
+      gdk_cairo_set_source_rgba (cr, &fill);
+      cairo_fill_preserve (cr);
+      gdk_cairo_set_source_rgba (cr, &color);
+    }
+
+  cairo_stroke (cr);
+}
+
+
+/* Bounding box of the triangle, padded for the stroke width and for the
+ * vertex handles. */
+void
+triangle_get_bounds (const ScreenatorTriangle *triangle, gint pad,
+		     GdkRectangle *bounds)
+{
+  gint minx, miny, maxx, maxy;
+  guint i;
+
+  if (!triangle)
+    {
+      bounds->x = bounds->y = bounds->width = bounds->height = 0;
+      return;
+    }
+
+  minx = maxx = triangle->v[0].x;
+  miny = maxy = triangle->v[0].y;
+
+  for (i = 1; i < 3; i++)
+    {
+      minx = MIN (minx, triangle->v[i].x);
+      miny = MIN (miny, triangle->v[i].y);
+      maxx = MAX (maxx, triangle->v[i].x);
+      maxy = MAX (maxy, triangle->v[i].y);
+    }
+
+  bounds->x = minx - pad;
+  bounds->y = miny - pad;
+  bounds->width = maxx - minx + 2 * pad;
+  bounds->height = maxy - miny + 2 * pad;
+}
+
+
+/* Twice the signed area of the triangle; a collapsed triangle has none. */
+static gdouble
+triangle_double_area (const ScreenatorTriangle *triangle)
+{
+  gdouble ax = triangle->v[1].x - triangle->v[0].x;
+  gdouble ay = triangle->v[1].y - triangle->v[0].y;
+  gdouble bx = triangle->v[2].x - triangle->v[0].x;
+  gdouble by = triangle->v[2].y - triangle->v[0].y;
+
+  return fabs (ax * by - ay * bx);
+}
+
+
+/* Commit one editable triangle to the backbuffer.  A triangle whose vertices
+ * were dragged onto one line is dropped without drawing anything. */
+void
+triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle bounds;
+  gint pad = (gint) data->pen_width * 2 + 64;
+
+  if (!devdata || !devdata->triangle_active)
+    return;
+
+  triangle_get_bounds (&devdata->triangle, pad, &bounds);
+  devdata->triangle_active = FALSE;
+  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_NONE;
+
+  if (triangle_double_area (&devdata->triangle) >= 16.0)
+    {
+      cairo_t *cr;
+
+      snap_undo_state (data);
+      cr = cairo_create (data->backbuffer);
+      draw_triangle (data, cr, &devdata->triangle);
+      cairo_destroy (cr);
+
+      data->modified = 1;
+      data->painted = 1;
+    }
+
+  if (data->win && bounds.width > 0 && bounds.height > 0)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				&bounds, 0);
+}
+
+
+/* Commit every editable triangle, e.g. when painting mode ends or another
+ * tool is chosen. */
+void
+triangle_finish_all (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    triangle_finish (data, value);
+}
+
+
+/* A pixel this transparent is treated as empty canvas by the bucket.  The
+ * limit is high enough to swallow the anti-aliased inner edge of a stroke but
+ * still stops at its solid core. */
+#define BUCKET_ALPHA_LIMIT 200
+
+/* Tolerance for recolouring a region that is already painted. */
+#define BUCKET_COLOR_TOLERANCE 48
+
+typedef struct
+{
+  gint x;
+  gint y;
+} BucketSeed;
+
+static gboolean
+bucket_match (guint32 pixel, guint32 seed, gboolean seed_clear)
+{
+  guint32 a, r, g, b, sa, sr, sg, sb;
+
+  if (seed_clear)
+    return ((pixel >> 24) & 0xff) < BUCKET_ALPHA_LIMIT;
+
+  a = (pixel >> 24) & 0xff;
+  r = (pixel >> 16) & 0xff;
+  g = (pixel >> 8) & 0xff;
+  b = pixel & 0xff;
+  sa = (seed >> 24) & 0xff;
+  sr = (seed >> 16) & 0xff;
+  sg = (seed >> 8) & 0xff;
+  sb = seed & 0xff;
+
+  return ABS ((gint) a - (gint) sa) <= BUCKET_COLOR_TOLERANCE &&
+	 ABS ((gint) r - (gint) sr) <= BUCKET_COLOR_TOLERANCE &&
+	 ABS ((gint) g - (gint) sg) <= BUCKET_COLOR_TOLERANCE &&
+	 ABS ((gint) b - (gint) sb) <= BUCKET_COLOR_TOLERANCE;
+}
+
+
+/* Fill the enclosed region containing (x, y) with the shape fill colour.
+ * A region that reaches the screen edge is treated as not closed and left
+ * alone, so clicking outside a shape cannot flood the whole screen. */
+gboolean
+fill_bucket (ScreenatorData *data, gint x, gint y)
+{
+  cairo_surface_t *surface = data->backbuffer;
+  GdkRGBA color;
+  guint32 *pixels;
+  guint8 *mask;
+  GArray *stack;
+  guint32 seed, fill_pixel;
+  guint32 fa, fr, fg, fb;
+  gboolean seed_clear, touches_edge = FALSE;
+  gint width, height, stride, row_pixels;
+  gint minx, miny, maxx, maxy;
+  guint i;
+
+  if (!surface)
+    return FALSE;
+
+  width = cairo_image_surface_get_width (surface);
+  height = cairo_image_surface_get_height (surface);
+  stride = cairo_image_surface_get_stride (surface);
+
+  if (x < 0 || y < 0 || x >= width || y >= height)
+    return FALSE;
+
+  color = data->shape_fill_color;
+  color.alpha = data->opacity;
+
+  fa = (guint32) (CLAMP (color.alpha, 0.0, 1.0) * 255.0 + 0.5);
+  if (fa == 0)
+    return FALSE;
+
+  fr = (guint32) (CLAMP (color.red, 0.0, 1.0) * fa + 0.5);
+  fg = (guint32) (CLAMP (color.green, 0.0, 1.0) * fa + 0.5);
+  fb = (guint32) (CLAMP (color.blue, 0.0, 1.0) * fa + 0.5);
+  fill_pixel = (fa << 24) | (fr << 16) | (fg << 8) | fb;
+
+  cairo_surface_flush (surface);
+  pixels = (guint32 *) cairo_image_surface_get_data (surface);
+  if (!pixels)
+    return FALSE;
+
+  row_pixels = stride / 4;
+  seed = pixels[(gsize) y * row_pixels + x];
+  if (seed == fill_pixel)
+    return FALSE;
+
+  seed_clear = (((seed >> 24) & 0xff) == 0);
+
+  mask = g_malloc0 ((gsize) width * height);
+  stack = g_array_new (FALSE, FALSE, sizeof (BucketSeed));
+
+  minx = width;
+  miny = height;
+  maxx = -1;
+  maxy = -1;
+
+  {
+    BucketSeed start;
+
+    start.x = x;
+    start.y = y;
+    g_array_append_val (stack, start);
+  }
+
+  while (stack->len > 0)
+    {
+      BucketSeed s = g_array_index (stack, BucketSeed, stack->len - 1);
+      guint32 *row;
+      gint left, right, i;
+
+      g_array_set_size (stack, stack->len - 1);
+
+      if (mask[(gsize) s.y * width + s.x])
+	continue;
+
+      row = pixels + (gsize) s.y * row_pixels;
+      if (!bucket_match (row[s.x], seed, seed_clear))
+	continue;
+
+      left = s.x;
+      while (left > 0 &&
+	     !mask[(gsize) s.y * width + (left - 1)] &&
+	     bucket_match (row[left - 1], seed, seed_clear))
+	left--;
+
+      right = s.x;
+      while (right < width - 1 &&
+	     !mask[(gsize) s.y * width + (right + 1)] &&
+	     bucket_match (row[right + 1], seed, seed_clear))
+	right++;
+
+      for (i = left; i <= right; i++)
+	mask[(gsize) s.y * width + i] = 1;
+
+      if (left == 0 || right == width - 1 ||
+	  s.y == 0 || s.y == height - 1)
+	touches_edge = TRUE;
+
+      minx = MIN (minx, left);
+      maxx = MAX (maxx, right);
+      miny = MIN (miny, s.y);
+      maxy = MAX (maxy, s.y);
+
+      /* Push the start of every matching run on the rows above and below. */
+      for (i = left; i <= right; i++)
+	{
+	  gint ny;
+
+	  for (ny = s.y - 1; ny <= s.y + 1; ny += 2)
+	    {
+	      gsize idx;
+	      gboolean in_run;
+
+	      if (ny < 0 || ny >= height)
+		continue;
+
+	      idx = (gsize) ny * width + i;
+	      in_run = (i > left &&
+			!mask[idx - 1] &&
+			bucket_match (pixels[(gsize) ny * row_pixels + (i - 1)],
+				      seed, seed_clear));
+
+	      if (!mask[idx] && !in_run &&
+		  bucket_match (pixels[(gsize) ny * row_pixels + i],
+				seed, seed_clear))
+		{
+		  BucketSeed next;
+
+		  next.x = i;
+		  next.y = ny;
+		  g_array_append_val (stack, next);
+		}
+	    }
+	}
+    }
+
+  if (maxx < 0 || touches_edge)
+    {
+      g_array_free (stack, TRUE);
+      g_free (mask);
+      return FALSE;
+    }
+
+  snap_undo_state (data);
+
+  for (i = 0; i < (guint) height; i++)
+    {
+      guint32 *row = pixels + (gsize) i * row_pixels;
+      guint8 *row_mask = mask + (gsize) i * width;
+      gint j;
+
+      for (j = 0; j < width; j++)
+	{
+	  guint32 dst, da, dr, dg, db, ia, oa, or_, og, ob;
+
+	  if (!row_mask[j])
+	    continue;
+
+	  dst = row[j];
+	  da = (dst >> 24) & 0xff;
+	  dr = (dst >> 16) & 0xff;
+	  dg = (dst >> 8) & 0xff;
+	  db = dst & 0xff;
+
+	  /* Source-over with premultiplied components.  Anti-aliased stroke
+	   * pixels stay on top of the new fill. */
+	  ia = 255 - fa;
+	  oa = fa + (da * ia + 127) / 255;
+	  or_ = fr + (dr * ia + 127) / 255;
+	  og = fg + (dg * ia + 127) / 255;
+	  ob = fb + (db * ia + 127) / 255;
+
+	  row[j] = (oa << 24) | (or_ << 16) | (og << 8) | ob;
+	}
+    }
+
+  g_array_free (stack, TRUE);
+  g_free (mask);
+
+  cairo_surface_mark_dirty_rectangle (surface,
+				      minx, miny,
+				      maxx - minx + 1, maxy - miny + 1);
+
+  data->modified = 1;
+  data->painted = 1;
+
+  if (data->win)
+    {
+      GdkRectangle bounds;
+
+      bounds.x = minx;
+      bounds.y = miny;
+      bounds.width = maxx - minx + 1;
+      bounds.height = maxy - miny + 1;
+      gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				  &bounds, 0);
+    }
+
+  return TRUE;
+}
+
+
 
 
 /*
@@ -1427,7 +2315,8 @@ void main_do_event (GdkEventAny *event,
   if ((event->type == GDK_KEY_PRESS ||
        event->type == GDK_KEY_RELEASE) &&
       event->window == data->root &&
-      (keycode == data->hot_keycode || keycode == data->undo_keycode))
+      (keycode == data->hot_keycode || keycode == data->undo_keycode ||
+       keycode == data->undo_ctrl_keycode))
     {
       /* redirect the event to our main window, so that GTK+ doesn't
        * throw it away (there is no GtkWidget for the root window...)
@@ -1508,6 +2397,13 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 						 text_cursor_x_hot,
 						 text_cursor_y_hot);
   g_object_unref (text_cursor_pixbuf);
+
+  GdkPixbuf* bucket_cursor_pixbuf = gdk_pixbuf_new_from_xpm_data(bucket_cursor_xpm);
+  data->bucket_cursor = gdk_cursor_new_from_pixbuf(data->display,
+						   bucket_cursor_pixbuf,
+						   bucket_cursor_x_hot,
+						   bucket_cursor_y_hot);
+  g_object_unref (bucket_cursor_pixbuf);
 
 
   /*

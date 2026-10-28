@@ -50,6 +50,9 @@ void parse_config (ScreenatorData *data);
 /* defaults for the settings chosen in the movable icon menu */
 #define KEY_DFLT_PEN_WIDTH 6
 #define KEY_DFLT_PEN_COLOR "#FF0000"
+/* The paint bucket uses the shape fill colour even when the shape fill is set
+ * to None, so this default decides the colour of a first fill. */
+#define KEY_DFLT_SHAPE_FILL_COLOR "#00AA00"
 #define KEY_DFLT_ICON_SIZE 48
 #define KEY_DFLT_FONT "Arial Bold 24"
 #define KEY_DFLT_ERASER_WIDTH 40

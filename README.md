@@ -16,8 +16,8 @@ settings menu.
 | Path | Contents |
 |---|---|
 | `screenator/` | Source code, data files, documentation and the build script |
-| `screenator/src/` | C sources (`screenator.c`, callbacks, config, input, cursors) |
-| `screenator/data/` | Icons, default tool configuration, desktop entry, AppStream metadata |
+| `screenator/src/` | C sources (`screenator.c`, callbacks, config, input) |
+| `screenator/data/` | Icons, cursors, default tool configuration, desktop entry, AppStream metadata |
 | `info.txt` | Package and feature description |
 
 ## Build
@@ -39,8 +39,8 @@ cd screenator
 
 The script produces both packages in `../build/`:
 
-- `screenator_1.0_amd64.deb` — install with `sudo apt install ./screenator_1.0_amd64.deb`
-- `Screenator-1.0-x86_64.AppImage` — make executable and run
+- `screenator_2.0_amd64.deb` — install with `sudo apt install ./screenator_2.0_amd64.deb`
+- `Screenator-2.0-x86_64.AppImage` — make executable and run
 
 ## Configuration
 

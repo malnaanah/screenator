@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 1.0 LANGUAGES C)
+project(screenator VERSION 2.0 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
@@ -43,8 +43,10 @@ set(sources
     src/config.h
     src/input.c
     src/input.h
-    src/paint_cursor.xpm
-    src/erase_cursor.xpm
+    data/paint_cursor.xpm
+    data/text_cursor.xpm
+    data/erase_cursor.xpm
+    data/bucket_cursor.xpm
 )
 
 add_executable(${target_name} ${sources})
@@ -69,6 +71,10 @@ install(FILES
     data/arrow.png
     data/text.png
     data/free-line.png
+    data/spline.png
+    data/polygon.png
+    data/triangle.png
+    data/bucket.png
     data/rectangle.png
     data/ellipse.png
     data/rounded-rectangle.png

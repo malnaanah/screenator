@@ -1,4 +1,4 @@
-Screenator 1.0
+Screenator 2.0
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,36 +6,60 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 1.0 (amd64)
-  - Screenator-1.0-x86_64.AppImage
+  - screenator 2.0 (amd64)
+  - Screenator-2.0-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
-  screenator/src/       C sources (screenator.c/h, callbacks, config, input,
-                        cursors).
-  screenator/data/      Icons, default tool configuration, desktop and AppStream
-                        metadata.
+  screenator/src/       C sources (screenator.c/h, callbacks, config, input).
+  screenator/data/      Icons, cursors, default tool configuration, desktop and
+                        AppStream metadata.
   screenator/build.sh   Builds the .deb and the AppImage.
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_1.0_amd64.deb
-                          Screenator-1.0-x86_64.AppImage
+                          screenator_2.0_amd64.deb
+                          Screenator-2.0-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
-  - The Shapes submenu holds the Marker, Free Line, Arrow, Angled Line, Angled
-    Arrow, Rectangle, Ellipse and Rounded Rectangle tools.  Shapes are drawn
-    by dragging; Free Line and Arrow follow the drag direction, while Angled
-    Line and Angled Arrow snap to 0, 30, 45, 60, 90, 120, 135 and 150
-    degrees.  Arrow and Angled Arrow add an arrowhead at the end point.
+  - The Shapes submenu holds the Marker, Free Line, Spline, Polygon, Triangle,
+    Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
+    Paint Bucket tools.  Shapes are drawn by dragging; Free Line and Arrow follow the
+    drag direction, while Angled Line and Angled Arrow snap to 0, 30, 45, 60,
+    90, 120, 135 and 150 degrees.  Arrow and Angled Arrow add an arrowhead at
+    the end point.  Spline is placed click by click: each click adds a node, the
+    nodes are joined by a smooth Bezier curve, and dragging a node moves it.
+    Every node has two round Bezier handles: dragging one mirrors the other so
+    the curve stays smooth, and holding Ctrl while dragging moves only that
+    side to give the node a corner.  Click the last node again, double-click or
+    right-click to finish the curve.
+    Polygon is placed with a single click and stays editable with four handles:
+    the square handle controls the number of sides from 3 to 16 (pressing it
+    resets the shape to 3 sides; moving away from the handle in any direction
+    adds sides and moving back towards it removes them, down to 3 at the
+    handle), one round handle sets the radius, one sets the rotation, and one
+    moves the inner vertices outwards until the shape becomes a regular
+    polygon.  Drag inside the shape to move it; clicking empty space commits it
+    and places the next one, and a double-click or right-click commits it.
+    Triangle is placed with a single click and keeps three round vertex
+    handles, so it can be stretched and skewed freely; drag inside it to move
+    it, click empty space to commit it and place the next one, and
+    double-click or right-click to commit it.  The Rounded Rectangle keeps a
+    roundness handle on its top edge after the drag: moving it away from the
+    corner rounds the corners more and moving it back makes them sharper.
+    Paint Bucket fills the closed area under the click with the Shapes Fill
+    Color; an area that reaches the screen edge is treated as not closed and is
+    left unchanged.
   - The Marker draws a yellow highlighter stroke with a fixed 32 px width and
     50% opacity.  It keeps its own settings, so the global colour, thickness
     and opacity are not changed when it is selected.
-  - A Shapes Fill Color submenu fills rectangles, ellipses and rounded
-    rectangles with one of the line colours, or leaves them unfilled (the
-    default).  The angled line is never filled.
+  - A Shapes Fill Color submenu fills rectangles, ellipses, rounded
+    rectangles, polygons and triangles with one of the line colours, or leaves
+    them unfilled (the default).  After None, the colours are listed Green, Blue,
+    Yellow, Black, White, Red; Green is the default fill, so the Paint Bucket
+    fills green out of the box.  The angled line is never filled.
   - The Text tool shows an I-beam cursor and lets you write directly on the
     screen: click where the text should start and type in the small inline
     editor that appears there.  The text uses the pen colour and the selected
@@ -43,6 +67,10 @@ Features:
     Arabic extends to the left of the click position.
   - A small draggable floating icon.  Left or right click opens the menu.
   - The same menu is available from the system tray icon.
+  - Selecting a tool shows a short hint about the mouse buttons, with a
+    "Never show this message again" option.  The Spline hint also explains
+    how to move its handles and has its own option.
+    Reset Settings keeps both choices.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
     across restarts.  The eraser cursor is drawn as a circle that matches the
@@ -53,13 +81,14 @@ Features:
     24, a 40 px eraser and a 48x48 icon.
   - Undo/redo, clear screen, show/hide drawing and show/hide floating icon.
   - Hotkeys: F9 toggles painting, SHIFT-F9 clears, CTRL-F9 toggles visibility,
-    ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.
+    ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.  While painting mode is
+    active, Ctrl+Z also undoes and Ctrl+Shift+Z redoes.
   - Multi-pointer support inherited from Gromit-MPX.
 
 Configuration:
   ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser
                                     width, opacity, shape fill, text font, icon
-                                    size).
+                                    size, hint choices).
   ~/.config/screenator.cfg          User tool configuration.
   /etc/screenator/screenator.cfg    System-wide tool configuration, used when
                                     the user configuration does not exist.
@@ -71,7 +100,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 1.0.
+    was changed to 2.0.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
@@ -82,22 +111,48 @@ Differences from Gromit-MPX 1.4.2:
     Text is typed directly on screen at the click position in the pen colour
     and the chosen Pango font; Enter places it and Escape cancels.  The font is
     saved with the other menu settings.
-  - A Shapes submenu was added with Free Line, Arrow, Angled Line, Angled
-    Arrow, Rectangle, Ellipse and Rounded Rectangle tools.  Shapes are
-    drag-drawn; the free line and the arrow follow the drag direction while
-    the angled line and angled arrow snap to fixed angles.  The arrow tools
-    draw an arrowhead at the end point.  Rectangles, ellipses and rounded
-    rectangles can optionally be filled with a shape fill colour, which is
-    saved with the other menu settings.
+  - A Shapes submenu was added with Free Line, Spline, Polygon, Triangle,
+    Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
+    Paint Bucket tools.  Shapes are drag-drawn; the free line and the arrow follow the drag
+    direction, while the angled line and angled arrow snap to fixed angles.
+    The arrow tools draw an arrowhead at the end point.  The spline is placed
+    click by click: each click adds a node, the nodes are joined by a smooth
+    Bezier curve, and dragging a node moves it.  Each node has two round Bezier
+    handles; dragging one mirrors the other so the curve stays smooth, and
+    holding Ctrl while dragging moves only that side to create a corner.
+    Click the last node again, double-click or right-click to finish the curve.
+    The polygon is placed with a single click and has four handles for its
+    number of sides (3 to 16), radius, rotation and inner radius; pressing the
+    side handle resets the shape to 3 sides, moving away from the handle adds
+    sides and moving back towards it removes them, while the inner radius turns
+    the shape into a regular polygon as it grows.  Drag inside the shape to
+    move it, click empty space to commit it and place the next one, and
+    double-click or right-click to commit it.
+    The triangle is placed with a single click and has a round handle on each
+    of its three vertices; dragging a handle moves that vertex, so the shape
+    can be stretched and skewed.  Drag inside it to move it, click empty space
+    to commit it and place the next one, and double-click or right-click to
+    commit it.  The rounded rectangle keeps a roundness handle on its top edge
+    after the drag, which rounds the corners more when moved away from the
+    corner and makes them sharper when moved back.
+    The paint bucket fills the closed area under the click with the shape fill
+    colour and shows a bucket cursor; a region that reaches the screen edge is
+    treated as not closed and is left unchanged.
+    Rectangles, ellipses, rounded rectangles, polygons and triangles can
+    optionally be filled with a shape fill colour, which is saved with the
+    other menu settings.
   - A Marker tool was added to the Shapes submenu.  It draws a translucent
     yellow highlighter stroke with a fixed 32 px width and does not change the
     global colour, thickness or opacity.
-  - The eraser has its own 20/40/60 px size menu and a circular cursor that
+  - The eraser has its own 20/40/60/120 px size menu and a circular cursor that
     matches the erasing area.  The default font is Arial Bold, menu icons are
     scaled to 16 px, the Shapes submenu sits below Eraser, Undo/Redo sit above
     Change Font, and pen strokes are smoothed with curved segments.
-  - The About dialog names the author and states that Screenator is a vibe-coded
-    screen annotation app based on Gromit-MPX 1.4.2.
+  - While painting mode is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes; the
+    keys are grabbed only while painting, so they keep their normal meaning in
+    other applications.
+  - The About dialog names the author and email, and states that Screenator is
+    a vibe-coded screen annotation app based on Gromit-MPX 1.4.2.
 
 Build:
   cd screenator

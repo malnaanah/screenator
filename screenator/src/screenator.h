@@ -82,7 +82,11 @@ typedef enum
   SCREENATOR_SHAPE_ANGLED_LINE,
   SCREENATOR_SHAPE_FREE_LINE,
   SCREENATOR_SHAPE_ANGLED_ARROW,
-  SCREENATOR_SHAPE_FREE_ARROW
+  SCREENATOR_SHAPE_FREE_ARROW,
+  SCREENATOR_SHAPE_SPLINE,
+  SCREENATOR_SHAPE_BUCKET,
+  SCREENATOR_SHAPE_STAR,
+  SCREENATOR_SHAPE_TRIANGLE
 } ScreenatorShapeType;
 
 typedef struct
@@ -102,6 +106,75 @@ typedef struct
   gint y;
   gint width;
 } ScreenatorStrokeCoordinate;
+
+/* One node of the spline tool: an on-curve point plus its two Bezier control
+ * points.  The control points are stored as absolute screen positions so the
+ * curve can be drawn without further maths.  "manual" is set once the user
+ * moves one of the handles; automatic handles are recomputed from the
+ * neighbouring nodes whenever the spline changes. */
+typedef struct
+{
+  GdkPoint point;
+  GdkPoint in;
+  GdkPoint out;
+  gboolean manual;
+} ScreenatorSplineNode;
+
+/* The star tool draws a regular star that stays editable until it is
+ * committed.  "inner" is the inner radius as a fraction of "radius": at 1.0
+ * the star becomes a regular polygon.  "points" is the number of star points,
+ * so the polygon has twice as many vertices. */
+typedef struct
+{
+  gdouble cx;
+  gdouble cy;
+  gdouble radius;
+  gdouble inner;
+  gdouble rotation;
+  gint    points;
+} ScreenatorStar;
+
+/* Handles of the star tool.  NONE is zero so a freshly allocated device data
+ * starts with no drag in progress. */
+typedef enum
+{
+  SCREENATOR_STAR_HANDLE_NONE = 0,
+  SCREENATOR_STAR_HANDLE_RADIUS,
+  SCREENATOR_STAR_HANDLE_INNER,
+  SCREENATOR_STAR_HANDLE_ROTATION,
+  SCREENATOR_STAR_HANDLE_POINTS,
+  SCREENATOR_STAR_HANDLE_CENTRE
+} ScreenatorStarHandle;
+
+/* The triangle tool keeps three editable vertices.  Every vertex has its own
+ * handle, so the shape can be skewed freely instead of staying equilateral. */
+typedef struct
+{
+  GdkPoint v[3];
+} ScreenatorTriangle;
+
+/* Handles of the triangle tool.  NONE is zero so a freshly allocated device
+ * data starts with no drag in progress. */
+typedef enum
+{
+  SCREENATOR_TRIANGLE_HANDLE_NONE = 0,
+  SCREENATOR_TRIANGLE_HANDLE_V0,
+  SCREENATOR_TRIANGLE_HANDLE_V1,
+  SCREENATOR_TRIANGLE_HANDLE_V2,
+  SCREENATOR_TRIANGLE_HANDLE_CENTRE
+} ScreenatorTriangleHandle;
+
+/* The rounded rectangle keeps its rectangle and corner radius editable after
+ * it is dragged out.  "radius" is in pixels and is clamped to half the shorter
+ * side, where the shape becomes a stadium. */
+typedef struct
+{
+  gint    x0;
+  gint    y0;
+  gint    x1;
+  gint    y1;
+  gdouble radius;
+} ScreenatorRoundedRect;
 
 typedef struct
 {
@@ -131,6 +204,48 @@ typedef struct
   gint             shape_y0;
   gint             shape_x1;
   gint             shape_y1;
+  GArray          *shape_points;  /* ScreenatorSplineNode array for the spline */
+
+  /* Spline node editing: drag a placed node to move it, drag a Bezier handle
+   * to shape the curve, and click the last node again to finish. */
+  gboolean         spline_node_drag;
+  gint             spline_drag_index;
+  gboolean         spline_finish_pending;
+  gint             spline_press_x;
+  gint             spline_press_y;
+
+  /* Spline handle editing: "spline_drag_out" selects the outgoing handle of
+   * the node at "spline_drag_index". */
+  gboolean         spline_handle_drag;
+  gboolean         spline_drag_out;
+
+  /* Star tool: the star stays editable with its handles until committed. */
+  gboolean             star_active;
+  ScreenatorStar       star;
+  ScreenatorStarHandle star_drag;
+  gint                 star_press_x;
+  gint                 star_press_y;
+  gdouble              star_press_cx;
+  gdouble              star_press_cy;
+
+  /* Triangle tool: three vertex handles keep the shape editable until it is
+   * committed. */
+  gboolean                triangle_active;
+  ScreenatorTriangle      triangle;
+  ScreenatorTriangleHandle triangle_drag;
+  gint                    triangle_press_x;
+  gint                    triangle_press_y;
+  GdkPoint                triangle_press_v[3];
+
+  /* Rounded rectangle: after the drag its corner radius stays adjustable
+   * until the shape is committed. */
+  gboolean              rounded_active;
+  ScreenatorRoundedRect rounded;
+  gboolean              rounded_radius_drag;
+  gboolean              rounded_move_drag;
+  gint                  rounded_press_x;
+  gint                  rounded_press_y;
+  ScreenatorRoundedRect rounded_press;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
@@ -159,6 +274,7 @@ typedef struct
   GdkCursor   *paint_cursor;
   GdkCursor   *erase_cursor;
   GdkCursor   *text_cursor;
+  GdkCursor   *bucket_cursor;
 
   GdkDisplay  *display;
   GdkScreen   *screen;
@@ -169,6 +285,9 @@ typedef struct
   guint        hot_keycode;
   gchar       *undo_keyval;
   guint        undo_keycode;
+  /* Hardware keycode of "z", grabbed for Ctrl+Z / Ctrl+Shift+Z while painting
+   * mode is active; 0 when the shortcut is not grabbed. */
+  guint        undo_ctrl_keycode;
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
@@ -180,6 +299,11 @@ typedef struct
 			      9 = free line, 10 = angled arrow, 11 = marker */
   gchar       *font;       /* Pango font description for the Text tool */
   guint        icon_size;
+
+  /* Tool hints.  These are independent of the other settings: Reset Settings
+   * must not re-enable hints the user has turned off. */
+  gboolean     hide_tool_hint;
+  gboolean     hide_spline_hint;
 
   /* Shape tools */
   ScreenatorPaintContext *default_shape;
@@ -263,6 +387,31 @@ void draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 void shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 		       gint x0, gint y0, gint x1, gint y1,
 		       GdkRectangle *bounds);
+void draw_spline (ScreenatorData *data, cairo_t *cr, GArray *nodes);
+void spline_get_bounds (ScreenatorData *data, GArray *nodes,
+			GdkRectangle *bounds);
+void spline_update_auto (GArray *nodes);
+void spline_cancel_all (ScreenatorData *data);
+void draw_star (ScreenatorData *data, cairo_t *cr,
+		const ScreenatorStar *star);
+void star_get_bounds (const ScreenatorStar *star, gint pad,
+		      GdkRectangle *bounds);
+void star_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
+void star_finish_all (ScreenatorData *data);
+void draw_triangle (ScreenatorData *data, cairo_t *cr,
+		    const ScreenatorTriangle *triangle);
+void triangle_get_bounds (const ScreenatorTriangle *triangle, gint pad,
+			  GdkRectangle *bounds);
+void triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
+void triangle_finish_all (ScreenatorData *data);
+void draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
+			gint x0, gint y0, gint x1, gint y1, gdouble radius);
+void rounded_rect_get_bounds (const ScreenatorRoundedRect *rect, gint pad,
+			      GdkRectangle *bounds);
+void rounded_rect_finish (ScreenatorData *data,
+			  ScreenatorDeviceData *devdata);
+void rounded_rect_finish_all (ScreenatorData *data);
+gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);
 
 void devdata_free (ScreenatorDeviceData *devdata);
@@ -270,6 +419,8 @@ void stroke_begin (ScreenatorData *data, GdkDevice *dev);
 void stroke_finish (ScreenatorData *data, GdkDevice *dev);
 void stroke_finish_all (ScreenatorData *data);
 
+GdkCursor *get_tool_cursor (ScreenatorData *data,
+			    ScreenatorPaintContext *context);
 void set_device_cursor (ScreenatorData *data, GdkDevice *device,
 			ScreenatorPaintContext *context);
 
