@@ -5572,7 +5572,7 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
 
   item = gtk_menu_item_new_with_label ("About");
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_about), NULL);
+  g_signal_connect (item, "activate", G_CALLBACK (on_about), data);
 
   item = gtk_menu_item_new_with_label ("Quit");
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
