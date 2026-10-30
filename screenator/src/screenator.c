@@ -25,6 +25,7 @@
  */
 
 #include <string.h>
+#include <stdarg.h>
 #include <math.h>
 #include <stdlib.h>
 #include <pango/pangocairo.h>
@@ -216,7 +217,7 @@ void apply_pen_settings (ScreenatorData *data)
       break;
     case 2:
       data->forced_context = data->default_shape;
-      data->shape_type = SCREENATOR_SHAPE_FREE_ARROW;
+      data->shape_type = SCREENATOR_SHAPE_ARROW;
       break;
     case 3:
       data->forced_context = data->default_eraser;
@@ -225,8 +226,10 @@ void apply_pen_settings (ScreenatorData *data)
       data->forced_context = data->default_text;
       break;
     case 5:
+      /* The rectangle tool was removed; a saved rectangle selection falls
+       * back to the rounded rectangle, whose roundness can be zero. */
       data->forced_context = data->default_shape;
-      data->shape_type = SCREENATOR_SHAPE_RECTANGLE;
+      data->shape_type = SCREENATOR_SHAPE_ROUNDED_RECTANGLE;
       break;
     case 6:
       data->forced_context = data->default_shape;
@@ -237,16 +240,18 @@ void apply_pen_settings (ScreenatorData *data)
       data->shape_type = SCREENATOR_SHAPE_ROUNDED_RECTANGLE;
       break;
     case 8:
+      /* The angled line was merged into the line tool. */
       data->forced_context = data->default_shape;
-      data->shape_type = SCREENATOR_SHAPE_ANGLED_LINE;
+      data->shape_type = SCREENATOR_SHAPE_LINE;
       break;
     case 9:
       data->forced_context = data->default_shape;
-      data->shape_type = SCREENATOR_SHAPE_FREE_LINE;
+      data->shape_type = SCREENATOR_SHAPE_LINE;
       break;
     case 10:
+      /* The angled arrow was merged into the arrow tool. */
       data->forced_context = data->default_shape;
-      data->shape_type = SCREENATOR_SHAPE_ANGLED_ARROW;
+      data->shape_type = SCREENATOR_SHAPE_ARROW;
       break;
     case 11:
       data->forced_context = data->default_marker;
@@ -267,10 +272,21 @@ void apply_pen_settings (ScreenatorData *data)
       data->forced_context = data->default_shape;
       data->shape_type = SCREENATOR_SHAPE_TRIANGLE;
       break;
+    case 16:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_MATH;
+      break;
+    case 17:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_BARS;
+      break;
     default:
       data->forced_context = NULL;
       break;
     }
+
+  /* The indicator shows the line colour, thickness and opacity. */
+  update_settings_indicator (data);
 }
 
 
@@ -284,10 +300,10 @@ void set_pen_opacity (ScreenatorData *data, gdouble opacity)
 
   data->opacity = opacity;
 
-  if (!data->default_pen)
-    return;
+  if (data->default_pen)
+    apply_pen_style_to_pens (data);
 
-  apply_pen_style_to_pens (data);
+  update_settings_indicator (data);
 }
 
 
@@ -442,6 +458,35 @@ void hide_window (ScreenatorData *data)
 }
 
 
+/* Keep the floating icon above the annotation window.
+ *
+ * The annotation window covers the whole screen and, on X11, it takes the
+ * clicks for every pixel it covers.  It is transparent, so an icon below it
+ * still looks visible but cannot be clicked any more.  Whenever the
+ * annotation window is raised, the icon has to be raised again. */
+void raise_icon_window (ScreenatorData *data)
+{
+  GdkWindow *icon_window;
+
+  /* The settings indicator sits to the left of the icon and has to stay above
+   * the annotation window as well. */
+  if (data->settings_win && gtk_widget_get_visible (data->settings_win))
+    {
+      GdkWindow *settings_window = gtk_widget_get_window (data->settings_win);
+
+      if (settings_window)
+	gdk_window_raise (settings_window);
+    }
+
+  if (!data->icon_win || !gtk_widget_get_visible (data->icon_win))
+    return;
+
+  icon_window = gtk_widget_get_window (data->icon_win);
+  if (icon_window)
+    gdk_window_raise (icon_window);
+}
+
+
 void show_window (ScreenatorData *data)
 {
   if (data->hidden)
@@ -464,6 +509,14 @@ void show_window (ScreenatorData *data)
         g_printerr ("DEBUG: Showing window.\n");
     }
   gdk_window_raise (gtk_widget_get_window(data->win));
+
+  /* The icon has to stay on top of the annotation window, otherwise the
+   * annotation window swallows the clicks meant for the icon. */
+  raise_icon_window (data);
+
+  /* A paper is the active window and keeps the keyboard focus. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
 }
 
 
@@ -477,6 +530,121 @@ void toggle_visibility (ScreenatorData *data)
 }
 
 
+/* ------------------------------------------------------------------
+ * Screen paper
+ * ------------------------------------------------------------------ */
+
+/* The colours and the spacing come from assets/ruled-page.pdf and
+ * assets/graph-page.pdf: blue ruled lines about 8.5 mm apart and a grey 5 mm
+ * grid, which is 32 px and 20 px on a 96 dpi screen.  The first line is one
+ * spacing away from the edge, like the margin of a paper page. */
+#define PAPER_RULED_SPACING 32
+#define PAPER_GRAPH_SPACING 20
+
+/* Draw the paper below the annotations.  The caller composites the backbuffer
+ * on top afterwards, so erasing a stroke shows the paper again. */
+void
+draw_screen_paper (ScreenatorData *data, cairo_t *cr)
+{
+  gint x, y;
+
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+  cairo_paint (cr);
+
+  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+  cairo_set_line_width (cr, 1.0);
+
+  if (data->paper == SCREENATOR_PAPER_RULED)
+    {
+      /* 0.25098 0.627451 1 in the ruled page. */
+      cairo_set_source_rgb (cr, 0.25098, 0.627451, 1.0);
+      for (y = PAPER_RULED_SPACING; y < (gint) data->height;
+	   y += PAPER_RULED_SPACING)
+	{
+	  cairo_move_to (cr, 0, y + 0.5);
+	  cairo_line_to (cr, data->width, y + 0.5);
+	}
+      cairo_stroke (cr);
+    }
+  else if (data->paper == SCREENATOR_PAPER_GRAPH)
+    {
+      /* 0.741176 grey in the graph page. */
+      cairo_set_source_rgb (cr, 0.741176, 0.741176, 0.741176);
+      for (x = PAPER_GRAPH_SPACING; x < (gint) data->width;
+	   x += PAPER_GRAPH_SPACING)
+	{
+	  cairo_move_to (cr, x + 0.5, 0);
+	  cairo_line_to (cr, x + 0.5, data->height);
+	}
+      for (y = PAPER_GRAPH_SPACING; y < (gint) data->height;
+	   y += PAPER_GRAPH_SPACING)
+	{
+	  cairo_move_to (cr, 0, y + 0.5);
+	  cairo_line_to (cr, data->width, y + 0.5);
+	}
+      cairo_stroke (cr);
+    }
+
+  cairo_restore (cr);
+}
+
+/* The annotation window is only visible where it has content when the screen is
+ * not composited, and it is transparent to input everywhere.  A paper covers
+ * the whole screen, so the window has to be visible everywhere; clicks still
+ * pass through to the application below, and painting mode receives them
+ * through its pointer grab. */
+void
+update_window_shape (ScreenatorData *data)
+{
+  cairo_region_t *region;
+
+  if (!data->win || !gtk_widget_get_window (data->win))
+    return;
+
+  if (data->paper != SCREENATOR_PAPER_NONE || data->composited)
+    gtk_widget_shape_combine_region (data->win, NULL);
+  else
+    {
+      region = gdk_cairo_region_create_from_surface (data->backbuffer);
+
+      /* The text preview and its caret are drawn on the annotation window but
+       * are not part of the backbuffer.  Add their pixels to the shape so they
+       * are visible while the editor is open. */
+      text_preview_add_shape (data, region);
+
+      /* Active frame previews are drawn on the window as well, until they are
+       * committed to the backbuffer. */
+      shape_previews_add_shape (data, region);
+
+      gtk_widget_shape_combine_region (data->win, region);
+      cairo_region_destroy (region);
+    }
+
+  /* With a screen paper the annotation window is the active window: it takes
+   * the pointer input, so clicks and scrolling do not reach the desktop or the
+   * applications below.  Without a paper the window stays click-through. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      cairo_rectangle_int_t rect;
+
+      rect.x = 0;
+      rect.y = 0;
+      rect.width = data->width;
+      rect.height = data->height;
+      region = cairo_region_create_rectangle (&rect);
+    }
+  else
+    region = cairo_region_create ();
+
+  gtk_widget_input_shape_combine_region (data->win, region);
+  cairo_region_destroy (region);
+}
+
 
 void clear_screen (ScreenatorData *data)
 {
@@ -488,17 +656,8 @@ void clear_screen (ScreenatorData *data)
 
   GdkRectangle rect = {0, 0, data->width, data->height};
   gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
-  
-  if(!data->composited)
-    {
-      cairo_region_t* r = gdk_cairo_region_create_from_surface(data->backbuffer);
-      gtk_widget_shape_combine_region(data->win, r);
-      cairo_region_destroy(r);
-      // try to set transparent for input
-      r =  cairo_region_create();
-      gtk_widget_input_shape_combine_region(data->win, r);
-      cairo_region_destroy(r);
-    }
+
+  update_window_shape (data);
 
   data->painted = 0;
 
@@ -519,13 +678,7 @@ gint reshape (gpointer user_data)
         }
       else
         {
-	  cairo_region_t* r = gdk_cairo_region_create_from_surface(data->backbuffer);
-	  gtk_widget_shape_combine_region(data->win, r);
-	  cairo_region_destroy(r);
-	  // try to set transparent for input
-	  r =  cairo_region_create();
-	  gtk_widget_input_shape_combine_region(data->win, r);
-	  cairo_region_destroy(r);
+	  update_window_shape (data);
 
 	  /*
 	    this is not needed when there is user input, i.e. when drawing,
@@ -842,6 +995,7 @@ void devdata_free (ScreenatorDeviceData *devdata)
     cairo_surface_destroy (devdata->strokebuffer);
   if (devdata->shape_points)
     g_array_free (devdata->shape_points, TRUE);
+  frame_shape_clear (&devdata->frame_shape);
 
   g_free (devdata);
 }
@@ -1142,150 +1296,34 @@ void draw_arrow (ScreenatorData *data,
 
 
 
-/*
- * Render a text annotation at (x, y) with the font chosen in the menu and
- * the same colour and opacity as the pen.
- */
-
-void draw_text (ScreenatorData *data,
-		GdkDevice *dev,
-		gint x, gint y,
-		const gchar *text)
-{
-  ScreenatorDeviceData *devdata = g_hash_table_lookup (data->devdatatable, dev);
-  ScreenatorPaintContext *context = devdata ? devdata->cur_context : NULL;
-  cairo_t *cr;
-  PangoLayout *layout;
-  PangoFontDescription *desc;
-  PangoRectangle ink;
-  GdkRectangle rect;
-
-  if (!text || !*text)
-    return;
-
-  if (!context || context->type != SCREENATOR_TEXT)
-    context = data->default_text;
-  if (!context)
-    return;
-
-  cr = cairo_create (data->backbuffer);
-  layout = pango_cairo_create_layout (cr);
-  pango_layout_set_text (layout, text, -1);
-
-  desc = pango_font_description_from_string (data->font ? data->font
-						       : KEY_DFLT_FONT);
-  pango_layout_set_font_description (layout, desc);
-  pango_font_description_free (desc);
-
-  gdk_cairo_set_source_rgba (cr, context->paint_color);
-  cairo_move_to (cr, x, y);
-  pango_cairo_show_layout (cr, layout);
-
-  pango_layout_get_pixel_extents (layout, &ink, NULL);
-  rect.x = x + ink.x - 2;
-  rect.y = y + ink.y - 2;
-  rect.width = ink.width + 4;
-  rect.height = ink.height + 4;
-
-  g_object_unref (layout);
-  cairo_destroy (cr);
-
-  data->modified = 1;
-  data->painted = 1;
-
-  if (rect.width > 4 && rect.height > 4)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win), &rect, 0);
-
-  if (data->debug)
-    g_printerr ("DEBUG: drew text \"%s\" at %d %d\n", text, x, y);
-}
-
-
-/* Snap the end of an angled line to the nearest supported angle.  Both
- * directions of each angle are allowed, so the set effectively covers 0, 30,
- * 45, 60, 90, 120, 135 and 150 degrees plus their opposites. */
-static void
-shape_angled_endpoint (gint x0, gint y0, gint x1, gint y1,
-		       gint *end_x, gint *end_y)
-{
-  static const gdouble angles[] = { 0.0, 30.0, 45.0, 60.0,
-				    90.0, 120.0, 135.0, 150.0 };
-  gdouble dx = x1 - x0;
-  gdouble dy = y1 - y0;
-  gdouble phi = atan2 (dy, dx) * 180.0 / G_PI;
-  gdouble best_diff = 360.0;
-  gdouble theta = 0.0;
-  guint i, half;
-
-  if (phi < 0.0)
-    phi += 360.0;
-
-  for (i = 0; i < G_N_ELEMENTS (angles); i++)
-    for (half = 0; half < 2; half++)
-      {
-	gdouble candidate = angles[i] + 180.0 * half;
-	gdouble diff = fabs (phi - candidate);
-
-	if (diff > 180.0)
-	  diff = 360.0 - diff;
-	if (diff < best_diff)
-	  {
-	    best_diff = diff;
-	    theta = candidate;
-	  }
-      }
-
-  {
-    gdouble rad = theta * G_PI / 180.0;
-    gdouble length = dx * cos (rad) + dy * sin (rad);
-
-    if (length < 0.0)
-      length = 0.0;
-    *end_x = x0 + (gint) (length * cos (rad) + 0.5);
-    *end_y = y0 + (gint) (length * sin (rad) + 0.5);
-  }
-}
-
-
-/* The four line tools share the same drawing code; the arrows additionally
- * get a head at the end point.  Angled lines and arrows snap to fixed
- * angles, the free line and the arrow do not. */
+/* The line and the arrow share the same drawing code; the arrow additionally
+ * gets a head at the end point. */
 static gboolean
 shape_is_line (ScreenatorShapeType type)
 {
-  return type == SCREENATOR_SHAPE_FREE_LINE ||
-	 type == SCREENATOR_SHAPE_ANGLED_LINE ||
-	 type == SCREENATOR_SHAPE_FREE_ARROW ||
-	 type == SCREENATOR_SHAPE_ANGLED_ARROW;
-}
-
-
-static gboolean
-shape_is_angled (ScreenatorShapeType type)
-{
-  return type == SCREENATOR_SHAPE_ANGLED_LINE ||
-	 type == SCREENATOR_SHAPE_ANGLED_ARROW;
+  return type == SCREENATOR_SHAPE_LINE ||
+	 type == SCREENATOR_SHAPE_ARROW;
 }
 
 
 static gboolean
 shape_has_arrow (ScreenatorShapeType type)
 {
-  return type == SCREENATOR_SHAPE_FREE_ARROW ||
-	 type == SCREENATOR_SHAPE_ANGLED_ARROW;
+  return type == SCREENATOR_SHAPE_ARROW;
 }
 
 
-/* Arrow proportions, relative to w = pen width * 0.375.  The head is longer
- * than it is wide so the point looks sharp, and the barbs sweep back behind
- * the notch to make the head clearly visible. */
-#define ARROW_HEAD_LENGTH 8.0
-#define ARROW_HEAD_HALF_WIDTH 3.0
-#define ARROW_HEAD_NOTCH 6.0
+/* Arrow proportions, relative to w = pen width * 0.5 + ARROW_HEAD_EXTRA_WIDTH.
+ * The extra width keeps a thin line's head easy to see, while the head still
+ * grows with the line thickness. */
+#define ARROW_HEAD_LENGTH 6.3
+#define ARROW_HEAD_HALF_WIDTH 2.3
+#define ARROW_HEAD_EXTRA_WIDTH 2.0
 
 /* Draw an arrow as one filled polygon that contains both the shaft and the
- * head.  Building it as a single path keeps translucent strokes at one
- * opacity, avoids a seam between shaft and head, and leaves the tip as a
+ * head.  The head is a plain triangle: the shaft joins the middle of its base,
+ * with no notch.  Building it as a single path keeps translucent strokes at
+ * one opacity, avoids a seam between shaft and head, and leaves the tip as a
  * plain sharp corner instead of the round cap a stroked line would show. */
 static void
 shape_draw_arrow (cairo_t *cr, gint line_width,
@@ -1293,14 +1331,11 @@ shape_draw_arrow (cairo_t *cr, gint line_width,
 		  const GdkRGBA *color)
 {
   gdouble direction = atan2 (y1 - y0, x1 - x0);
-  gdouble w = MAX (1, line_width) * 0.5;
+  gdouble w = MAX (1, line_width) * 0.5 + ARROW_HEAD_EXTRA_WIDTH;
   gdouble half = line_width / 2.0;
   gdouble ca = cos (direction);
   gdouble sa = sin (direction);
   gdouble length = hypot (x1 - x0, y1 - y0);
-  gdouble notch = ARROW_HEAD_NOTCH * w;
-  gdouble notch_x = x1 - notch * ca;
-  gdouble notch_y = y1 - notch * sa;
   gdouble base_x = x1 - ARROW_HEAD_LENGTH * w * ca;
   gdouble base_y = y1 - ARROW_HEAD_LENGTH * w * sa;
   gdouble barb = ARROW_HEAD_HALF_WIDTH * w;
@@ -1308,11 +1343,11 @@ shape_draw_arrow (cairo_t *cr, gint line_width,
   gdouble start_y = y0;
 
   /* A very short drag still has to give a clean head: clamp the shaft to the
-   * notch so the polygon does not turn inside out. */
-  if (length <= notch)
+   * base of the triangle so the polygon does not turn inside out. */
+  if (length <= ARROW_HEAD_LENGTH * w)
     {
-      start_x = notch_x;
-      start_y = notch_y;
+      start_x = base_x;
+      start_y = base_y;
     }
 
   /* The unit vector along the arrow is (ca, sa); the one across it is
@@ -1320,11 +1355,11 @@ shape_draw_arrow (cairo_t *cr, gint line_width,
   cairo_save (cr);
   cairo_new_path (cr);
   cairo_move_to (cr, start_x + half * sa, start_y - half * ca);
-  cairo_line_to (cr, notch_x + half * sa, notch_y - half * ca);
+  cairo_line_to (cr, base_x + half * sa, base_y - half * ca);
   cairo_line_to (cr, base_x + barb * sa, base_y - barb * ca);
   cairo_line_to (cr, x1, y1);
   cairo_line_to (cr, base_x - barb * sa, base_y + barb * ca);
-  cairo_line_to (cr, notch_x - half * sa, notch_y + half * ca);
+  cairo_line_to (cr, base_x - half * sa, base_y + half * ca);
   cairo_line_to (cr, start_x - half * sa, start_y + half * ca);
   cairo_close_path (cr);
 
@@ -1353,8 +1388,6 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 
   if (shape_is_line (type))
     {
-      if (shape_is_angled (type))
-	shape_angled_endpoint (x0, y0, x1, y1, &x1, &y1);
       if (x0 == x1 && y0 == y1)
 	return;
 
@@ -1383,9 +1416,7 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
       return;
     }
 
-  if (type == SCREENATOR_SHAPE_RECTANGLE)
-    cairo_rectangle (cr, x, y, w, h);
-  else if (type == SCREENATOR_SHAPE_ELLIPSE)
+  if (type == SCREENATOR_SHAPE_ELLIPSE)
     {
       if (w < 1 || h < 1)
 	return;
@@ -1421,13 +1452,82 @@ shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 {
   gint pad = (gint) data->pen_width * 2 + 4;
 
-  if (shape_is_angled (type))
-    shape_angled_endpoint (x0, y0, x1, y1, &x1, &y1);
-
   bounds->x = MIN (x0, x1) - pad;
   bounds->y = MIN (y0, y1) - pad;
   bounds->width = ABS (x1 - x0) + 2 * pad;
   bounds->height = ABS (y1 - y0) + 2 * pad;
+}
+
+/* Bounding box of an editable line or arrow, padded for the stroke, the arrow
+ * head and the two end handles. */
+void
+line_get_bounds (ScreenatorData *data, const ScreenatorLine *line,
+		 GdkRectangle *bounds)
+{
+  gint pad = (gint) data->pen_width * 6 + 16;
+
+  shape_get_bounds (data, line->type, line->x0, line->y0,
+		    line->x1, line->y1, bounds);
+
+  bounds->x -= pad;
+  bounds->y -= pad;
+  bounds->width += 2 * pad;
+  bounds->height += 2 * pad;
+}
+
+/* Commit one editable line or arrow to the backbuffer.  A click without a drag
+ * leaves nothing behind. */
+void
+line_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  GdkRectangle bounds;
+  gboolean drawable;
+
+  if (!devdata || !devdata->line_active)
+    return;
+
+  line_get_bounds (data, &devdata->line, &bounds);
+
+  drawable = devdata->line.x0 != devdata->line.x1 ||
+	     devdata->line.y0 != devdata->line.y1;
+
+  devdata->line_active = FALSE;
+  devdata->line_drag = SCREENATOR_LINE_HANDLE_NONE;
+
+  if (drawable)
+    {
+      cairo_t *cr;
+
+      snap_undo_state (data);
+      cr = cairo_create (data->backbuffer);
+      draw_shape (data, cr, devdata->line.type,
+		  devdata->line.x0, devdata->line.y0,
+		  devdata->line.x1, devdata->line.y1);
+      cairo_destroy (cr);
+
+      data->modified = 1;
+      data->painted = 1;
+    }
+
+  if (data->win && bounds.width > 0 && bounds.height > 0)
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				&bounds, 0);
+}
+
+/* Commit every editable line and arrow, e.g. when painting mode ends or
+ * another tool is chosen. */
+void
+line_finish_all (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    line_finish (data, value);
 }
 
 
@@ -1497,70 +1597,1305 @@ draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
 }
 
 
-/* Bounding box of a rounded rectangle, padded for the stroke width and for
- * the roundness handle. */
+/* --- Editable frame shapes ------------------------------------------------
+ *
+ * The rectangle, ellipse, rounded rectangle, text, math plot and parallel
+ * lines all share one frame: a centre, a width, a height and a rotation.  A
+ * placed shape stays editable until it is committed, so it can still be
+ * moved, resized and rotated with its handles.
+ */
+
+/* Distance between the top edge and the rotation handle. */
+#define FRAME_HANDLE_OFFSET 32.0
+#define FRAME_HANDLE_MARGIN 64
+
+/* Release the strings owned by a frame shape and reset it. */
 void
-rounded_rect_get_bounds (const ScreenatorRoundedRect *rect, gint pad,
-			 GdkRectangle *bounds)
+frame_shape_clear (ScreenatorFrameShape *shape)
 {
-  if (!rect)
+  if (!shape)
+    return;
+
+  g_free (shape->expression);
+  g_free (shape->text);
+  g_free (shape->font);
+  memset (shape, 0, sizeof (*shape));
+}
+
+/* Local (unrotated) frame coordinates to screen coordinates. */
+static void
+frame_local_to_screen (const ScreenatorFrame *frame, gdouble lx, gdouble ly,
+		       gdouble *x, gdouble *y)
+{
+  gdouble c = cos (frame->rotation);
+  gdouble s = sin (frame->rotation);
+
+  *x = frame->cx + lx * c - ly * s;
+  *y = frame->cy + lx * s + ly * c;
+}
+
+/* Screen coordinates to local frame coordinates. */
+void
+frame_screen_to_local (const ScreenatorFrame *frame, gdouble x, gdouble y,
+		       gdouble *lx, gdouble *ly)
+{
+  gdouble c = cos (frame->rotation);
+  gdouble s = sin (frame->rotation);
+  gdouble dx = x - frame->cx;
+  gdouble dy = y - frame->cy;
+
+  *lx = dx * c + dy * s;
+  *ly = -dx * s + dy * c;
+}
+
+/* Font size of a Pango description in pixels, so text can be scaled by the
+ * size handle.  Pango reports point sizes unless they are marked absolute. */
+gdouble
+frame_font_pixel_size (const gchar *font)
+{
+  PangoFontDescription *desc =
+    pango_font_description_from_string (font ? font : KEY_DFLT_FONT);
+  gdouble size;
+
+  if (pango_font_description_get_size_is_absolute (desc))
+    size = pango_font_description_get_size (desc) / (gdouble) PANGO_SCALE;
+  else
+    size = pango_font_description_get_size (desc) / (gdouble) PANGO_SCALE *
+      96.0 / 72.0;
+
+  pango_font_description_free (desc);
+
+  return MAX (size, 1.0);
+}
+
+/* Build the Pango layout of a text frame at its current font size. */
+static PangoLayout *
+frame_text_layout (cairo_t *cr, const ScreenatorFrameShape *shape)
+{
+  PangoLayout *layout = pango_cairo_create_layout (cr);
+  PangoFontDescription *desc =
+    pango_font_description_from_string (shape->font ? shape->font
+						   : KEY_DFLT_FONT);
+
+  if (shape->font_size > 0.0)
+    pango_font_description_set_absolute_size (desc,
+					      shape->font_size * PANGO_SCALE);
+
+  pango_layout_set_text (layout, shape->text ? shape->text : "", -1);
+  pango_layout_set_font_description (layout, desc);
+  pango_font_description_free (desc);
+
+  return layout;
+}
+
+/* Measure a text frame and update its width and height.  The ink extents are
+ * used so the frame hugs the glyphs; the ink offset is applied when the text
+ * is drawn. */
+void
+frame_shape_measure_text (ScreenatorFrameShape *shape)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  PangoLayout *layout;
+  PangoRectangle ink;
+
+  if (!shape || shape->type != SCREENATOR_SHAPE_TEXT)
+    return;
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, 1, 1);
+  cr = cairo_create (surface);
+  layout = frame_text_layout (cr, shape);
+  pango_layout_get_pixel_extents (layout, &ink, NULL);
+
+  shape->frame.w = MAX (ink.width, 1);
+  shape->frame.h = MAX (ink.height, 1);
+  shape->text_off_x = ink.x;
+  shape->text_off_y = ink.y;
+
+  g_object_unref (layout);
+  cairo_destroy (cr);
+  cairo_surface_destroy (surface);
+}
+
+/* Position of a frame handle in screen coordinates. */
+void
+frame_handle_position (const ScreenatorFrameShape *shape,
+		       ScreenatorFrameHandle handle, GdkPoint *pos)
+{
+  const ScreenatorFrame *frame = &shape->frame;
+  gdouble lx = 0.0;
+  gdouble ly = 0.0;
+  gdouble x, y;
+
+  switch (handle)
+    {
+    case SCREENATOR_FRAME_HANDLE_SIZE:
+      lx = frame->w / 2.0;
+      ly = frame->h / 2.0;
+      break;
+    case SCREENATOR_FRAME_HANDLE_ROTATE:
+      ly = -(frame->h / 2.0 + FRAME_HANDLE_OFFSET);
+      break;
+    case SCREENATOR_FRAME_HANDLE_EXTRA:
+      if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+	{
+	  lx = -frame->w / 2.0 +
+	    CLAMP (shape->extra, 0.0, MIN (frame->w, frame->h) / 2.0);
+	  ly = -frame->h / 2.0;
+	}
+      else if (shape->type == SCREENATOR_SHAPE_BARS)
+	lx = -(frame->w / 2.0 + FRAME_HANDLE_OFFSET);
+      break;
+    default:
+      break;
+    }
+
+  frame_local_to_screen (frame, lx, ly, &x, &y);
+  pos->x = (gint) round (x);
+  pos->y = (gint) round (y);
+}
+
+/* --- Math expression parser ----------------------------------------------
+ *
+ * The Math tool takes a small expression, e.g. "cos(2*pi*x)" in rectangular
+ * mode or "cos(3*theta)" in polar mode.  The parser below understands
+ * numbers, the variables x and theta, the constants pi and e, the operators
+ * + - * / ^, parentheses and a set of common functions.  Multiplication can
+ * be written explicitly or implied ("2*pi*x", "2pi" or "2(x+1)").
+ */
+
+#ifndef M_E
+#define M_E 2.7182818284590452354
+#endif
+
+typedef enum
+{
+  MATH_NODE_NUMBER,
+  MATH_NODE_VARIABLE,   /* x, the rectangular plot's input */
+  MATH_NODE_THETA,      /* theta, the polar plot's angle */
+  MATH_NODE_ADD,
+  MATH_NODE_SUB,
+  MATH_NODE_MUL,
+  MATH_NODE_DIV,
+  MATH_NODE_POW,
+  MATH_NODE_NEG,
+  MATH_NODE_FUNCTION
+} MathNodeType;
+
+typedef struct MathNode
+{
+  MathNodeType     type;
+  gdouble          number;
+  gint             function;
+  struct MathNode *left;
+  struct MathNode *right;
+} MathNode;
+
+typedef struct
+{
+  const gchar *name;
+  gdouble    (*fn) (gdouble);
+} MathFunctionDef;
+
+/* The unit step is 0 for negative values and 1 from zero upwards.  The Dirac
+ * delta is zero everywhere in ordinary sampling; the plot code finds where
+ * its argument vanishes and draws the spike as an arrow. */
+static gdouble
+math_unit (gdouble value)
+{
+  return value < 0.0 ? 0.0 : 1.0;
+}
+
+static gdouble
+math_delta (gdouble value)
+{
+  (void) value;
+  return 0.0;
+}
+
+static const MathFunctionDef math_functions[] =
+{
+  { "sin", sin }, { "cos", cos }, { "tan", tan },
+  { "asin", asin }, { "acos", acos }, { "atan", atan },
+  { "sinh", sinh }, { "cosh", cosh }, { "tanh", tanh },
+  { "sqrt", sqrt }, { "abs", fabs }, { "exp", exp },
+  { "log", log }, { "ln", log }, { "log10", log10 },
+  { "floor", floor }, { "ceil", ceil },
+  { "unit", math_unit }, { "delta", math_delta }
+};
+
+typedef struct
+{
+  const gchar *text;
+  const gchar *pos;
+  gchar       *error;
+} MathParser;
+
+static MathNode *math_parse_expression (MathParser *parser);
+static MathNode *math_parse_unary (MathParser *parser);
+
+static MathNode *
+math_node_new (MathNodeType type, MathNode *left, MathNode *right)
+{
+  MathNode *node = g_new0 (MathNode, 1);
+
+  node->type = type;
+  node->left = left;
+  node->right = right;
+
+  return node;
+}
+
+static void
+math_node_free (MathNode *node)
+{
+  if (!node)
+    return;
+
+  math_node_free (node->left);
+  math_node_free (node->right);
+  g_free (node);
+}
+
+static void
+math_parser_error (MathParser *parser, const gchar *format, ...)
+{
+  va_list args;
+
+  if (parser->error)
+    return;
+
+  va_start (args, format);
+  parser->error = g_strdup_vprintf (format, args);
+  va_end (args);
+}
+
+static void
+math_skip_space (MathParser *parser)
+{
+  while (g_ascii_isspace (*parser->pos))
+    parser->pos++;
+}
+
+static gboolean
+math_starts_primary (gchar c)
+{
+  return g_ascii_isdigit (c) || c == '.' || c == '(' ||
+	 g_ascii_isalpha (c) || c == '_';
+}
+
+static MathNode *
+math_parse_primary (MathParser *parser)
+{
+  MathNode *node;
+
+  math_skip_space (parser);
+
+  if (*parser->pos == '(')
+    {
+      parser->pos++;
+      node = math_parse_expression (parser);
+      math_skip_space (parser);
+
+      if (*parser->pos != ')')
+	{
+	  math_parser_error (parser, "Expected ')'.");
+	  math_node_free (node);
+	  return NULL;
+	}
+      parser->pos++;
+      return node;
+    }
+
+  if (g_ascii_isdigit (*parser->pos) || *parser->pos == '.')
+    {
+      gchar *end;
+
+      node = math_node_new (MATH_NODE_NUMBER, NULL, NULL);
+      node->number = g_ascii_strtod (parser->pos, &end);
+
+      if (end == parser->pos)
+	{
+	  math_parser_error (parser, "Invalid number.");
+	  math_node_free (node);
+	  return NULL;
+	}
+
+      parser->pos = end;
+      return node;
+    }
+
+  if (g_ascii_isalpha (*parser->pos) || *parser->pos == '_')
+    {
+      const gchar *start = parser->pos;
+      gchar *name;
+      guint i;
+
+      while (g_ascii_isalnum (*parser->pos) || *parser->pos == '_')
+	parser->pos++;
+
+      name = g_ascii_strdown (start, parser->pos - start);
+
+      if (strcmp (name, "x") == 0)
+	{
+	  g_free (name);
+	  return math_node_new (MATH_NODE_VARIABLE, NULL, NULL);
+	}
+      if (strcmp (name, "theta") == 0)
+	{
+	  g_free (name);
+	  return math_node_new (MATH_NODE_THETA, NULL, NULL);
+	}
+      if (strcmp (name, "pi") == 0)
+	{
+	  g_free (name);
+	  node = math_node_new (MATH_NODE_NUMBER, NULL, NULL);
+	  node->number = G_PI;
+	  return node;
+	}
+      if (strcmp (name, "e") == 0)
+	{
+	  g_free (name);
+	  node = math_node_new (MATH_NODE_NUMBER, NULL, NULL);
+	  node->number = M_E;
+	  return node;
+	}
+
+      for (i = 0; i < G_N_ELEMENTS (math_functions); i++)
+	if (strcmp (name, math_functions[i].name) == 0)
+	  break;
+
+      if (i == G_N_ELEMENTS (math_functions))
+	{
+	  math_parser_error (parser, "Unknown name \"%s\".", name);
+	  g_free (name);
+	  return NULL;
+	}
+
+      g_free (name);
+
+      math_skip_space (parser);
+      if (*parser->pos != '(')
+	{
+	  math_parser_error (parser, "Expected '(' after %s.",
+			     math_functions[i].name);
+	  return NULL;
+	}
+      parser->pos++;
+
+      node = math_parse_expression (parser);
+      math_skip_space (parser);
+
+      if (*parser->pos != ')')
+	{
+	  math_parser_error (parser, "Expected ')'.");
+	  math_node_free (node);
+	  return NULL;
+	}
+      parser->pos++;
+
+      {
+	MathNode *call = math_node_new (MATH_NODE_FUNCTION, node, NULL);
+
+	call->function = i;
+	return call;
+      }
+    }
+
+  if (*parser->pos == '\0')
+    math_parser_error (parser, "The expression is incomplete.");
+  else
+    math_parser_error (parser, "Unexpected \"%c\".", *parser->pos);
+
+  return NULL;
+}
+
+static MathNode *
+math_parse_power (MathParser *parser)
+{
+  MathNode *left = math_parse_primary (parser);
+  MathNode *right;
+
+  if (!left)
+    return NULL;
+
+  math_skip_space (parser);
+  if (*parser->pos != '^')
+    return left;
+
+  parser->pos++;
+  right = math_parse_unary (parser);
+  if (!right)
+    {
+      math_node_free (left);
+      return NULL;
+    }
+
+  return math_node_new (MATH_NODE_POW, left, right);
+}
+
+static MathNode *
+math_parse_unary (MathParser *parser)
+{
+  MathNode *node;
+
+  math_skip_space (parser);
+
+  if (*parser->pos == '+')
+    {
+      parser->pos++;
+      return math_parse_unary (parser);
+    }
+  if (*parser->pos == '-')
+    {
+      parser->pos++;
+      node = math_parse_unary (parser);
+      if (!node)
+	return NULL;
+      return math_node_new (MATH_NODE_NEG, node, NULL);
+    }
+
+  return math_parse_power (parser);
+}
+
+static MathNode *
+math_parse_term (MathParser *parser)
+{
+  MathNode *left = math_parse_unary (parser);
+  MathNode *right;
+
+  if (!left)
+    return NULL;
+
+  for (;;)
+    {
+      math_skip_space (parser);
+
+      if (*parser->pos == '*')
+	{
+	  parser->pos++;
+	  right = math_parse_unary (parser);
+	  if (!right)
+	    {
+	      math_node_free (left);
+	      return NULL;
+	    }
+	  left = math_node_new (MATH_NODE_MUL, left, right);
+	}
+      else if (*parser->pos == '/')
+	{
+	  parser->pos++;
+	  right = math_parse_unary (parser);
+	  if (!right)
+	    {
+	      math_node_free (left);
+	      return NULL;
+	    }
+	  left = math_node_new (MATH_NODE_DIV, left, right);
+	}
+      else if (math_starts_primary (*parser->pos))
+	{
+	  /* Implied multiplication: 2pi, 2(x+1), x sin(x). */
+	  right = math_parse_unary (parser);
+	  if (!right)
+	    {
+	      math_node_free (left);
+	      return NULL;
+	    }
+	  left = math_node_new (MATH_NODE_MUL, left, right);
+	}
+      else
+	break;
+    }
+
+  return left;
+}
+
+static MathNode *
+math_parse_expression (MathParser *parser)
+{
+  MathNode *left = math_parse_term (parser);
+  MathNode *right;
+
+  if (!left)
+    return NULL;
+
+  for (;;)
+    {
+      math_skip_space (parser);
+
+      if (*parser->pos == '+')
+	{
+	  parser->pos++;
+	  right = math_parse_term (parser);
+	  if (!right)
+	    {
+	      math_node_free (left);
+	      return NULL;
+	    }
+	  left = math_node_new (MATH_NODE_ADD, left, right);
+	}
+      else if (*parser->pos == '-')
+	{
+	  parser->pos++;
+	  right = math_parse_term (parser);
+	  if (!right)
+	    {
+	      math_node_free (left);
+	      return NULL;
+	    }
+	  left = math_node_new (MATH_NODE_SUB, left, right);
+	}
+      else
+	break;
+    }
+
+  return left;
+}
+
+/* Parse an expression into a tree.  On failure NULL is returned and, when
+ * "error" is not NULL, it receives a newly allocated message. */
+static MathNode *
+math_parse (const gchar *expression, gchar **error)
+{
+  MathParser parser;
+  MathNode *root;
+
+  if (error)
+    *error = NULL;
+
+  if (!expression || !*expression)
+    {
+      if (error)
+	*error = g_strdup ("Enter a function of x.");
+      return NULL;
+    }
+
+  parser.text = expression;
+  parser.pos = expression;
+  parser.error = NULL;
+
+  root = math_parse_expression (&parser);
+
+  if (root && !parser.error)
+    {
+      math_skip_space (&parser);
+      if (*parser.pos != '\0')
+	math_parser_error (&parser, "Unexpected \"%c\".", *parser.pos);
+    }
+
+  if (parser.error)
+    {
+      math_node_free (root);
+      root = NULL;
+      if (error)
+	*error = parser.error;
+      else
+	g_free (parser.error);
+    }
+
+  return root;
+}
+
+/* Check an expression for the Math Function dialog. */
+gboolean
+math_expression_is_valid (const gchar *expression, gchar **error)
+{
+  MathNode *root = math_parse (expression, error);
+
+  if (!root)
+    return FALSE;
+
+  math_node_free (root);
+  return TRUE;
+}
+
+static gdouble
+math_node_eval (const MathNode *node, gdouble x, gdouble theta)
+{
+  switch (node->type)
+    {
+    case MATH_NODE_NUMBER:
+      return node->number;
+    case MATH_NODE_VARIABLE:
+      return x;
+    case MATH_NODE_THETA:
+      return theta;
+    case MATH_NODE_ADD:
+      return math_node_eval (node->left, x, theta) +
+	math_node_eval (node->right, x, theta);
+    case MATH_NODE_SUB:
+      return math_node_eval (node->left, x, theta) -
+	math_node_eval (node->right, x, theta);
+    case MATH_NODE_MUL:
+      return math_node_eval (node->left, x, theta) *
+	math_node_eval (node->right, x, theta);
+    case MATH_NODE_DIV:
+      return math_node_eval (node->left, x, theta) /
+	math_node_eval (node->right, x, theta);
+    case MATH_NODE_POW:
+      return pow (math_node_eval (node->left, x, theta),
+		  math_node_eval (node->right, x, theta));
+    case MATH_NODE_NEG:
+      return -math_node_eval (node->left, x, theta);
+    case MATH_NODE_FUNCTION:
+      return math_functions[node->function].fn (
+	math_node_eval (node->left, x, theta));
+    }
+
+  return NAN;
+}
+
+/* Evaluate the expression for one sample of the active variable. */
+static gdouble
+math_eval_variable (const MathNode *root, gdouble value, gboolean polar)
+{
+  return polar ? math_node_eval (root, 0.0, value)
+	       : math_node_eval (root, value, 0.0);
+}
+
+/* Evaluate the expression at x.  A point where it is undefined may still have
+ * a limit: sin(x)/x is 0/0 at x = 0 but tends to 1.  In that case the value is
+ * sampled on both sides at shrinking distances and the value they agree on is
+ * used.  A real pole, such as 1/x or tan(x), does not settle on one value, so
+ * NaN is returned and the curve is broken there. */
+static gdouble
+math_eval_at (const MathNode *root, gdouble value, gdouble span,
+	      gboolean polar)
+{
+  gdouble y = math_eval_variable (root, value, polar);
+  gdouble h;
+  gint i;
+
+  if (isfinite (y))
+    return y;
+
+  h = span * 1e-4;
+
+  for (i = 0; i < 8; i++)
+    {
+      gdouble left = math_eval_variable (root, value - h, polar);
+      gdouble right = math_eval_variable (root, value + h, polar);
+
+      if (isfinite (left) && isfinite (right))
+	{
+	  gdouble scale = MAX (1.0, MAX (fabs (left), fabs (right)));
+
+	  /* Both sides meet, so the hole can be filled in. */
+	  if (fabs (left - right) <= 1e-6 * scale)
+	    return (left + right) / 2.0;
+	}
+
+      h *= 0.1;
+    }
+
+  return NAN;
+}
+
+static gint
+compare_doubles (gconstpointer a, gconstpointer b)
+{
+  gdouble da = *(const gdouble *) a;
+  gdouble db = *(const gdouble *) b;
+
+  if (da < db)
+    return -1;
+  if (da > db)
+    return 1;
+  return 0;
+}
+
+/* Number of samples used to draw a math plot. */
+#define MATH_SAMPLES 320
+
+/* Sample the active function over the stored range.  out[] receives
+ * MATH_SAMPLES + 1 values, with NaN where the function is undefined, and the
+ * return value is the largest magnitude.  A pole can be orders of magnitude
+ * larger than the rest of the curve, so the range is capped near the median
+ * to keep the shape readable.  A point that is undefined but has a limit,
+ * such as sin(x)/x at zero, is filled in by math_eval_at(). */
+static gdouble
+math_sample (const ScreenatorFrameShape *shape, gdouble *out, gboolean polar)
+{
+  gdouble values[MATH_SAMPLES + 1];
+  gdouble lo = shape->xmin;
+  gdouble hi = shape->xmax;
+  gdouble span, maxabs = 0.0, median_abs;
+  MathNode *root;
+  gchar *error = NULL;
+  gint n = 0;
+  gint i;
+
+  if (!(hi > lo))
+    return 0.0;
+
+  root = math_parse (shape->expression, &error);
+  g_free (error);
+
+  if (!root)
+    return 0.0;
+
+  span = hi - lo;
+
+  for (i = 0; i <= MATH_SAMPLES; i++)
+    {
+      gdouble value = lo + span * i / MATH_SAMPLES;
+      gdouble y = math_eval_at (root, value, span, polar);
+
+      out[i] = y;
+
+      if (isfinite (y))
+	{
+	  values[n++] = fabs (y);
+	  maxabs = MAX (maxabs, fabs (y));
+	}
+    }
+
+  math_node_free (root);
+
+  /* A constant zero still draws a line in the middle of the frame. */
+  if (maxabs < 1e-9)
+    maxabs = 1.0;
+
+  if (n > 1)
+    {
+      gdouble *sorted = g_new (gdouble, n);
+
+      memcpy (sorted, values, n * sizeof (gdouble));
+      qsort (sorted, n, sizeof (gdouble), compare_doubles);
+      median_abs = sorted[n / 2];
+      g_free (sorted);
+
+      if (median_abs > 1e-9 && maxabs > 20.0 * median_abs)
+	maxabs = 20.0 * median_abs;
+    }
+
+  return maxabs;
+}
+
+/* TRUE when the node is a call to the named function. */
+static gboolean
+math_node_is_function (const MathNode *node, const gchar *name)
+{
+  return node && node->type == MATH_NODE_FUNCTION &&
+	 strcmp (math_functions[node->function].name, name) == 0;
+}
+
+/* Add a delta root once, so a constant argument or two identical deltas do
+ * not draw several arrows in the same place. */
+static void
+math_add_delta_root (GArray *roots, gdouble root, gdouble tolerance)
+{
+  guint i;
+
+  for (i = 0; i < roots->len; i++)
+    if (fabs (g_array_index (roots, gdouble, i) - root) <= tolerance)
+      return;
+
+  g_array_append_val (roots, root);
+}
+
+/* Collect the values of the active variable where a delta() argument is
+ * zero.  A sign change between two samples is interpolated; a run of exact
+ * zeros, such as delta(0), contributes one root at the middle of the run. */
+static void
+math_collect_delta_roots (const MathNode *node, gdouble lo, gdouble span,
+			  gboolean polar, GArray *roots)
+{
+  if (!node)
+    return;
+
+  if (math_node_is_function (node, "delta"))
+    {
+      gdouble value = lo;
+      gdouble arg = math_eval_variable (node->left, value, polar);
+      gdouble zero_start = lo;
+      gboolean in_zero = isfinite (arg) && arg == 0.0;
+      gint i;
+
+      for (i = 1; i <= MATH_SAMPLES; i++)
+	{
+	  gdouble next_value = lo + span * i / MATH_SAMPLES;
+	  gdouble next_arg =
+	    math_eval_variable (node->left, next_value, polar);
+
+	  if (isfinite (next_arg) && next_arg == 0.0)
+	    {
+	      if (!in_zero)
+		{
+		  in_zero = TRUE;
+		  zero_start = next_value;
+		}
+	    }
+	  else
+	    {
+	      if (in_zero)
+		{
+		  gdouble root = (zero_start + value) / 2.0;
+
+		  math_add_delta_root (roots, root, span * 1e-6);
+		  in_zero = FALSE;
+		}
+
+	      if (isfinite (arg) && isfinite (next_arg) &&
+		  arg != 0.0 && next_arg != 0.0 &&
+		  ((arg < 0.0 && next_arg > 0.0) ||
+		   (arg > 0.0 && next_arg < 0.0)))
+		{
+		  gdouble root = value +
+		    (0.0 - arg) / (next_arg - arg) *
+		    (next_value - value);
+
+		  math_add_delta_root (roots, root, span * 1e-6);
+		}
+	    }
+
+	  value = next_value;
+	  arg = next_arg;
+	}
+
+      if (in_zero)
+	{
+	  gdouble root = (zero_start + value) / 2.0;
+
+	  math_add_delta_root (roots, root, span * 1e-6);
+	}
+
+      /* A delta inside a delta is not meaningful; the argument has already
+       * been sampled above. */
+      return;
+    }
+
+  math_collect_delta_roots (node->left, lo, span, polar, roots);
+  math_collect_delta_roots (node->right, lo, span, polar, roots);
+}
+
+/* Draw a V-shaped arrow head at the tip, pointing along (ux, uy). */
+static void
+math_draw_arrow_head (cairo_t *cr, gdouble tip_x, gdouble tip_y,
+		      gdouble ux, gdouble uy, gdouble size)
+{
+  gdouble px = -uy;
+  gdouble py = ux;
+  gdouble base_x = tip_x - ux * size;
+  gdouble base_y = tip_y - uy * size;
+  gdouble half = size * 0.55;
+
+  cairo_move_to (cr, tip_x, tip_y);
+  cairo_line_to (cr, base_x + px * half, base_y + py * half);
+  cairo_move_to (cr, tip_x, tip_y);
+  cairo_line_to (cr, base_x - px * half, base_y - py * half);
+}
+
+/* Draw the spikes of every delta() in the expression.  A rectangular plot
+ * gets a vertical arrow at the zero of the argument; a polar plot gets a
+ * radial arrow at that angle. */
+static void
+frame_draw_math_deltas (ScreenatorData *data, cairo_t *cr,
+			const ScreenatorFrameShape *shape)
+{
+  GArray *roots;
+  MathNode *root;
+  gchar *error = NULL;
+  GdkRGBA color = data->pen_color;
+  gdouble lo = shape->xmin;
+  gdouble span = shape->xmax - shape->xmin;
+  gdouble line_width;
+  gdouble head;
+  gdouble max_head;
+  guint i;
+
+  if (!(span > 0.0))
+    return;
+
+  root = math_parse (shape->expression, &error);
+  g_free (error);
+
+  if (!root)
+    return;
+
+  roots = g_array_new (FALSE, FALSE, sizeof (gdouble));
+  math_collect_delta_roots (root, lo, span, shape->polar, roots);
+  math_node_free (root);
+
+  if (roots->len == 0)
+    {
+      g_array_free (roots, TRUE);
+      return;
+    }
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  line_width = MAX (1, (gint) data->pen_width);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  head = CLAMP (line_width * 4.0, 8.0, 18.0);
+  max_head = shape->polar
+    ? MIN (shape->frame.w, shape->frame.h) * 0.25
+    : shape->frame.h * 0.25;
+  head = MIN (head, max_head);
+
+  for (i = 0; i < roots->len; i++)
+    {
+      gdouble value = g_array_index (roots, gdouble, i);
+
+      if (shape->polar)
+	{
+	  gdouble radius = MIN (shape->frame.w, shape->frame.h) / 2.0 * 0.9;
+	  gdouble ux = cos (value);
+	  gdouble uy = sin (value);
+	  gdouble tip_x = radius * ux;
+	  gdouble tip_y = radius * uy;
+
+	  cairo_move_to (cr, 0.0, 0.0);
+	  cairo_line_to (cr, tip_x, tip_y);
+	  math_draw_arrow_head (cr, tip_x, tip_y, ux, uy, head);
+	}
+      else
+	{
+	  gdouble x = -shape->frame.w / 2.0 +
+	    ((value - lo) / span) * shape->frame.w;
+	  gdouble tip_y = -shape->frame.h / 2.0 * 0.9;
+
+	  cairo_move_to (cr, x, 0.0);
+	  cairo_line_to (cr, x, tip_y);
+	  math_draw_arrow_head (cr, x, tip_y, 0.0, -1.0, head);
+	}
+    }
+
+  cairo_stroke (cr);
+  g_array_free (roots, TRUE);
+}
+
+/* Plot y = f(x).  The x range comes from the Math Function dialog and the y
+ * range is scaled to fill the frame. */
+static void
+frame_draw_rect_math (ScreenatorData *data, cairo_t *cr,
+		      const ScreenatorFrameShape *shape)
+{
+  gdouble ys[MATH_SAMPLES + 1];
+  gdouble maxabs = math_sample (shape, ys, FALSE);
+  gdouble sy;
+  GdkRGBA color = data->pen_color;
+  gboolean pen_down = FALSE;
+  gint i;
+
+  if (shape->frame.w < 1.0 || shape->frame.h < 1.0 || maxabs <= 0.0)
+    return;
+
+  sy = (shape->frame.h / 2.0) / maxabs;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, MAX (1, (gint) data->pen_width));
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  for (i = 0; i <= MATH_SAMPLES; i++)
+    {
+      gdouble lx = -shape->frame.w / 2.0 +
+	(i / (gdouble) MATH_SAMPLES) * shape->frame.w;
+      gdouble ly = -ys[i] * sy;
+
+      /* Break the path at undefined points and at poles. */
+      if (!isfinite (ys[i]) || fabs (ys[i]) > maxabs * 1.02)
+	{
+	  pen_down = FALSE;
+	  continue;
+	}
+
+      if (!pen_down)
+	{
+	  cairo_move_to (cr, lx, ly);
+	  pen_down = TRUE;
+	}
+      else
+	cairo_line_to (cr, lx, ly);
+    }
+
+  cairo_stroke (cr);
+  frame_draw_math_deltas (data, cr, shape);
+}
+
+/* Plot r = f(theta) in polar coordinates.  The angle runs over the stored
+ * theta range, and one scale is used for both axes so the curve stays round
+ * even when the frame is not square. */
+static void
+frame_draw_polar_math (ScreenatorData *data, cairo_t *cr,
+		       const ScreenatorFrameShape *shape)
+{
+  gdouble rs[MATH_SAMPLES + 1];
+  gdouble maxabs = math_sample (shape, rs, TRUE);
+  gdouble lo = shape->xmin;
+  gdouble span = shape->xmax - shape->xmin;
+  gdouble scale;
+  GdkRGBA color = data->pen_color;
+  gboolean pen_down = FALSE;
+  gint i;
+
+  if (shape->frame.w < 1.0 || shape->frame.h < 1.0 || maxabs <= 0.0)
+    return;
+
+  scale = MIN (shape->frame.w, shape->frame.h) / 2.0 / maxabs;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, MAX (1, (gint) data->pen_width));
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  for (i = 0; i <= MATH_SAMPLES; i++)
+    {
+      gdouble theta = lo + span * i / MATH_SAMPLES;
+      gdouble r = rs[i];
+      gdouble lx, ly;
+
+      /* Break the path at undefined points and at poles. */
+      if (!isfinite (r) || fabs (r) > maxabs * 1.02)
+	{
+	  pen_down = FALSE;
+	  continue;
+	}
+
+      lx = r * cos (theta) * scale;
+      ly = r * sin (theta) * scale;
+
+      if (!pen_down)
+	{
+	  cairo_move_to (cr, lx, ly);
+	  pen_down = TRUE;
+	}
+      else
+	cairo_line_to (cr, lx, ly);
+    }
+
+  cairo_stroke (cr);
+  frame_draw_math_deltas (data, cr, shape);
+}
+
+/* Draw the Math tool's plot in the selected coordinate system. */
+static void
+frame_draw_math (ScreenatorData *data, cairo_t *cr,
+		 const ScreenatorFrameShape *shape)
+{
+  if (shape->polar)
+    frame_draw_polar_math (data, cr, shape);
+  else
+    frame_draw_rect_math (data, cr, shape);
+}
+
+/* Draw the parallel lines: the frame width is divided evenly between the
+ * lines, which run vertically, and the current line thickness is used for
+ * every one of them. */
+static void
+frame_draw_bars (ScreenatorData *data, cairo_t *cr,
+		 const ScreenatorFrameShape *shape)
+{
+  GdkRGBA color = data->pen_color;
+  gint count = CLAMP (shape->count, 1, 40);
+  gint i;
+
+  if (shape->frame.w < 1.0 || shape->frame.h < 1.0)
+    return;
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, MAX (1, (gint) data->pen_width));
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+
+  for (i = 0; i < count; i++)
+    {
+      gdouble lx = -shape->frame.w / 2.0 +
+	(i + 0.5) * shape->frame.w / count;
+
+      cairo_move_to (cr, lx, -shape->frame.h / 2.0);
+      cairo_line_to (cr, lx, shape->frame.h / 2.0);
+    }
+
+  cairo_stroke (cr);
+}
+
+/* Draw a text frame at its rotation and font size. */
+static void
+frame_draw_text (ScreenatorData *data, cairo_t *cr,
+		 const ScreenatorFrameShape *shape)
+{
+  PangoLayout *layout;
+  GdkRGBA color = shape->color;
+
+  if (!shape->text || !*shape->text)
+    return;
+
+  layout = frame_text_layout (cr, shape);
+
+  color.alpha *= data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+
+  cairo_move_to (cr,
+		 -shape->frame.w / 2.0 - shape->text_off_x,
+		 -shape->frame.h / 2.0 - shape->text_off_y);
+  pango_cairo_show_layout (cr, layout);
+
+  g_object_unref (layout);
+}
+
+/* Draw a placed frame shape.  The cairo context is rotated around the frame
+ * centre, so every shape is drawn in local coordinates. */
+void
+draw_frame_shape (ScreenatorData *data, cairo_t *cr,
+		  const ScreenatorFrameShape *shape)
+{
+  const ScreenatorFrame *frame;
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+
+  if (!shape)
+    return;
+
+  frame = &shape->frame;
+
+  if ((shape->type == SCREENATOR_SHAPE_ELLIPSE ||
+       shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE) &&
+      (frame->w < 1.0 || frame->h < 1.0))
+    return;
+
+  cairo_save (cr);
+  cairo_translate (cr, frame->cx, frame->cy);
+  cairo_rotate (cr, frame->rotation);
+
+  switch (shape->type)
+    {
+    case SCREENATOR_SHAPE_MATH:
+      frame_draw_math (data, cr, shape);
+      cairo_restore (cr);
+      return;
+    case SCREENATOR_SHAPE_BARS:
+      frame_draw_bars (data, cr, shape);
+      cairo_restore (cr);
+      return;
+    case SCREENATOR_SHAPE_TEXT:
+      frame_draw_text (data, cr, shape);
+      cairo_restore (cr);
+      return;
+    default:
+      break;
+    }
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  if (shape->type == SCREENATOR_SHAPE_ELLIPSE)
+    {
+      cairo_save (cr);
+      cairo_scale (cr, frame->w / 2.0, frame->h / 2.0);
+      cairo_arc (cr, 0, 0, 1, 0, 2 * G_PI);
+      cairo_restore (cr);
+    }
+  else if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+    rounded_rect_path (cr,
+		       (gint) round (-frame->w / 2.0),
+		       (gint) round (-frame->h / 2.0),
+		       (gint) round (frame->w / 2.0),
+		       (gint) round (frame->h / 2.0),
+		       shape->extra);
+  else
+    {
+      cairo_restore (cr);
+      return;
+    }
+
+  if (data->shape_fill_enabled)
+    {
+      GdkRGBA fill = data->shape_fill_color;
+
+      fill.alpha = data->opacity;
+      gdk_cairo_set_source_rgba (cr, &fill);
+      cairo_fill_preserve (cr);
+      gdk_cairo_set_source_rgba (cr, &color);
+    }
+
+  cairo_stroke (cr);
+  cairo_restore (cr);
+}
+
+/* Bounding box of a frame shape, padded for the stroke width and for the
+ * handles.  A circle around the frame keeps the maths simple and only makes
+ * the invalidated area a little larger. */
+void
+frame_shape_get_bounds (const ScreenatorFrameShape *shape, gint pad,
+			GdkRectangle *bounds)
+{
+  gdouble r;
+
+  if (!shape)
     {
       bounds->x = bounds->y = bounds->width = bounds->height = 0;
       return;
     }
 
-  bounds->x = MIN (rect->x0, rect->x1) - pad;
-  bounds->y = MIN (rect->y0, rect->y1) - pad;
-  bounds->width = ABS (rect->x1 - rect->x0) + 2 * pad;
-  bounds->height = ABS (rect->y1 - rect->y0) + 2 * pad;
+  r = sqrt (shape->frame.w * shape->frame.w +
+	    shape->frame.h * shape->frame.h) / 2.0;
+  r += FRAME_HANDLE_OFFSET + pad;
+
+  bounds->x = (gint) floor (shape->frame.cx - r);
+  bounds->y = (gint) floor (shape->frame.cy - r);
+  bounds->width = (gint) ceil (2.0 * r);
+  bounds->height = (gint) ceil (2.0 * r);
 }
 
-
-/* Commit one editable rounded rectangle to the backbuffer. */
+/* Commit one editable frame shape to the backbuffer.  An empty text or a
+ * frame that was never given a size is dropped without drawing anything. */
 void
-rounded_rect_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
+frame_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
 {
   GdkRectangle bounds;
-  gint pad = (gint) data->pen_width * 2 + 64;
-  gint w, h;
+  gint pad = (gint) data->pen_width * 2 + FRAME_HANDLE_MARGIN;
+  gboolean drawable;
 
-  if (!devdata || !devdata->rounded_active)
+  if (!devdata || !devdata->frame_active)
     return;
 
-  rounded_rect_get_bounds (&devdata->rounded, pad, &bounds);
-  devdata->rounded_active = FALSE;
-  devdata->rounded_radius_drag = FALSE;
-  devdata->rounded_move_drag = FALSE;
+  frame_shape_get_bounds (&devdata->frame_shape, pad, &bounds);
 
-  w = ABS (devdata->rounded.x1 - devdata->rounded.x0);
-  h = ABS (devdata->rounded.y1 - devdata->rounded.y0);
+  drawable = devdata->frame_shape.frame.w >= 4.0 &&
+	     devdata->frame_shape.frame.h >= 4.0;
 
-  if (w > 0 && h > 0)
+  if (devdata->frame_shape.type == SCREENATOR_SHAPE_TEXT)
+    drawable = drawable && devdata->frame_shape.text &&
+	       *devdata->frame_shape.text;
+
+  devdata->frame_active = FALSE;
+  devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
+
+  if (drawable)
     {
       cairo_t *cr;
 
       snap_undo_state (data);
       cr = cairo_create (data->backbuffer);
-      draw_rounded_rect (data, cr,
-			 devdata->rounded.x0, devdata->rounded.y0,
-			 devdata->rounded.x1, devdata->rounded.y1,
-			 devdata->rounded.radius);
+      draw_frame_shape (data, cr, &devdata->frame_shape);
       cairo_destroy (cr);
 
       data->modified = 1;
       data->painted = 1;
     }
 
+  frame_shape_clear (&devdata->frame_shape);
+
   if (data->win && bounds.width > 0 && bounds.height > 0)
     gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
 				&bounds, 0);
 }
 
-
-/* Commit every editable rounded rectangle, e.g. when painting mode ends or
- * another tool is chosen. */
+/* Commit every editable frame shape, e.g. when painting mode ends or another
+ * tool is chosen. */
 void
-rounded_rect_finish_all (ScreenatorData *data)
+frame_finish_all (ScreenatorData *data)
 {
   GHashTableIter it;
   gpointer value;
@@ -1568,9 +2903,12 @@ rounded_rect_finish_all (ScreenatorData *data)
   if (!data->devdatatable)
     return;
 
+  if (data->suspend_frame_finish)
+    return;
+
   g_hash_table_iter_init (&it, data->devdatatable);
   while (g_hash_table_iter_next (&it, NULL, &value))
-    rounded_rect_finish (data, value);
+    frame_finish (data, value);
 }
 
 
@@ -2109,6 +3447,7 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
   guint32 seed, fill_pixel;
   guint32 fa, fr, fg, fb;
   gboolean seed_clear, touches_edge = FALSE;
+  gboolean erase;
   gint width, height, stride, row_pixels;
   gint minx, miny, maxx, maxy;
   guint i;
@@ -2123,16 +3462,29 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
   if (x < 0 || y < 0 || x >= width || y >= height)
     return FALSE;
 
+  /* None means no fill colour: the bucket erases the enclosed area instead of
+   * filling it, so an area filled with a colour becomes transparent again. */
+  erase = !data->shape_fill_enabled;
+
   color = data->shape_fill_color;
   color.alpha = data->opacity;
 
-  fa = (guint32) (CLAMP (color.alpha, 0.0, 1.0) * 255.0 + 0.5);
-  if (fa == 0)
-    return FALSE;
+  if (erase)
+    {
+      /* The target pixel is fully transparent, so the flood matches the seed
+       * colour and the matched pixels are cleared. */
+      fa = fr = fg = fb = 0;
+    }
+  else
+    {
+      fa = (guint32) (CLAMP (color.alpha, 0.0, 1.0) * 255.0 + 0.5);
+      if (fa == 0)
+	return FALSE;
 
-  fr = (guint32) (CLAMP (color.red, 0.0, 1.0) * fa + 0.5);
-  fg = (guint32) (CLAMP (color.green, 0.0, 1.0) * fa + 0.5);
-  fb = (guint32) (CLAMP (color.blue, 0.0, 1.0) * fa + 0.5);
+      fr = (guint32) (CLAMP (color.red, 0.0, 1.0) * fa + 0.5);
+      fg = (guint32) (CLAMP (color.green, 0.0, 1.0) * fa + 0.5);
+      fb = (guint32) (CLAMP (color.blue, 0.0, 1.0) * fa + 0.5);
+    }
   fill_pixel = (fa << 24) | (fr << 16) | (fg << 8) | fb;
 
   cairo_surface_flush (surface);
@@ -2256,6 +3608,12 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
 
 	  if (!row_mask[j])
 	    continue;
+
+	  if (erase)
+	    {
+	      row[j] = 0;
+	      continue;
+	    }
 
 	  dst = row[j];
 	  da = (dst >> 24) & 0xff;
@@ -2450,6 +3808,8 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 		    G_CALLBACK (on_buttonpress), data);
   g_signal_connect (data->win, "button_release_event",
 		    G_CALLBACK (on_buttonrelease), data);
+  g_signal_connect (data->win, "scroll_event",
+		    G_CALLBACK (on_scroll), data);
   /* disconnect previously defined selection handlers */
   g_signal_handlers_disconnect_by_func (data->win, 
 					G_CALLBACK (on_clientapp_selection_get),
@@ -2464,12 +3824,8 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 		    G_CALLBACK (on_mainapp_selection_received), data);
 
 
-  if(!data->composited) // set initial shape
-    {
-      cairo_region_t* r = gdk_cairo_region_create_from_surface(data->backbuffer);
-      gtk_widget_shape_combine_region(data->win, r);
-      cairo_region_destroy(r);
-    }
+  /* The initial shape also depends on the saved screen paper. */
+  update_window_shape (data);
   
 
   /* reset settings from client setup */
@@ -2501,6 +3857,9 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
     parse key file
   */
   read_keyfile(data);
+
+  /* The saved screen paper changes how much of the window is visible. */
+  update_window_shape (data);
 
   /*
     parse cmdline
@@ -2581,6 +3940,10 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 
   data->painted = 0;
   hide_window (data);
+
+  /* A saved screen paper is shown right away. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    show_window (data);
 
   data->timeout_id = g_timeout_add (20, reshape, data);
  

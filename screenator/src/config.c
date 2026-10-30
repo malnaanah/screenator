@@ -461,7 +461,8 @@ read_pen_tool (GKeyFile *key_file)
 					   "text", "rectangle", "ellipse",
 					   "rounded-rectangle", "angled-line",
 					   "free-line", "angled-arrow", "marker",
-					   "spline", "bucket", "polygon", "triangle" };
+					   "spline", "bucket", "polygon", "triangle",
+					   "math", "bars" };
     gchar *value = g_key_file_get_string (key_file, "Drawing", "Tool", NULL);
     gint tool = 0;
 
@@ -487,6 +488,13 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
+/* Names of the per-tool hint flags, in ScreenatorToolHint order. */
+static const gchar * const hint_names[] =
+{
+  "pen", "marker", "eraser", "text", "line", "arrow", "spline", "polygon",
+  "triangle", "ellipse", "rounded-rectangle", "math", "bars", "bucket"
+};
+
 void read_keyfile(ScreenatorData *data)
 {
     gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
@@ -505,8 +513,20 @@ void read_keyfile(ScreenatorData *data)
     data->shape_fill_enabled = FALSE;
     gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
     data->shape_fill_color.alpha = 1.0;
-    data->hide_tool_hint = FALSE;
+    data->paper = SCREENATOR_PAPER_NONE;
+    data->math_expression = g_strdup ("cos(2*pi*x)");
+    data->math_xmin = -2.0;
+    data->math_xmax = 2.0;
+    data->math_polar = FALSE;
+    data->math_polar_expression = g_strdup ("cos(3*theta)");
+    data->math_theta_min = 0.0;
+    data->math_theta_max = 2.0 * G_PI;
+    memset (data->hide_tool_hints, 0, sizeof (data->hide_tool_hints));
     data->hide_spline_hint = FALSE;
+    data->hide_snap_hint = FALSE;
+    data->hide_text_hint = FALSE;
+    data->show_settings_indicator = TRUE;
+    data->show_floating_icon = TRUE;
 
     /*
       read actual settings
@@ -594,13 +614,149 @@ void read_keyfile(ScreenatorData *data)
 	    g_free (fill);
 	}
 
-    if (g_key_file_has_key (key_file, "Drawing", "HideToolHint", NULL))
-	data->hide_tool_hint =
-	    g_key_file_get_boolean (key_file, "Drawing", "HideToolHint", NULL);
+    if (g_key_file_has_key (key_file, "Drawing", "Paper", NULL))
+	{
+	    gchar *paper =
+		g_key_file_get_string (key_file, "Drawing", "Paper", NULL);
+
+	    if (paper)
+		{
+		    if (g_ascii_strcasecmp (paper, "plain") == 0)
+			data->paper = SCREENATOR_PAPER_PLAIN;
+		    else if (g_ascii_strcasecmp (paper, "ruled") == 0)
+			data->paper = SCREENATOR_PAPER_RULED;
+		    else if (g_ascii_strcasecmp (paper, "graph") == 0)
+			data->paper = SCREENATOR_PAPER_GRAPH;
+		    g_free (paper);
+		}
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathExpression", NULL))
+	{
+	    gchar *expression =
+		g_key_file_get_string (key_file, "Drawing", "MathExpression",
+				       NULL);
+
+	    if (expression && *expression)
+		{
+		    g_free (data->math_expression);
+		    data->math_expression = expression;
+		}
+	    else
+		g_free (expression);
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathXMin", NULL))
+	data->math_xmin =
+	    g_key_file_get_double (key_file, "Drawing", "MathXMin", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathXMax", NULL))
+	data->math_xmax =
+	    g_key_file_get_double (key_file, "Drawing", "MathXMax", NULL);
+
+    /* A saved range that is empty or reversed would draw nothing. */
+    if (!(data->math_xmax > data->math_xmin))
+	{
+	    data->math_xmin = -2.0;
+	    data->math_xmax = 2.0;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathPolar", NULL))
+	data->math_polar =
+	    g_key_file_get_boolean (key_file, "Drawing", "MathPolar", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathPolarExpression",
+			    NULL))
+	{
+	    gchar *expression =
+		g_key_file_get_string (key_file, "Drawing",
+				       "MathPolarExpression", NULL);
+
+	    if (expression && *expression)
+		{
+		    g_free (data->math_polar_expression);
+		    data->math_polar_expression = expression;
+		}
+	    else
+		g_free (expression);
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathThetaMin", NULL))
+	data->math_theta_min =
+	    g_key_file_get_double (key_file, "Drawing", "MathThetaMin", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "MathThetaMax", NULL))
+	data->math_theta_max =
+	    g_key_file_get_double (key_file, "Drawing", "MathThetaMax", NULL);
+
+    /* A saved theta range that is empty or reversed would draw nothing. */
+    if (!(data->math_theta_max > data->math_theta_min))
+	{
+	    data->math_theta_min = 0.0;
+	    data->math_theta_max = 2.0 * G_PI;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "HiddenToolHints", NULL))
+	{
+	    gchar *value = g_key_file_get_string (key_file, "Drawing",
+						  "HiddenToolHints", NULL);
+
+	    if (value)
+		{
+		    gchar **names = g_strsplit (value, ",", -1);
+		    guint i;
+
+		    for (i = 0; names[i]; i++)
+			{
+			    gchar *name = g_strstrip (names[i]);
+			    guint j;
+
+			    for (j = 0; j < G_N_ELEMENTS (hint_names); j++)
+				if (g_ascii_strcasecmp (name, hint_names[j]) == 0)
+				    data->hide_tool_hints[j] = TRUE;
+			}
+
+		    g_strfreev (names);
+		    g_free (value);
+		}
+	}
+    else if (g_key_file_has_key (key_file, "Drawing", "HideToolHint", NULL) &&
+	     g_key_file_get_boolean (key_file, "Drawing", "HideToolHint", NULL))
+	{
+	    /* An older build hid all the tool hints with one flag. */
+	    guint j;
+
+	    for (j = 0; j < G_N_ELEMENTS (hint_names); j++)
+		data->hide_tool_hints[j] = TRUE;
+	}
 
     if (g_key_file_has_key (key_file, "Drawing", "HideSplineHint", NULL))
 	data->hide_spline_hint =
 	    g_key_file_get_boolean (key_file, "Drawing", "HideSplineHint", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "HideSnapHint", NULL))
+	data->hide_snap_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideSnapHint", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "HideTextHint", NULL))
+	data->hide_text_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideTextHint", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "ShowSettingsIndicator", NULL))
+	data->show_settings_indicator =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "ShowSettingsIndicator", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "ShowFloatingIcon", NULL))
+	data->show_floating_icon =
+	    g_key_file_get_boolean (key_file, "Drawing", "ShowFloatingIcon",
+				    NULL);
+    else if (g_key_file_has_key (key_file, "Drawing", "ShowFloatingMenu",
+				 NULL))
+	/* Older builds saved the setting under this name. */
+	data->show_floating_icon =
+	    g_key_file_get_boolean (key_file, "Drawing", "ShowFloatingMenu",
+				    NULL);
 
     data->pen_tool = read_pen_tool (key_file);
 
@@ -626,7 +782,8 @@ void write_keyfile(ScreenatorData *data)
 					       "text", "rectangle", "ellipse",
 					       "rounded-rectangle", "angled-line",
 					       "free-line", "angled-arrow", "marker",
-					       "spline", "bucket", "polygon", "triangle" };
+					       "spline", "bucket", "polygon", "triangle",
+					       "math", "bars" };
     gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
 				 g_get_user_config_dir(), "screenator.ini", NULL);
 
@@ -646,14 +803,54 @@ void write_keyfile(ScreenatorData *data)
 			   (data->font && *data->font) ? data->font
 						       : KEY_DFLT_FONT);
     g_key_file_set_string (key_file, "Drawing", "ShapeFill", fill);
+    g_key_file_set_string (key_file, "Drawing", "Paper",
+			   data->paper == SCREENATOR_PAPER_PLAIN ? "plain" :
+			   data->paper == SCREENATOR_PAPER_RULED ? "ruled" :
+			   data->paper == SCREENATOR_PAPER_GRAPH ? "graph" :
+			   "none");
     g_key_file_set_string (key_file, "Drawing", "Tool",
 			   (data->pen_tool >= 0 &&
 			    data->pen_tool < (gint) G_N_ELEMENTS (tool_names))
 			   ? tool_names[data->pen_tool] : "none");
-    g_key_file_set_boolean (key_file, "Drawing", "HideToolHint",
-			    data->hide_tool_hint);
+    g_key_file_set_string (key_file, "Drawing", "MathExpression",
+			   data->math_expression ? data->math_expression : "");
+    g_key_file_set_double (key_file, "Drawing", "MathXMin", data->math_xmin);
+    g_key_file_set_double (key_file, "Drawing", "MathXMax", data->math_xmax);
+    g_key_file_set_boolean (key_file, "Drawing", "MathPolar",
+			    data->math_polar);
+    g_key_file_set_string (key_file, "Drawing", "MathPolarExpression",
+			   data->math_polar_expression
+			   ? data->math_polar_expression : "");
+    g_key_file_set_double (key_file, "Drawing", "MathThetaMin",
+			   data->math_theta_min);
+    g_key_file_set_double (key_file, "Drawing", "MathThetaMax",
+			   data->math_theta_max);
+    {
+	GString *hidden = g_string_new (NULL);
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS (hint_names); i++)
+	    if (data->hide_tool_hints[i])
+		{
+		    if (hidden->len > 0)
+			g_string_append_c (hidden, ',');
+		    g_string_append (hidden, hint_names[i]);
+		}
+
+	g_key_file_set_string (key_file, "Drawing", "HiddenToolHints",
+			       hidden->str);
+	g_string_free (hidden, TRUE);
+    }
     g_key_file_set_boolean (key_file, "Drawing", "HideSplineHint",
 			    data->hide_spline_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HideSnapHint",
+			    data->hide_snap_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HideTextHint",
+			    data->hide_text_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "ShowSettingsIndicator",
+			    data->show_settings_indicator);
+    g_key_file_set_boolean (key_file, "Drawing", "ShowFloatingIcon",
+			    data->show_floating_icon);
     g_free (color);
     g_free (fill);
 

@@ -1,5 +1,5 @@
 .\"                                      Hey, vim: ft=nroff
-.TH SCREENATOR 1 "October 28, 2026"
+.TH SCREENATOR 1 "October 29, 2026"
 .SH NAME
 Screenator \- vibe-coded screen annotation tool
 .SH SYNOPSIS
@@ -18,19 +18,46 @@ on-screen icon whose left/right click opens a menu with the drawing tools
 thickness, eraser size, opacity, shape fill, text font and floating icon
 size). The same menu is available from the system tray icon.
 .br
+A small settings indicator sits to the left of the floating icon: a rectangle
+as tall as the icon, divided into three equal-height pieces centred
+horizontally. The upper piece is the current line thickness in the line
+colour, the middle piece is 24 pixels of the line colour and the lower piece is
+24 pixels of the shape fill colour (a black and white checkerboard when shapes
+are not filled). Each piece is surrounded by a one pixel black outline. "Show
+Settings Indicator" in the menu turns it off and on; it is on by default and
+is disabled while the floating icon is hidden.
+.br
 The Marker draws a yellow highlighter stroke with a fixed 32 pixel width and
 50% opacity. Its settings are independent of the line colour, thickness and
 opacity chosen for the other tools.
 .br
-The Shapes submenu contains the Marker, Free Line, Spline, Polygon, Triangle,
-Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
-Paint Bucket tools.
-Shapes are drawn by dragging from the start point to the end point; the free
-line and the arrow follow the drag direction, while the Angled Line and Angled
-Arrow snap to 0, 30, 45, 60, 90, 120, 135 and 150 degrees. The arrow tools add a
-head at the end point. Rectangles, ellipses, rounded rectangles, polygons and
-triangles can be filled using the "Shapes Fill Color" submenu; the default is
-no fill and green is its first colour.
+While painting mode is active, the mouse wheel steps through the line colours;
+with the Paint Bucket tool it steps through the shape fill colours and with the
+Eraser it steps through the eraser sizes instead. The change is the same as
+picking it from the menu, so it is kept when another tool is selected and is
+shown in the settings indicator and the menus.
+.br
+The Shapes submenu contains the Marker, Line, Spline, Polygon, Triangle,
+Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
+Lines tools.
+Shapes are drawn by dragging from the start point to the end point. The line
+and the arrow follow the drag direction, which snaps to 0, 30, 45, 60, 90 and
+so on while Ctrl is held; without it the direction follows the pointer. The
+arrow adds a triangular head at the end point that stays easy to see even with
+a thin line. A placed line or arrow stays editable:
+each end point has a round handle, and dragging the line itself moves the whole
+shape; clicking outside, double-clicking or right-clicking commits it.
+Ellipses, rounded rectangles, polygons and triangles can be filled using the
+"Shapes Fill Color" submenu; the default is no fill and green is its first
+colour.
+.br
+The "Screen Paper" submenu turns the screen into paper for drawing and
+writing: None shows the normal desktop, Plain a white page, Ruled a white page
+with blue writing lines and Graph a white page with a grey square grid. The
+paper is drawn below the annotations and above the other windows, the floating
+icon and its menu stay above it, it takes the mouse and keyboard so clicks and
+typing do not reach the desktop or the applications below, and it stays in
+place when the screen is cleared.
 .br
 The Spline tool is placed click by click instead: every click adds a node, the
 nodes are joined by a smooth Bezier curve, and dragging a node moves it. Every
@@ -44,42 +71,87 @@ four handles: the square handle controls the number of sides from 3 to 16
 (pressing it resets the shape to 3 sides; moving away from it in any direction
 adds sides and moving back towards it removes them, down to 3 at the handle),
 one round handle sets the radius, one sets the rotation, and one moves the
-inner vertices outwards until the shape becomes a regular polygon. Drag inside
-the shape to move it. Clicking empty space commits it and places the next one;
-double-click or right-click commits it.
+inner vertices outwards until the shape becomes a regular polygon; that handle
+snaps to the flat edge when it gets close, so a regular polygon is easy to
+hit. Drag inside the shape to move it. Clicking empty space commits it and
+places the next one; double-click or right-click commits it.
 .br
 The Triangle tool places an equilateral triangle with a single click and keeps
 it editable with three round handles, one on every vertex. Dragging a handle
-moves that vertex, so the triangle can be stretched and skewed freely; drag
-inside the triangle to move the whole shape. Clicking empty space commits it
-and places the next one, and a double-click or right-click commits it.
+moves that vertex, so the triangle can be stretched and skewed freely; holding
+Ctrl while dragging a vertex snaps the angle at that vertex to 30, 45, 60 or
+90 degrees. Drag inside the triangle to move the whole shape. Clicking empty
+space commits it and places the next one, and a double-click or right-click
+commits it.
 .br
-The Rounded Rectangle keeps a roundness handle on its top edge after it has
-been dragged out. Dragging the handle away from the corner rounds the corners
-more; dragging it towards the corner makes them sharper. The shape stays
-editable until you click outside it, double-click or right-click.
+The Ellipse and Rounded Rectangle stay editable after they have been dragged
+out. Every placed shape keeps a square size handle on its bottom-right corner
+and a round rotation handle above it, and dragging inside the shape moves it;
+rotation is free, and holding Ctrl snaps it to 0, 30, 45, 60, 90 and so on.
+The Rounded Rectangle also keeps a roundness handle on its top edge:
+dragging it away from the corner rounds the corners more, and dragging it
+towards the corner makes them sharper. Clicking outside the shape,
+double-clicking or right-clicking commits it.
+.br
+The Math Function tool opens a dialog for the expression and the range. The
+Rectangular mode plots y = f(x) over an x range and takes a function of x; the
+Polar mode plots r = f(theta) over a theta range, where theta is reserved for
+the angle and the default range is 0 to 2*pi, a full circle. "pi" and "e" are
+the constants pi and Euler's number, and multiplication can be implied
+("2pi*x"). A preset drop-down fills the expression with "cos(2*pi*x)",
+"sin(2*pi*x)", "unit(x)", "delta(x)", "e^(x)", "log(x)", "1/x",
+"sin(2*pi*x)/(2*pi*x)" or "(cos(2*pi*x)+2)*cos(20*pi*x)"; in polar mode the
+same presets use theta instead of x. unit(x) is
+the unit step, and delta(x) is the Dirac delta, drawn as an arrow at the point
+where its argument is zero. The defaults are "cos(2*pi*x)" from x = -2 to
+x = 2 and "cos(3*theta)" from theta = 0 to 2*pi; each mode keeps its own
+expression and range. The plot is drawn inside a frame that is dragged out
+like the other shapes and is scaled to fill it, so the size handle also sets
+its amplitude; polar plots use one scale for both axes, so the curve stays
+round in a non-square frame. The plot can be moved, resized and rotated with the usual
+handles. Selecting the tool from the Shapes menu asks for the expression
+first, and choosing it again changes the expression; a plot that is still
+editable updates at once. A point where the
+expression is undefined is filled in with its limit when both sides agree, so
+"sin(2*pi*x)/(2*pi*x)" is drawn through x = 0; a real pole such as "1/x" or "tan(x)"
+breaks the curve instead.
+.br
+The Parallel Lines tool draws between 2 and 40 evenly spaced vertical lines
+with the current line thickness. The square handle outside the left edge sets
+their number: pressing it resets the shape to two lines and moving away adds
+more. The lines can be moved, resized and rotated with the usual handles.
 .br
 The Paint Bucket fills the closed area under the click with the Shapes Fill
 Color. The area must be enclosed by drawn strokes and must not reach the screen
 edge; otherwise nothing is filled, so clicking outside a shape cannot flood the
-whole screen. The tool shows a bucket cursor.
+whole screen. With None selected the bucket erases the enclosed fill instead,
+leaving the strokes around it. The tool shows a bucket cursor.
 .br
 The eraser size can be set to 20, 40, 60 or 120 pixels from the menu. The
 erasing area and the circular eraser cursor both match the selected size.
 .br
 The Text tool lets you write directly on the screen. Click where the text
 should start and type: a small borderless editor appears at that position,
-using the pen colour and the font selected by "Change Font". Press Enter to
-place the text or Escape to cancel it.
+using the pen colour and the font selected by "Change Font". The text is
+centred vertically on the click point. The text and its blinking caret are
+drawn above the drawings and the screen paper, so they stay visible over them.
+The middle mouse button still erases while it is held, also with the Text tool
+selected. Press Enter to place the text or Escape to cancel it. A placed text
+stays editable: drag it to
+move it, drag its square handle to change the font size, and drag its round
+handle to rotate it.
 .br
-The pen and font settings are remembered in
+The pen, font and screen paper settings are remembered in
 .I ~/.config/screenator.ini
 and can be restored to their defaults with the "Reset Settings" menu entry.
 .br
-Selecting a tool shows a short hint about the mouse buttons. The hint can be
-turned off with "Never show this message again"; the Spline hint, which also
-explains how to move its handles, has its own option.
-Reset Settings leaves both choices untouched.
+Selecting a tool shows a short hint that describes that tool: its mouse
+buttons, what the mouse wheel changes and how its handles work. Each tool's
+message can be turned off separately with "Never show this message again";
+the Spline hint, which also explains how to move its handles, has its own
+option, and the tools whose handles snap show a hint about holding Ctrl to
+snap to 0, 30, 45, 60, 90 degrees and so on. Reset Settings leaves all the
+choices untouched.
 .br
 .SH KEYBOARD CONTROL
 By default, Screenator grabs the "F9" key (this can be changed using the
@@ -190,8 +262,9 @@ System-wide tool configuration, used when the user configuration does not
 exist.
 .TP
 .I ~/.config/screenator.ini
-Saved menu settings (line colour, thickness, opacity, shape fill, floating
-icon size, text font and the selected tool).
+Saved menu settings (line colour, thickness, opacity, shape fill, screen
+paper, floating icon size, settings indicator visibility, text font, math
+expression and range, and the selected tool).
 .SH NOTES
 Screenator is X11-only. Under Wayland it runs through XWayland.
 .SH AUTHORS

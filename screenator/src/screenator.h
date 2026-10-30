@@ -38,7 +38,8 @@
 
 #define SCREENATOR_MOUSE_EVENTS ( GDK_BUTTON_MOTION_MASK | \
                               GDK_BUTTON_PRESS_MASK | \
-                              GDK_BUTTON_RELEASE_MASK )
+                              GDK_BUTTON_RELEASE_MASK | \
+                              GDK_SCROLL_MASK )
 
 #define SCREENATOR_WINDOW_EVENTS ( SCREENATOR_MOUSE_EVENTS | GDK_EXPOSURE_MASK)
 
@@ -60,6 +61,9 @@
 
 #define SCREENATOR_MAX_UNDO 4
 
+/* Smallest size a placed frame shape can be resized to. */
+#define FRAME_MIN_SIZE 8.0
+
 /* Arrow size used by the "Arrow" tool in the icon menu. */
 #define PEN_ARROW_SIZE 1.5
 
@@ -72,22 +76,55 @@ typedef enum
   SCREENATOR_SHAPE
 } ScreenatorPaintType;
 
-/* Shape tools.  The angled line is a line, the others are closed shapes that
- * can optionally be filled. */
+/* Shape tools.  The line and arrow are drawn from one end point to the other;
+ * the closed shapes can optionally be filled. */
 typedef enum
 {
-  SCREENATOR_SHAPE_RECTANGLE,
   SCREENATOR_SHAPE_ELLIPSE,
   SCREENATOR_SHAPE_ROUNDED_RECTANGLE,
-  SCREENATOR_SHAPE_ANGLED_LINE,
-  SCREENATOR_SHAPE_FREE_LINE,
-  SCREENATOR_SHAPE_ANGLED_ARROW,
-  SCREENATOR_SHAPE_FREE_ARROW,
+  SCREENATOR_SHAPE_LINE,
+  SCREENATOR_SHAPE_ARROW,
   SCREENATOR_SHAPE_SPLINE,
   SCREENATOR_SHAPE_BUCKET,
   SCREENATOR_SHAPE_STAR,
-  SCREENATOR_SHAPE_TRIANGLE
+  SCREENATOR_SHAPE_TRIANGLE,
+  SCREENATOR_SHAPE_MATH,
+  SCREENATOR_SHAPE_BARS,
+  /* Not a menu tool: the type of a text frame that is being edited. */
+  SCREENATOR_SHAPE_TEXT
 } ScreenatorShapeType;
+
+/* Background shown on the screen for drawing and writing.  The paper is drawn
+ * below the annotations and stays when the screen is cleared; NONE turns it
+ * off again. */
+typedef enum
+{
+  SCREENATOR_PAPER_NONE = 0,
+  SCREENATOR_PAPER_PLAIN,
+  SCREENATOR_PAPER_RULED,
+  SCREENATOR_PAPER_GRAPH
+} ScreenatorPaperType;
+
+/* One entry for every tool hint, so "Never show this message again" applies to
+ * that tool only.  The order matches the names in config.c. */
+typedef enum
+{
+  SCREENATOR_HINT_PEN = 0,
+  SCREENATOR_HINT_MARKER,
+  SCREENATOR_HINT_ERASER,
+  SCREENATOR_HINT_TEXT,
+  SCREENATOR_HINT_LINE,
+  SCREENATOR_HINT_ARROW,
+  SCREENATOR_HINT_SPLINE,
+  SCREENATOR_HINT_POLYGON,
+  SCREENATOR_HINT_TRIANGLE,
+  SCREENATOR_HINT_ELLIPSE,
+  SCREENATOR_HINT_ROUNDED_RECTANGLE,
+  SCREENATOR_HINT_MATH,
+  SCREENATOR_HINT_BARS,
+  SCREENATOR_HINT_BUCKET,
+  SCREENATOR_HINT_COUNT
+} ScreenatorToolHint;
 
 typedef struct
 {
@@ -164,17 +201,76 @@ typedef enum
   SCREENATOR_TRIANGLE_HANDLE_CENTRE
 } ScreenatorTriangleHandle;
 
+/* The line and arrow tools stay editable after the drag: each end point has
+ * its own round handle, and pressing the line itself moves both ends. */
+typedef struct
+{
+  ScreenatorShapeType type;   /* SCREENATOR_SHAPE_LINE or ..._ARROW */
+  gint                x0;
+  gint                y0;
+  gint                x1;
+  gint                y1;
+} ScreenatorLine;
+
+/* Handles of the line and arrow tools.  NONE is zero so a freshly allocated
+ * device data starts with no drag in progress. */
+typedef enum
+{
+  SCREENATOR_LINE_HANDLE_NONE = 0,
+  SCREENATOR_LINE_HANDLE_START,
+  SCREENATOR_LINE_HANDLE_END,
+  SCREENATOR_LINE_HANDLE_MOVE
+} ScreenatorLineHandle;
+
 /* The rounded rectangle keeps its rectangle and corner radius editable after
  * it is dragged out.  "radius" is in pixels and is clamped to half the shorter
  * side, where the shape becomes a stadium. */
+/* A placed shape that can be edited with handles.  The rectangle, the ellipse,
+ * the rounded rectangle, the text, the math plot and the parallel lines all
+ * use the same frame: a centre, a size and a rotation.  "type" says how the
+ * frame is painted and which extra handle it offers. */
 typedef struct
 {
-  gint    x0;
-  gint    y0;
-  gint    x1;
-  gint    y1;
-  gdouble radius;
-} ScreenatorRoundedRect;
+  gdouble cx;
+  gdouble cy;
+  gdouble w;          /* full width in pixels */
+  gdouble h;          /* full height in pixels */
+  gdouble rotation;   /* radians, clockwise on screen */
+} ScreenatorFrame;
+
+typedef enum
+{
+  SCREENATOR_FRAME_HANDLE_NONE = 0,
+  SCREENATOR_FRAME_HANDLE_MOVE,     /* drag inside the frame */
+  SCREENATOR_FRAME_HANDLE_SIZE,     /* square handle on the bottom-right corner */
+  SCREENATOR_FRAME_HANDLE_ROTATE,   /* round handle above the frame */
+  SCREENATOR_FRAME_HANDLE_EXTRA     /* roundness or line count */
+} ScreenatorFrameHandle;
+
+/* Functions the Math tool can plot are entered as a text expression, e.g.
+ * "cos(2*pi*x)", so the frame stores the expression and the x range. */
+
+/* One placed frame shape.  "extra" is the corner radius of a rounded
+ * rectangle; "count" is the number of lines of the parallel-lines tool; text
+ * shapes keep their string, font and colour so later menu changes do not
+ * rewrite them. */
+typedef struct
+{
+  ScreenatorShapeType    type;
+  ScreenatorFrame        frame;
+  gdouble                extra;
+  gint                   count;
+  gchar                 *expression;   /* Math tool: y = f(x) or r = f(theta) */
+  gdouble                xmin;         /* x range, or theta range in polar mode */
+  gdouble                xmax;
+  gboolean               polar;        /* TRUE: r = f(theta), FALSE: y = f(x) */
+  gchar                 *text;
+  gchar                 *font;
+  gdouble                font_size;
+  gint                   text_off_x;   /* ink offset inside the frame */
+  gint                   text_off_y;
+  GdkRGBA                color;
+} ScreenatorFrameShape;
 
 typedef struct
 {
@@ -237,15 +333,32 @@ typedef struct
   gint                    triangle_press_y;
   GdkPoint                triangle_press_v[3];
 
-  /* Rounded rectangle: after the drag its corner radius stays adjustable
-   * until the shape is committed. */
-  gboolean              rounded_active;
-  ScreenatorRoundedRect rounded;
-  gboolean              rounded_radius_drag;
-  gboolean              rounded_move_drag;
-  gint                  rounded_press_x;
-  gint                  rounded_press_y;
-  ScreenatorRoundedRect rounded_press;
+  /* Line and arrow tools: both end points stay editable until the shape is
+   * committed. */
+  gboolean                line_active;
+  ScreenatorLine          line;
+  ScreenatorLineHandle    line_drag;
+  gint                    line_press_x;
+  gint                    line_press_y;
+  gint                    line_press_x0;
+  gint                    line_press_y0;
+  gint                    line_press_x1;
+  gint                    line_press_y1;
+
+  /* Placed frame shapes (ellipse, rounded rectangle, text, math plot,
+   * parallel lines).  They stay editable until they are committed. */
+  gboolean              frame_active;
+  ScreenatorFrameShape  frame_shape;
+  ScreenatorFrameHandle frame_drag;
+  gint                  frame_press_x;
+  gint                  frame_press_y;
+  gdouble               frame_press_cx;
+  gdouble               frame_press_cy;
+  gdouble               frame_press_w;
+  gdouble               frame_press_h;
+  gdouble               frame_press_rotation;
+  gdouble               frame_press_font_size;
+  gdouble               frame_press_distance;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
@@ -265,11 +378,33 @@ typedef struct
   /* Movable on-screen icon window */
   GtkWidget   *icon_win;
   GtkWidget   *icon_image;
-  gint         icon_drag_start_x;
+  gint         icon_drag_start_x;  /* pointer offset inside the icon */
   gint         icon_drag_start_y;
+  gint         icon_press_x;       /* root position of the button press */
+  gint         icon_press_y;
   gboolean     icon_dragging;
+  gboolean     icon_pointer_grabbed; /* pointer held during a click/drag */
+  gboolean     icon_focus_taken;     /* focus borrowed for the icon menu */
+  gulong       icon_prev_focus;      /* X11 window that had the focus */
+  GtkWidget   *icon_menu_pending;    /* menu waiting for the keyboard */
+  guint        icon_menu_retry_id;
+  guint        icon_menu_retry_count;
   gint         icon_menu_x;
   gint         icon_menu_y;
+
+  /* Small indicator of the current line and fill settings, shown to the left
+   * of the floating icon. */
+  GtkWidget   *settings_win;
+  gboolean     show_settings_indicator;
+
+  /* Whether the floating icon (the menu button) is shown. */
+  gboolean     show_floating_icon;
+
+  /* Dialog shown above the drawings, and the state that is restored when the
+   * last dialog closes (see show_dialog_above_drawings()). */
+  GtkWidget   *top_dialog;
+  gboolean     dialog_hid_annotation; /* annotation window hidden for it */
+  gboolean     dialog_released_grab;  /* painting grab released for it */
 
   GdkCursor   *paint_cursor;
   GdkCursor   *erase_cursor;
@@ -302,12 +437,26 @@ typedef struct
 
   /* Tool hints.  These are independent of the other settings: Reset Settings
    * must not re-enable hints the user has turned off. */
-  gboolean     hide_tool_hint;
+  gboolean     hide_tool_hints[SCREENATOR_HINT_COUNT];
   gboolean     hide_spline_hint;
+  gboolean     hide_snap_hint;
+  gboolean     hide_text_hint;
 
   /* Shape tools */
   ScreenatorPaintContext *default_shape;
   ScreenatorShapeType     shape_type;
+  /* Math tool settings.  Rectangular plots use y = f(x) over [xmin, xmax];
+   * polar plots use r = f(theta) over [theta_min, theta_max].  Each mode
+   * keeps its own expression and range so switching between them does not
+   * lose the other plot. */
+  gboolean                math_polar;
+  gchar                  *math_expression;         /* y as a function of x */
+  gdouble                 math_xmin;
+  gdouble                 math_xmax;
+  gchar                  *math_polar_expression;   /* r as a function of theta */
+  gdouble                 math_theta_min;
+  gdouble                 math_theta_max;
+  gboolean                suspend_frame_finish;
   gboolean             shape_fill_enabled;
   GdkRGBA              shape_fill_color;
 
@@ -321,7 +470,16 @@ typedef struct
   gboolean     text_editor_active;
   gboolean     text_editor_sized;  /* fixed width chosen for this editor */
   gboolean     text_editor_rtl;    /* editor width was sized for RTL text */
+  /* The text being typed is previewed in the annotation window, above the
+   * annotations, because the editor window itself can be hidden behind them.
+   * The caret is drawn there too, so it is never hidden by a drawing or the
+   * screen paper. */
+  gboolean     text_preview_valid;
+  GdkRectangle text_preview_bounds; /* last area invalidated for the preview */
+  gboolean     text_caret_visible;
+  guint        text_caret_timeout;
   GtkWidget   *tray_menu;
+  guint        tray_refresh_id;   /* pending tray menu rebuild */
 
   GdkRGBA     *white;
   GdkRGBA     *black;
@@ -350,6 +508,11 @@ typedef struct
   gboolean     hidden;
   gboolean     debug;
 
+  /* Screen paper drawn below the annotations. */
+  ScreenatorPaperType paper;
+  /* X11 window that had the focus before a paper took it. */
+  gulong       paper_prev_focus;
+
   gchar       *clientdata;
 
   cairo_surface_t *undobuffer[SCREENATOR_MAX_UNDO];
@@ -362,6 +525,14 @@ typedef struct
 void toggle_visibility (ScreenatorData *data);
 void hide_window (ScreenatorData *data);
 void show_window (ScreenatorData *data);
+
+/* Screen paper drawn below the annotations. */
+void draw_screen_paper (ScreenatorData *data, cairo_t *cr);
+void paper_take_focus (ScreenatorData *data);
+void paper_restore_focus (ScreenatorData *data);
+void update_window_shape (ScreenatorData *data);
+void text_preview_add_shape (ScreenatorData *data, cairo_region_t *region);
+void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);
 
 void parse_print_help (gpointer key, gpointer value, gpointer user_data);
 
@@ -381,12 +552,15 @@ void redo_drawing (ScreenatorData *data);
 void draw_line (ScreenatorData *data, GdkDevice *dev, gint x1, gint y1, gint x2, gint y2);
 void draw_line_finish (ScreenatorData *data, GdkDevice *dev);
 void draw_arrow (ScreenatorData *data, GdkDevice *dev, gint x1, gint y1, gint width, gfloat direction);
-void draw_text (ScreenatorData *data, GdkDevice *dev, gint x, gint y, const gchar *text);
 void draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 		 gint x0, gint y0, gint x1, gint y1);
 void shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 		       gint x0, gint y0, gint x1, gint y1,
 		       GdkRectangle *bounds);
+void line_get_bounds (ScreenatorData *data, const ScreenatorLine *line,
+		      GdkRectangle *bounds);
+void line_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
+void line_finish_all (ScreenatorData *data);
 void draw_spline (ScreenatorData *data, cairo_t *cr, GArray *nodes);
 void spline_get_bounds (ScreenatorData *data, GArray *nodes,
 			GdkRectangle *bounds);
@@ -406,11 +580,23 @@ void triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
 void triangle_finish_all (ScreenatorData *data);
 void draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
 			gint x0, gint y0, gint x1, gint y1, gdouble radius);
-void rounded_rect_get_bounds (const ScreenatorRoundedRect *rect, gint pad,
-			      GdkRectangle *bounds);
-void rounded_rect_finish (ScreenatorData *data,
-			  ScreenatorDeviceData *devdata);
-void rounded_rect_finish_all (ScreenatorData *data);
+
+/* Editable frame shapes. */
+void frame_shape_clear (ScreenatorFrameShape *shape);
+gdouble frame_font_pixel_size (const gchar *font);
+void frame_shape_measure_text (ScreenatorFrameShape *shape);
+void draw_frame_shape (ScreenatorData *data, cairo_t *cr,
+		       const ScreenatorFrameShape *shape);
+void frame_shape_get_bounds (const ScreenatorFrameShape *shape, gint pad,
+			     GdkRectangle *bounds);
+void frame_handle_position (const ScreenatorFrameShape *shape,
+			    ScreenatorFrameHandle handle, GdkPoint *pos);
+void frame_screen_to_local (const ScreenatorFrame *frame, gdouble x, gdouble y,
+			    gdouble *lx, gdouble *ly);
+void frame_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
+void frame_finish_all (ScreenatorData *data);
+void text_editor_finish (ScreenatorData *data);
+gboolean math_expression_is_valid (const gchar *expression, gchar **error);
 gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);
 
@@ -443,7 +629,12 @@ void indicate_active(ScreenatorData *data, gboolean YESNO);
 /* Movable on-screen icon */
 void create_icon_window (ScreenatorData *data);
 void update_icon_image (ScreenatorData *data);
+void raise_icon_window (ScreenatorData *data);
+void update_settings_indicator (ScreenatorData *data);
 void set_tray_icon (ScreenatorData *data);
+
+/* Keep dialogs and message boxes visible while the drawings are on screen. */
+void show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog);
 
 int app_parse_args (int argc, char **argv, ScreenatorData *data);
 

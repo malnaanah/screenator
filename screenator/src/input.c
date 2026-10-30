@@ -297,6 +297,7 @@ void setup_input_devices (ScreenatorData *data)
 									 "Grabbing hotkey %s from keyboard %d failed. The drawing hotkey function will not work unless configured to use another key.",
 									 data->hot_keyval,
 									 kbd_dev_id);
+			      show_dialog_above_drawings (data, dialog);
 			      gtk_dialog_run (GTK_DIALOG (dialog));
 			      gtk_widget_destroy (dialog);
 
@@ -322,6 +323,7 @@ void setup_input_devices (ScreenatorData *data)
 									 "Grabbing undo key %s from keyboard %d failed. The undo hotkey function will not work unless configured to use another key.",
 									 data->undo_keyval,
 									 kbd_dev_id);
+			      show_dialog_above_drawings (data, dialog);
 			      gtk_dialog_run (GTK_DIALOG (dialog));
 			      gtk_widget_destroy (dialog);
 			  }
@@ -430,11 +432,24 @@ grab_undo_shortcut (ScreenatorData *data, gboolean grab)
       if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
 	continue;
 
-      XIGrabModifiers modifiers[] =
-	{
-	  { ControlMask, 0 },
-	  { ControlMask | ShiftMask, 0 }
-	};
+      /* Caps Lock (and Num Lock) add a modifier bit to the event state.  An
+       * XInput2 grab only matches the exact modifier combination, so grab
+       * every combination of those lock modifiers as well.  Otherwise Ctrl+Z
+       * and Ctrl+Shift+Z stop working as soon as Caps Lock is on. */
+      XIGrabModifiers modifiers[8];
+      gint nmods = 0;
+      const guint lock_masks[] = { 0, LockMask,
+				   Mod2Mask, LockMask | Mod2Mask };
+      gint i, shift;
+
+      for (i = 0; i < (gint) G_N_ELEMENTS (lock_masks); i++)
+	for (shift = 0; shift < 2; shift++)
+	  {
+	    modifiers[nmods].modifiers =
+	      ControlMask | lock_masks[i] | (shift ? ShiftMask : 0);
+	    modifiers[nmods].status = 0;
+	    nmods++;
+	  }
 
       mask.mask = bits;
       mask.mask_len = sizeof (bits);
@@ -448,12 +463,12 @@ grab_undo_shortcut (ScreenatorData *data, gboolean grab)
 		       gdk_x11_device_get_id (d->data), keycode,
 		       GDK_WINDOW_XID (data->root),
 		       GrabModeAsync, GrabModeAsync, True,
-		       &mask, (int) G_N_ELEMENTS (modifiers), modifiers);
+		       &mask, nmods, modifiers);
       else
 	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
 			 gdk_x11_device_get_id (d->data), keycode,
 			 GDK_WINDOW_XID (data->root),
-			 (int) G_N_ELEMENTS (modifiers), modifiers);
+			 nmods, modifiers);
 
       XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
       /* A failed grab means another client already owns the shortcut. */
@@ -472,13 +487,17 @@ grab_undo_shortcut (ScreenatorData *data, gboolean grab)
 void release_grab (ScreenatorData *data, 
 		   GdkDevice *dev)
 {
+  /* A text that is still being typed is committed when painting stops. */
+  text_editor_finish (data);
+
   /* Commit a stroke that is still in progress before painting is stopped. */
   stroke_finish_all (data);
 
   /* Editable shapes are committed when painting stops. */
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
 
   /* An unfinished spline is not committed; drop its preview as well. */
   spline_cancel_all (data);
@@ -528,7 +547,8 @@ void release_grab (ScreenatorData *data,
       indicate_active(data, FALSE);
       grab_undo_shortcut (data, FALSE);
 
-      if (!data->painted)
+      /* The screen paper keeps the annotation window visible. */
+      if (!data->painted && data->paper == SCREENATOR_PAPER_NONE)
 	  hide_window (data);
 
       return;
@@ -556,7 +576,8 @@ void release_grab (ScreenatorData *data,
 	}
     }
 
-  if (!data->painted)
+  /* The screen paper keeps the annotation window visible. */
+  if (!data->painted && data->paper == SCREENATOR_PAPER_NONE)
     hide_window (data);
 }
 

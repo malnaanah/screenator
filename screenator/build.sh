@@ -14,8 +14,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_2.0_amd64.deb"
-APPIMAGE="$BUILD/Screenator-2.0-x86_64.AppImage"
+DEB="$BUILD/screenator_3.0_amd64.deb"
+APPIMAGE="$BUILD/Screenator-3.0-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -126,9 +126,11 @@ install -m 0644 "$SRC"/data/screenator.png \
    "$PKROOT"/usr/share/icons/hicolor/256x256/apps/screenator.png
 install -m 0644 "$SRC"/data/screenator.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator.svg
-for icon in pen arrow text free-line spline polygon triangle bucket rectangle ellipse rounded-rectangle \
-            angled-line angled-arrow marker eraser redo undo trash \
-            reset-settings hide hide-menu font-settings shapes; do
+install -m 0644 "$SRC"/data/screenator-active.svg \
+   "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
+for icon in pen arrow text free-line spline polygon triangle bucket math bars \
+            ellipse rounded-rectangle marker eraser redo undo trash \
+            reset-settings hide font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
 done
 gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
@@ -140,7 +142,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 2.0
+Version: 3.0
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -221,6 +223,8 @@ install -m 0644 "$SRC"/data/screenator.desktop \
    "$APPDIR"/usr/share/applications/screenator.desktop
 install -m 0644 "$SRC"/data/screenator.svg \
    "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator.svg
+install -m 0644 "$SRC"/data/screenator-active.svg \
+   "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 install -m 0644 "$SRC"/data/screenator.png \
    "$APPDIR"/usr/share/icons/hicolor/256x256/apps/screenator.png
 install -m 0644 "$SRC"/data/screenator.png \
@@ -229,16 +233,16 @@ install -m 0644 "$SRC"/data/screenator.appdata.xml \
    "$APPDIR"/usr/share/metainfo/screenator.appdata.xml
 install -m 0644 "$SRC"/data/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
-for icon in pen arrow text free-line spline polygon triangle bucket rectangle ellipse rounded-rectangle \
-            angled-line angled-arrow marker eraser redo undo trash \
-            reset-settings hide hide-menu font-settings shapes; do
+for icon in pen arrow text free-line spline polygon triangle bucket math bars \
+            ellipse rounded-rectangle marker eraser redo undo trash \
+            reset-settings hide font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
 done
 
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=2.0
+export LINUXDEPLOY_OUTPUT_VERSION=3.0
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

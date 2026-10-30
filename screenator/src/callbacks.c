@@ -28,6 +28,11 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+#include <gdk/gdk.h>
+#ifdef GDK_WINDOWING_X11
+#include <X11/Xlib.h>
+#include <gdk/gdkx.h>
+#endif
 #include "screenator.h"
 #include "input.h"
 #include "callbacks.h"
@@ -42,17 +47,111 @@
 static gboolean
 refresh_tray_menu_idle (gpointer user_data)
 {
-  refresh_tray_menu ((ScreenatorData *) user_data);
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  data->tray_refresh_id = 0;
+  refresh_tray_menu (data);
   return G_SOURCE_REMOVE;
 }
 
 static void
 schedule_tray_menu_refresh (ScreenatorData *data)
 {
-  g_idle_add (refresh_tray_menu_idle, data);
+  /* Coalesce a burst of changes (for example while the wheel is turned) into
+   * one rebuild. */
+  if (data->tray_refresh_id)
+    return;
+
+  data->tray_refresh_id = g_idle_add (refresh_tray_menu_idle, data);
+}
+
+/* ------------------------------------------------------------------
+ * Dialogs and message boxes
+ * ------------------------------------------------------------------ */
+
+/* The annotation window is a fullscreen override-redirect popup.  The window
+ * manager does not manage it, so it cannot keep a dialog above it: in virtual
+ * machines without a compositor a dialog ends up behind the drawings.  Hide
+ * the drawings while a dialog is open instead, and show them again when the
+ * last dialog closes.  The painting grab is released for the dialog and
+ * restored afterwards. */
+
+static gboolean
+on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  /* Ask for the keyboard focus, so the dialog can be typed into even when no
+   * window manager is running to focus it. */
+  gtk_window_present (GTK_WINDOW (widget));
+
+  return FALSE;
+}
+
+static void
+on_dialog_destroy (GtkWidget *widget, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  GtkWidget *previous;
+  GdkWindow *annotation;
+
+  previous = g_object_get_data (G_OBJECT (widget),
+				"screenator-previous-dialog");
+  data->top_dialog = previous;
+
+  /* A dialog opened from another dialog keeps the drawings hidden. */
+  if (previous)
+    return;
+
+  /* Show the drawings again, above the windows the dialog covered. */
+  if (data->dialog_hid_annotation && data->win && !data->hidden)
+    {
+      gtk_widget_show (data->win);
+      annotation = gtk_widget_get_window (data->win);
+      if (annotation)
+	gdk_window_raise (annotation);
+      raise_icon_window (data);
+    }
+  data->dialog_hid_annotation = FALSE;
+
+  /* A paper is the active window again after the dialog closes. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+
+  if (data->dialog_released_grab)
+    {
+      data->dialog_released_grab = FALSE;
+      acquire_grab (data, NULL);
+    }
+}
+
+void
+show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
+{
+  /* Hide the drawings for the outermost dialog, so the dialog is never shown
+   * behind them.  An inner dialog finds them hidden already. */
+  if (!data->top_dialog)
+    {
+      data->dialog_released_grab = screenator_any_grabbed (data);
+      if (data->dialog_released_grab)
+	release_grab (data, NULL);
+
+      data->dialog_hid_annotation =
+	data->win && !data->hidden && gtk_widget_get_visible (data->win);
+      if (data->dialog_hid_annotation)
+	gtk_widget_hide (data->win);
+    }
+
+  g_object_set_data (G_OBJECT (dialog), "screenator-previous-dialog",
+		     data->top_dialog);
+  data->top_dialog = dialog;
+
+  g_signal_connect (dialog, "map-event", G_CALLBACK (on_dialog_map), data);
+  g_signal_connect (dialog, "destroy", G_CALLBACK (on_dialog_destroy), data);
 }
 
 static void on_icon_eraser_size (GtkMenuItem *menuitem, gpointer user_data);
+static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data);
+static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
+					       gpointer user_data);
 static GArray *spline_preview_points (ScreenatorDeviceData *devdata);
 static void spline_draw_handles (ScreenatorData *data, cairo_t *cr,
 				 GArray *nodes, guint count);
@@ -60,8 +159,35 @@ static void star_draw_handles (ScreenatorData *data, cairo_t *cr,
 			       const ScreenatorStar *star);
 static void triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
 				   const ScreenatorTriangle *triangle);
-static void rounded_draw_handle (ScreenatorData *data, cairo_t *cr,
-				 const ScreenatorRoundedRect *rect);
+static void frame_draw_handles (ScreenatorData *data, cairo_t *cr,
+				const ScreenatorFrameShape *shape);
+static void frame_invalidate (ScreenatorData *data,
+			      const ScreenatorFrameShape *shape);
+static void line_draw_handles (ScreenatorData *data, cairo_t *cr,
+			       const ScreenatorLine *line);
+static void line_invalidate (ScreenatorData *data, const ScreenatorLine *line);
+static ScreenatorLineHandle line_handle_at (const ScreenatorLine *line,
+					    gint x, gint y);
+static gboolean line_contains (const ScreenatorLine *line, gint x, gint y,
+			       gint width);
+static void line_begin (ScreenatorDeviceData *devdata,
+			ScreenatorShapeType type, gint x, gint y);
+static void line_begin_drag (ScreenatorDeviceData *devdata,
+			     ScreenatorLineHandle handle, gint x, gint y);
+static void line_move_handle (ScreenatorData *data,
+			      ScreenatorDeviceData *devdata,
+			      gint x, gint y, gboolean snap);
+static gboolean text_preview_shape (ScreenatorData *data,
+				    ScreenatorFrameShape *shape);
+static void text_preview_refresh (ScreenatorData *data);
+static void text_preview_clear (ScreenatorData *data);
+static gboolean text_caret_bounds (ScreenatorData *data, GdkRectangle *rect);
+static void icon_grab_pointer (ScreenatorData *data);
+static void icon_ungrab_pointer (ScreenatorData *data);
+static void icon_cancel_menu_retry (ScreenatorData *data);
+static gboolean on_icon_grab_broken (GtkWidget *widget,
+				     GdkEventGrabBroken *event,
+				     gpointer user_data);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -75,11 +201,26 @@ gboolean on_expose (GtkWidget *widget,
   if(data->debug)
     g_printerr("DEBUG: got draw event\n");
 
-  cairo_save (cr);
-  cairo_set_source_surface (cr, data->backbuffer, 0, 0);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_paint (cr);
-  cairo_restore (cr);
+  /* The screen paper is drawn first, so it stays below the annotations and is
+   * not part of the backbuffer: clearing the screen leaves it in place. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      draw_screen_paper (data, cr);
+
+      cairo_save (cr);
+      cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+      cairo_paint (cr);
+      cairo_restore (cr);
+    }
+  else
+    {
+      cairo_save (cr);
+      cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+      cairo_paint (cr);
+      cairo_restore (cr);
+    }
 
   /* Draw translucent strokes that are still in progress on top of the
    * backbuffer, so they look the same as after they are committed. */
@@ -106,7 +247,8 @@ gboolean on_expose (GtkWidget *widget,
       ScreenatorDeviceData *devdata = value;
 
       if (!devdata->shape_active && !devdata->star_active &&
-	  !devdata->triangle_active && !devdata->rounded_active)
+	  !devdata->triangle_active && !devdata->frame_active &&
+	  !devdata->line_active)
 	continue;
 
       cairo_save (cr);
@@ -122,14 +264,17 @@ gboolean on_expose (GtkWidget *widget,
 	  draw_triangle (data, cr, &devdata->triangle);
 	  triangle_draw_handles (data, cr, &devdata->triangle);
 	}
-      else if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
-	       devdata->rounded_active)
+      else if (devdata->line_active)
 	{
-	  draw_rounded_rect (data, cr,
-			     devdata->rounded.x0, devdata->rounded.y0,
-			     devdata->rounded.x1, devdata->rounded.y1,
-			     devdata->rounded.radius);
-	  rounded_draw_handle (data, cr, &devdata->rounded);
+	  draw_shape (data, cr, devdata->line.type,
+		      devdata->line.x0, devdata->line.y0,
+		      devdata->line.x1, devdata->line.y1);
+	  line_draw_handles (data, cr, &devdata->line);
+	}
+      else if (devdata->frame_active)
+	{
+	  draw_frame_shape (data, cr, &devdata->frame_shape);
+	  frame_draw_handles (data, cr, &devdata->frame_shape);
 	}
       else if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
 	{
@@ -141,10 +286,73 @@ gboolean on_expose (GtkWidget *widget,
 	  g_array_free (points, TRUE);
 	}
       else if (devdata->shape_active)
-	draw_shape (data, cr, data->shape_type,
-		    devdata->shape_x0, devdata->shape_y0,
-		    devdata->shape_x1, devdata->shape_y1);
+	{
+	  if (data->shape_type == SCREENATOR_SHAPE_MATH ||
+	      data->shape_type == SCREENATOR_SHAPE_BARS)
+	    {
+	      /* The math plot and the parallel lines have no plain outline,
+	       * so preview the frame with its real contents. */
+	      ScreenatorFrameShape preview;
+
+	      memset (&preview, 0, sizeof (preview));
+	      preview.type = data->shape_type;
+	      preview.polar = data->math_polar;
+	      preview.expression = data->math_polar
+		? data->math_polar_expression : data->math_expression;
+	      preview.xmin = data->math_polar
+		? data->math_theta_min : data->math_xmin;
+	      preview.xmax = data->math_polar
+		? data->math_theta_max : data->math_xmax;
+	      preview.count = 5;
+	      preview.frame.cx = (devdata->shape_x0 + devdata->shape_x1) / 2.0;
+	      preview.frame.cy = (devdata->shape_y0 + devdata->shape_y1) / 2.0;
+	      preview.frame.w = MAX (ABS (devdata->shape_x1 - devdata->shape_x0), 4);
+	      preview.frame.h = MAX (ABS (devdata->shape_y1 - devdata->shape_y0), 4);
+
+	      draw_frame_shape (data, cr, &preview);
+	    }
+	  else
+	    draw_shape (data, cr, data->shape_type,
+			devdata->shape_x0, devdata->shape_y0,
+			devdata->shape_x1, devdata->shape_y1);
+	}
       cairo_restore (cr);
+    }
+
+  /* The text being typed is previewed above the annotations, so it stays
+   * visible even inside a filled shape.  The editor window only supplies the
+   * input; the caret is drawn here as well so drawings and the screen paper
+   * never hide it. */
+  if (data->text_preview_valid)
+    {
+      ScreenatorFrameShape shape;
+
+      if (text_preview_shape (data, &shape))
+	{
+	  cairo_save (cr);
+	  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+	  draw_frame_shape (data, cr, &shape);
+	  cairo_restore (cr);
+	}
+
+      frame_shape_clear (&shape);
+    }
+
+  if (data->text_editor && data->text_caret_visible)
+    {
+      GdkRectangle caret;
+
+      if (text_caret_bounds (data, &caret))
+	{
+	  cairo_save (cr);
+	  cairo_set_source_rgba (cr, data->pen_color.red,
+				 data->pen_color.green,
+				 data->pen_color.blue,
+				 data->opacity);
+	  cairo_rectangle (cr, caret.x, caret.y, caret.width, caret.height);
+	  cairo_fill (cr);
+	  cairo_restore (cr);
+	}
     }
 
   return TRUE;
@@ -243,17 +451,15 @@ void on_monitors_changed ( GdkScreen *screen,
    * in the icon menu and point the selected tool at the new context. */
   apply_pen_settings (data);
 
-  if(!data->composited) // set shape
-    {
-      cairo_region_t* r = gdk_cairo_region_create_from_surface(data->backbuffer);
-      gtk_widget_shape_combine_region(data->win, r);
-      cairo_region_destroy(r);
-    }
+  update_window_shape (data);
 
   setup_input_devices(data);
 
 
   gtk_widget_show_all (data->win);
+
+  /* Showing the annotation window again puts it above the floating icon. */
+  raise_icon_window (data);
 }
 
 
@@ -343,9 +549,317 @@ void on_clientapp_selection_received (GtkWidget *widget,
  * The Text tool writes directly on screen: a small, borderless entry is
  * placed at the click position, using the selected font and pen colour.
  * Return commits the text, Escape cancels it, and moving the focus away
- * commits what has been typed so far.  The entry only previews the text;
- * after it is committed the string is rendered into the annotation layer.
+ * commits what has been typed so far.  The text is previewed in the
+ * annotation window, above the annotations, because the editor window itself
+ * sits below the fullscreen annotation window and a filled shape would hide
+ * it; the entry supplies the input and the caret.  After it is committed the
+ * string is rendered into the annotation layer.
  */
+
+/* Root position of the editor's text layout.  The committed text is placed
+ * there, so the preview uses the same point. */
+static void
+text_editor_origin (ScreenatorData *data, gint *x, gint *y)
+{
+  GtkAllocation allocation;
+  gint layout_x = 0, layout_y = 0;
+  GdkWindow *window;
+
+  *x = data->text_x;
+  *y = data->text_y;
+
+  if (!data->text_entry)
+    return;
+
+  gtk_widget_get_allocation (data->text_entry, &allocation);
+  gtk_entry_get_layout_offsets (GTK_ENTRY (data->text_entry),
+				&layout_x, &layout_y);
+  window = gtk_widget_get_window (data->text_entry);
+
+  if (window)
+    gdk_window_get_root_coords (window,
+				allocation.x + layout_x,
+				allocation.y + layout_y,
+				x, y);
+}
+
+/* Build the frame that the text in the editor will become.  The preview is
+ * drawn with the same code as a committed text frame, so it lines up exactly
+ * when the text is committed.  Returns FALSE for empty text. */
+static gboolean
+text_preview_shape (ScreenatorData *data, ScreenatorFrameShape *shape)
+{
+  const gchar *text = NULL;
+  gint x, y;
+
+  memset (shape, 0, sizeof (*shape));
+
+  if (data->text_entry)
+    text = gtk_entry_get_text (GTK_ENTRY (data->text_entry));
+
+  if (!text || !*text)
+    return FALSE;
+
+  shape->type = SCREENATOR_SHAPE_TEXT;
+  shape->text = g_strdup (text);
+  shape->font = g_strdup (data->font ? data->font : KEY_DFLT_FONT);
+  shape->font_size = frame_font_pixel_size (shape->font);
+  frame_shape_measure_text (shape);
+
+  text_editor_origin (data, &x, &y);
+  shape->frame.cx = x + shape->text_off_x + shape->frame.w / 2.0;
+  shape->frame.cy = y + shape->text_off_y + shape->frame.h / 2.0;
+  shape->frame.rotation = 0.0;
+
+  shape->color = data->pen_color;
+  shape->color.alpha = 1.0;
+
+  return TRUE;
+}
+
+/* Repaint the area of the old and the new typing preview. */
+static void
+text_preview_refresh (ScreenatorData *data)
+{
+  GdkRectangle old_bounds = data->text_preview_bounds;
+  GdkRectangle new_bounds;
+  ScreenatorFrameShape shape;
+  GdkWindow *window;
+  gboolean has_new;
+
+  has_new = text_preview_shape (data, &shape);
+
+  if (has_new)
+    frame_shape_get_bounds (&shape, 2, &new_bounds);
+
+  frame_shape_clear (&shape);
+
+  window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+  if (!window)
+    {
+      data->text_preview_valid = FALSE;
+      return;
+    }
+
+  if (data->text_preview_valid)
+    gdk_window_invalidate_rect (window, &old_bounds, 0);
+
+  if (has_new)
+    gdk_window_invalidate_rect (window, &new_bounds, 0);
+
+  /* The caret moves with the text. */
+  {
+    GdkRectangle caret;
+
+    if (text_caret_bounds (data, &caret))
+      gdk_window_invalidate_rect (window, &caret, 0);
+  }
+
+  data->text_preview_valid = has_new;
+  if (has_new)
+    data->text_preview_bounds = new_bounds;
+
+  /* On a shaped (non-composited) window the preview has to be part of the
+   * window shape to stay visible. */
+  update_window_shape (data);
+}
+
+/* Remove the typing preview from the screen. */
+static void
+text_preview_clear (ScreenatorData *data)
+{
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+  if (data->text_preview_valid && window)
+    gdk_window_invalidate_rect (window, &data->text_preview_bounds, 0);
+
+  data->text_preview_valid = FALSE;
+}
+
+/* Area of the typing caret in the annotation window.  The editor is placed so
+ * that the layout origin of its entry is the click position, so the caret
+ * position from the entry's own layout can be drawn on the annotation window
+ * as well.  That keeps the caret visible above drawings and the screen
+ * paper, which would otherwise cover the editor window. */
+static gboolean
+text_caret_bounds (ScreenatorData *data, GdkRectangle *rect)
+{
+  GtkEntry *entry;
+  PangoLayout *layout;
+  PangoRectangle pos;
+  const gchar *text;
+  gint cursor, byte_index;
+  gint origin_x, origin_y;
+  gint line_height = 0;
+
+  if (!data->text_entry)
+    return FALSE;
+
+  entry = GTK_ENTRY (data->text_entry);
+  layout = gtk_entry_get_layout (entry);
+  if (!layout)
+    return FALSE;
+
+  cursor = gtk_editable_get_position (GTK_EDITABLE (entry));
+  text = gtk_entry_get_text (entry);
+  if (text && cursor > 0)
+    byte_index = (gint) (g_utf8_offset_to_pointer (text, cursor) - text);
+  else
+    byte_index = 0;
+
+  pango_layout_index_to_pos (layout, byte_index, &pos);
+
+  /* The layout origin is the click position for left-to-right text and the
+   * right edge of the editor for right-to-left text, exactly like the text
+   * preview.  An empty layout still has a line height, so the caret is
+   * visible before the first character is typed. */
+  text_editor_origin (data, &origin_x, &origin_y);
+  pango_layout_get_pixel_size (layout, NULL, &line_height);
+
+  rect->x = origin_x + pos.x / PANGO_SCALE;
+  rect->y = origin_y + pos.y / PANGO_SCALE;
+  rect->width = 2;
+  rect->height = MAX (MAX (pos.height / PANGO_SCALE, line_height), 1);
+
+  return TRUE;
+}
+
+/* Blink the caret drawn in the annotation window. */
+static gboolean
+text_caret_blink (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  GdkWindow *window;
+  GdkRectangle caret;
+
+  if (!data->text_editor)
+    {
+      data->text_caret_timeout = 0;
+      return G_SOURCE_REMOVE;
+    }
+
+  data->text_caret_visible = !data->text_caret_visible;
+
+  window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  if (window && text_caret_bounds (data, &caret))
+    gdk_window_invalidate_rect (window, &caret, 0);
+
+  /* On a screen without a compositor the annotation window is shaped, so the
+   * caret area has to enter and leave the shape together with the blink. */
+  update_window_shape (data);
+
+  return G_SOURCE_CONTINUE;
+}
+
+/* Add the pixels of the typing preview and its caret to the annotation
+ * window shape.  Without a compositor the window is only visible where this
+ * region says, and the preview is drawn on the window but is not part of the
+ * backbuffer.  Adding the glyph pixels (not the whole text rectangle) keeps
+ * the desktop visible around the text. */
+void
+text_preview_add_shape (ScreenatorData *data, cairo_region_t *region)
+{
+  ScreenatorFrameShape shape;
+  GdkRectangle bounds;
+  cairo_surface_t *surface;
+  cairo_region_t *ink;
+  cairo_t *cr;
+
+  if (!data->text_editor)
+    return;
+
+  if (text_preview_shape (data, &shape))
+    {
+      frame_shape_get_bounds (&shape, 2, &bounds);
+
+      if (bounds.width > 0 && bounds.height > 0)
+	{
+	  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+						bounds.width, bounds.height);
+	  cr = cairo_create (surface);
+	  cairo_translate (cr, -bounds.x, -bounds.y);
+	  draw_frame_shape (data, cr, &shape);
+	  cairo_destroy (cr);
+
+	  ink = gdk_cairo_region_create_from_surface (surface);
+	  cairo_region_translate (ink, bounds.x, bounds.y);
+	  cairo_region_union (region, ink);
+	  cairo_region_destroy (ink);
+	  cairo_surface_destroy (surface);
+	}
+
+      frame_shape_clear (&shape);
+    }
+
+  if (data->text_caret_visible)
+    {
+      GdkRectangle caret;
+
+      if (text_caret_bounds (data, &caret))
+	{
+	  cairo_rectangle_int_t rect;
+
+	  rect.x = caret.x;
+	  rect.y = caret.y;
+	  rect.width = caret.width;
+	  rect.height = caret.height;
+	  cairo_region_union_rectangle (region, &rect);
+	}
+    }
+}
+
+/* Add the ink of an active frame (text, ellipse, rounded rectangle, math plot
+ * or parallel lines) to the window shape.  Such a frame is drawn as a preview
+ * until it is committed, so on a screen without a compositor it would be
+ * clipped away without this. */
+static void
+frame_preview_add_shape (ScreenatorData *data, cairo_region_t *region,
+			 const ScreenatorFrameShape *shape)
+{
+  GdkRectangle bounds;
+  cairo_surface_t *surface;
+  cairo_region_t *ink;
+  cairo_t *cr;
+
+  frame_shape_get_bounds (shape, 2, &bounds);
+  if (bounds.width <= 0 || bounds.height <= 0)
+    return;
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+					bounds.width, bounds.height);
+  cr = cairo_create (surface);
+  cairo_translate (cr, -bounds.x, -bounds.y);
+  draw_frame_shape (data, cr, shape);
+  frame_draw_handles (data, cr, shape);
+  cairo_destroy (cr);
+
+  ink = gdk_cairo_region_create_from_surface (surface);
+  cairo_region_translate (ink, bounds.x, bounds.y);
+  cairo_region_union (region, ink);
+  cairo_region_destroy (ink);
+  cairo_surface_destroy (surface);
+}
+
+void
+shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->frame_active)
+	frame_preview_add_shape (data, region, &devdata->frame_shape);
+    }
+}
+
 
 static gboolean
 on_text_editor_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
@@ -357,6 +871,20 @@ on_text_editor_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
   cairo_restore (cr);
 
   return FALSE;
+}
+
+/* Height of one line of text in the editor.  The text is centred vertically on
+ * the click position, so the click lands in the middle of the caret. */
+static gint
+text_editor_line_height (ScreenatorData *data)
+{
+  gint height = 0;
+
+  if (data->text_entry)
+    pango_layout_get_pixel_size (gtk_entry_get_layout (GTK_ENTRY (data->text_entry)),
+				 NULL, &height);
+
+  return height;
 }
 
 /* Place the small empty editor at the press position.  The entry keeps a
@@ -380,7 +908,8 @@ position_text_editor (ScreenatorData *data)
 				&layout_x, &layout_y);
 
   x = data->text_x - allocation.x - layout_x;
-  y = data->text_y - allocation.y - layout_y;
+  y = data->text_y - text_editor_line_height (data) / 2
+      - allocation.y - layout_y;
 
   if (x + req.width > (gint) data->width)
     x = (gint) data->width - req.width;
@@ -392,6 +921,9 @@ position_text_editor (ScreenatorData *data)
     y = 0;
 
   gtk_window_move (GTK_WINDOW (data->text_editor), x, y);
+
+  /* The annotation window has to be visible where the preview is drawn. */
+  update_window_shape (data);
 }
 
 /* Choose the editor geometry once the script direction is known.  The entry
@@ -424,10 +956,14 @@ size_text_editor (ScreenatorData *data, PangoDirection direction)
 		   direction == PANGO_DIRECTION_RTL
 		     ? data->text_x - available
 		     : data->text_x,
-		   data->text_y - layout_y);
+		   data->text_y - text_editor_line_height (data) / 2
+		     - layout_y);
 
   data->text_editor_sized = TRUE;
   data->text_editor_rtl = (direction == PANGO_DIRECTION_RTL);
+
+  /* The annotation window has to be visible where the preview is drawn. */
+  update_window_shape (data);
 }
 
 static void
@@ -442,7 +978,11 @@ on_text_editor_changed (GtkEditable *editable, gpointer user_data)
 
   text = gtk_entry_get_text (GTK_ENTRY (data->text_entry));
   if (!text || !*text)
-    return;
+    {
+      /* Remove the preview of the text that was just deleted. */
+      text_preview_refresh (data);
+      return;
+    }
 
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   direction = pango_find_base_dir (text, -1);
@@ -453,10 +993,61 @@ G_GNUC_END_IGNORE_DEPRECATIONS
   if (!data->text_editor_sized ||
       (direction == PANGO_DIRECTION_RTL) != data->text_editor_rtl)
     size_text_editor (data, direction);
+
+  text_preview_refresh (data);
+}
+
+/* Turn a committed string into an editable text frame.  The click position is
+ * the layout origin, so the text stays where the editor showed it; the frame
+ * is centred on the ink box, so the handles rotate it around its middle. */
+static void
+begin_text_frame (ScreenatorData *data, GdkDevice *device,
+		  gint x, gint y, const gchar *text)
+{
+  ScreenatorDeviceData *devdata =
+    g_hash_table_lookup (data->devdatatable, device);
+  ScreenatorPaintContext *context = devdata ? devdata->cur_context : NULL;
+  ScreenatorFrameShape *shape;
+
+  if (!devdata || !text || !*text)
+    return;
+
+  if (!context || context->type != SCREENATOR_TEXT)
+    context = data->default_text;
+
+  /* A text that was still editable is committed before the next one. */
+  frame_finish (data, devdata);
+
+  shape = &devdata->frame_shape;
+  frame_shape_clear (shape);
+
+  shape->type = SCREENATOR_SHAPE_TEXT;
+  shape->text = g_strdup (text);
+  shape->font = g_strdup (data->font ? data->font : KEY_DFLT_FONT);
+  shape->font_size = frame_font_pixel_size (shape->font);
+  frame_shape_measure_text (shape);
+
+  shape->frame.cx = x + shape->text_off_x + shape->frame.w / 2.0;
+  shape->frame.cy = y + shape->text_off_y + shape->frame.h / 2.0;
+  shape->frame.rotation = 0.0;
+
+  if (context && context->paint_color)
+    shape->color = *context->paint_color;
+  else
+    shape->color = data->pen_color;
+
+  /* The context already carries the current opacity; the text frame applies
+   * the global opacity when it is drawn, so keep the colour itself opaque. */
+  shape->color.alpha = 1.0;
+
+  devdata->frame_active = TRUE;
+  devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
+
+  frame_invalidate (data, shape);
 }
 
 static void
-close_text_editor (ScreenatorData *data, gboolean commit)
+close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 {
   GtkWidget *editor = data->text_editor;
   GtkWidget *entry = data->text_entry;
@@ -467,6 +1058,24 @@ close_text_editor (ScreenatorData *data, gboolean commit)
 
   if (!editor)
     return;
+
+  /* Remove the blinking caret from the annotation window before the entry is
+   * gone, so no stale caret is left behind. */
+  if (data->text_caret_timeout)
+    {
+      g_source_remove (data->text_caret_timeout);
+      data->text_caret_timeout = 0;
+    }
+
+  if (data->text_caret_visible)
+    {
+      GdkRectangle caret;
+      GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+      data->text_caret_visible = FALSE;
+      if (window && text_caret_bounds (data, &caret))
+	gdk_window_invalidate_rect (window, &caret, 0);
+    }
 
   data->text_editor = NULL;
   data->text_entry = NULL;
@@ -494,14 +1103,38 @@ close_text_editor (ScreenatorData *data, gboolean commit)
 
   gtk_widget_destroy (editor);
 
+  /* The editor area no longer has to stay visible on the annotation window. */
+  update_window_shape (data);
+
+  /* The committed frame replaces the preview; drop it first so the frame is
+   * what gets drawn on the next expose. */
+  text_preview_clear (data);
+
   if (text && *text)
-    {
-      snap_undo_state (data);
-      draw_text (data, device, x, y, text);
-    }
+    begin_text_frame (data, device, x, y, text);
   g_free (text);
 
-  acquire_grab (data, NULL);
+  if (reacquire)
+    acquire_grab (data, NULL);
+
+  /* A paper is the active window again after the editor closes. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+}
+
+static void
+close_text_editor (ScreenatorData *data, gboolean commit)
+{
+  close_text_editor_ex (data, commit, TRUE);
+}
+
+/* Commit a text that is still being typed when painting mode stops.  Called
+ * from release_grab(), so the grab must not be acquired again here. */
+void
+text_editor_finish (ScreenatorData *data)
+{
+  if (data->text_editor)
+    close_text_editor_ex (data, TRUE, FALSE);
 }
 
 static void
@@ -538,10 +1171,17 @@ on_text_editor_destroy (GtkWidget *widget, gpointer user_data)
 
   if (data->text_editor == widget)
     {
+      if (data->text_caret_timeout)
+	{
+	  g_source_remove (data->text_caret_timeout);
+	  data->text_caret_timeout = 0;
+	}
+      data->text_caret_visible = FALSE;
       data->text_editor = NULL;
       data->text_entry = NULL;
       data->text_editor_active = FALSE;
       data->text_device = NULL;
+      text_preview_clear (data);
     }
 }
 
@@ -566,18 +1206,27 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   PangoFontDescription *font;
   GdkScreen *screen;
   GdkVisual *visual;
-  GdkRGBA color;
-  gchar *color_string;
   gchar *css;
 
-  release_grab (data, NULL);
-
+  /* Keep painting mode and its pointer grab alive while the editor is open.
+   * The editor only takes the keyboard focus; mouse buttons are disabled
+   * until Enter or Escape closes it, so a click can neither commit the text
+   * nor fall through to the application below. */
   data->text_device = device;
   data->text_x = x;
   data->text_y = y;
   data->text_editor_active = FALSE;
   data->text_editor_sized = FALSE;
   data->text_editor_rtl = FALSE;
+  data->text_preview_valid = FALSE;
+  memset (&data->text_preview_bounds, 0, sizeof (data->text_preview_bounds));
+
+  /* The caret is drawn on the annotation window and blinks like a normal
+   * text cursor. */
+  data->text_caret_visible = TRUE;
+  if (data->text_caret_timeout)
+    g_source_remove (data->text_caret_timeout);
+  data->text_caret_timeout = g_timeout_add (500, text_caret_blink, data);
 
   editor = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   gtk_window_set_decorated (GTK_WINDOW (editor), FALSE);
@@ -612,20 +1261,19 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   gtk_widget_override_font (entry, font);
   pango_font_description_free (font);
 
-  color = data->pen_color;
-  color.alpha = data->opacity;
-  color_string = gdk_rgba_to_string (&color);
-  css = g_strdup_printf ("entry {"
-			 " background: transparent;"
-			 " background-image: none;"
-			 " border: none;"
-			 " box-shadow: none;"
-			 " padding: 0;"
-			 " margin: 0;"
-			 " color: %s;"
-			 " caret-color: %s;"
-			 " }",
-			 color_string, color_string);
+  /* The entry is invisible: the text and the caret are drawn on the
+   * annotation window, where they cannot be hidden by a drawing or the screen
+   * paper. */
+  css = g_strdup ("entry {"
+		  " background: transparent;"
+		  " background-image: none;"
+		  " border: none;"
+		  " box-shadow: none;"
+		  " padding: 0;"
+		  " margin: 0;"
+		  " color: transparent;"
+		  " caret-color: transparent;"
+		  " }");
   provider = gtk_css_provider_new ();
   gtk_css_provider_load_from_data (provider, css, -1, NULL);
   gtk_style_context_add_provider (gtk_widget_get_style_context (entry),
@@ -633,7 +1281,6 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 				  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
   g_object_unref (provider);
   g_free (css);
-  g_free (color_string);
 
   gtk_container_add (GTK_CONTAINER (editor), entry);
 
@@ -656,8 +1303,34 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   gtk_window_move (GTK_WINDOW (editor), x, y);
   gtk_widget_show_all (editor);
   position_text_editor (data);
+
+  /* The editor window itself is invisible: the typed text and the caret are
+   * drawn on the annotation window, above the drawings and the paper.  An
+   * empty shape also stops the window from covering them when the screen is
+   * not composited or when it is stacked above the annotation window. */
+  {
+    cairo_region_t *empty = cairo_region_create ();
+
+    gtk_widget_shape_combine_region (editor, empty);
+    cairo_region_destroy (empty);
+  }
+
+  /* Re-assert painting mode's pointer grab while the editor is open.  The
+   * button handlers swallow every mouse event, so a click can neither commit
+   * the text nor reach the application below. */
+  acquire_grab (data, NULL);
+
   gtk_widget_grab_focus (entry);
   gtk_window_present (GTK_WINDOW (editor));
+
+  /* Draw the caret right away, before the first blink. */
+  {
+    GdkRectangle caret;
+    GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+    if (window && text_caret_bounds (data, &caret))
+      gdk_window_invalidate_rect (window, &caret, 0);
+  }
 }
 
 
@@ -716,8 +1389,12 @@ static void
 spline_invalidate (ScreenatorData *data, const GdkRectangle *bounds)
 {
   if (bounds->width > 0 && bounds->height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				bounds, 0);
+    {
+      /* Let reshape() update the window shape on a non-composited screen. */
+      data->modified = 1;
+      gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+				  bounds, 0);
+    }
 }
 
 
@@ -1145,6 +1822,7 @@ star_invalidate (ScreenatorData *data, const ScreenatorStar *star)
     return;
 
   star_get_bounds (star, pad, &bounds);
+  data->modified = 1;
   gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
 			      &bounds, 0);
 }
@@ -1247,12 +1925,40 @@ star_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
   star_invalidate (data, &devdata->star);
 }
 
+/* Quantize an angle to the nearest multiple of 30 or 45 degrees, the angles
+ * that are easy to aim for: 0, 30, 45, 60, 90 and so on.  Snapping is only
+ * applied while Ctrl is held; without it the angle follows the pointer. */
+static gdouble
+snap_common_rotation (gdouble rotation)
+{
+  static const gdouble steps[] = { 30.0, 45.0 };
+  gdouble degrees = rotation * 180.0 / G_PI;
+  gdouble best = rotation;
+  gdouble best_diff = G_MAXDOUBLE;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (steps); i++)
+    {
+      gdouble candidate = round (degrees / steps[i]) * steps[i];
+      gdouble diff = fabs (degrees - candidate);
+
+      if (diff < best_diff)
+	{
+	  best_diff = diff;
+	  best = candidate;
+	}
+    }
+
+  return best * G_PI / 180.0;
+}
+
 /* Move the grabbed handle to (x, y).  The side-count handle always starts at
  * three when it is pressed; dragging away from the press point in any
- * direction adds sides. */
+ * direction adds sides.  Rotation snaps to the common angles only while Ctrl
+ * is held. */
 static void
 star_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
-		  gint x, gint y)
+		  gint x, gint y, gboolean snap)
 {
   ScreenatorStar *star = &devdata->star;
   gdouble dx = x - star->cx;
@@ -1272,11 +1978,31 @@ star_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
       break;
     case SCREENATOR_STAR_HANDLE_INNER:
       if (star->radius > 0.0)
-	star->inner = CLAMP (dist / star->radius, 0.0, 1.0);
+	{
+	  gdouble inner = CLAMP (dist / star->radius, 0.0, 1.0);
+	  gdouble tolerance = CLAMP (star->radius * 0.08, 3.0, 10.0);
+	  /* The sides are exactly flat when the inner vertices sit on the
+	   * apothem, at cos(pi / points) of the outer radius.  The inner
+	   * vertices are then the midpoints of the sides, so the star is a
+	   * regular polygon with the chosen number of sides.  Snap to that
+	   * ratio when the handle is close, so a perfect hexagon or pentagon
+	   * is easy to hit. */
+	  gdouble flat = cos (G_PI / star->points);
+
+	  if (fabs (dist - star->radius * flat) <= tolerance)
+	    inner = flat;
+
+	  star->inner = inner;
+	}
       break;
     case SCREENATOR_STAR_HANDLE_ROTATION:
       if (dist > 0.0)
-	star->rotation = atan2 (dy, dx) - G_PI / 2.0;
+	{
+	  star->rotation = atan2 (dy, dx) - G_PI / 2.0;
+
+	  if (snap)
+	    star->rotation = snap_common_rotation (star->rotation);
+	}
       break;
     case SCREENATOR_STAR_HANDLE_POINTS:
       {
@@ -1416,6 +2142,7 @@ triangle_invalidate (ScreenatorData *data, const ScreenatorTriangle *triangle)
     return;
 
   triangle_get_bounds (triangle, pad, &bounds);
+  data->modified = 1;
   gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
 			      &bounds, 0);
 }
@@ -1490,10 +2217,109 @@ triangle_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
   triangle_invalidate (data, &devdata->triangle);
 }
 
+/* Interior angle at P between the rays to A and B, in degrees.  A vertex that
+ * sits on top of an end point is treated as a straight angle. */
+static gdouble
+triangle_angle_at (gdouble ax, gdouble ay, gdouble bx, gdouble by,
+		   gdouble px, gdouble py)
+{
+  gdouble ux = ax - px;
+  gdouble uy = ay - py;
+  gdouble vx = bx - px;
+  gdouble vy = by - py;
+  gdouble nu = hypot (ux, uy);
+  gdouble nv = hypot (vx, vy);
+  gdouble cosine;
+
+  if (nu < 1e-9 || nv < 1e-9)
+    return 180.0;
+
+  cosine = CLAMP ((ux * vx + uy * vy) / (nu * nv), -1.0, 1.0);
+
+  return acos (cosine) * 180.0 / G_PI;
+}
+
+/* Move one vertex to (x, y).  While Ctrl is held the interior angle at that
+ * vertex snaps to 30, 45, 60 or 90 degrees: the opposite edge stays fixed and
+ * the vertex slides along its median to the distance that gives the snapped
+ * angle.  The angle shrinks steadily as the vertex moves away from the middle
+ * of the opposite edge, so a short bisection finds the distance that matches
+ * the target even when the triangle is not isosceles. */
+static void
+triangle_place_vertex (ScreenatorTriangle *triangle, gint index,
+		       gint x, gint y, gboolean snap)
+{
+  if (snap)
+    {
+      static const gdouble angles[] = { 30.0, 45.0, 60.0, 90.0 };
+      gint a = (index + 1) % 3;
+      gint b = (index + 2) % 3;
+      gdouble ax = triangle->v[a].x;
+      gdouble ay = triangle->v[a].y;
+      gdouble bx = triangle->v[b].x;
+      gdouble by = triangle->v[b].y;
+      gdouble mx = (ax + bx) / 2.0;
+      gdouble my = (ay + by) / 2.0;
+      gdouble c = hypot (bx - ax, by - ay) / 2.0;
+      gdouble dx = x - mx;
+      gdouble dy = y - my;
+      gdouble d = hypot (dx, dy);
+
+      if (c > 0.5 && d > 0.5)
+	{
+	  gdouble theta = triangle_angle_at (ax, ay, bx, by, x, y);
+	  gdouble target = theta;
+	  gdouble best_diff = G_MAXDOUBLE;
+	  gdouble ux = dx / d;
+	  gdouble uy = dy / d;
+	  gdouble lo = 0.0;
+	  gdouble hi = MAX (d, c);
+	  gdouble snapped_d;
+	  guint i;
+
+	  for (i = 0; i < G_N_ELEMENTS (angles); i++)
+	    {
+	      gdouble diff = fabs (theta - angles[i]);
+
+	      if (diff < best_diff)
+		{
+		  best_diff = diff;
+		  target = angles[i];
+		}
+	    }
+
+	  /* Grow the upper bound until the vertex is far enough away for the
+	   * angle to fall below the target. */
+	  while (hi < 1e7 &&
+		 triangle_angle_at (ax, ay, bx, by,
+				    mx + ux * hi, my + uy * hi) > target)
+	    hi *= 2.0;
+
+	  for (i = 0; i < 60; i++)
+	    {
+	      gdouble mid = (lo + hi) / 2.0;
+
+	      if (triangle_angle_at (ax, ay, bx, by,
+				     mx + ux * mid, my + uy * mid) > target)
+		lo = mid;
+	      else
+		hi = mid;
+	    }
+
+	  snapped_d = (lo + hi) / 2.0;
+	  x = (gint) round (mx + ux * snapped_d);
+	  y = (gint) round (my + uy * snapped_d);
+	}
+    }
+
+  triangle->v[index].x = x;
+  triangle->v[index].y = y;
+}
+
 /* Move one vertex of the triangle, or the whole triangle, to (x, y). */
 static void
 triangle_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
-		      gint x, gint y)
+		      gint x, gint y, gboolean snap)
 {
   ScreenatorTriangle *triangle = &devdata->triangle;
 
@@ -1506,16 +2332,13 @@ triangle_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
   switch (devdata->triangle_drag)
     {
     case SCREENATOR_TRIANGLE_HANDLE_V0:
-      triangle->v[0].x = x;
-      triangle->v[0].y = y;
+      triangle_place_vertex (triangle, 0, x, y, snap);
       break;
     case SCREENATOR_TRIANGLE_HANDLE_V1:
-      triangle->v[1].x = x;
-      triangle->v[1].y = y;
+      triangle_place_vertex (triangle, 1, x, y, snap);
       break;
     case SCREENATOR_TRIANGLE_HANDLE_V2:
-      triangle->v[2].x = x;
-      triangle->v[2].y = y;
+      triangle_place_vertex (triangle, 2, x, y, snap);
       break;
     case SCREENATOR_TRIANGLE_HANDLE_CENTRE:
       {
@@ -1551,50 +2374,20 @@ triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
 }
 
 
-/* Position of the roundness handle: on the top edge, radius pixels from the
- * top-left corner. */
+/* --- Editable frame shapes ------------------------------------------------
+ *
+ * The rectangle, ellipse, rounded rectangle, text, math plot and parallel
+ * lines share one frame.  A placed shape keeps a square size handle on its
+ * bottom-right corner, a round rotation handle above it and, for the rounded
+ * rectangle and the parallel lines, an extra handle.  Dragging inside the
+ * frame moves it.
+ */
+
+#define FRAME_GRIP_RADIUS 11
+
+/* Repaint the area covered by the frame and its handles. */
 static void
-rounded_handle_position (const ScreenatorRoundedRect *rect, GdkPoint *pos)
-{
-  gint x = MIN (rect->x0, rect->x1);
-  gint y = MIN (rect->y0, rect->y1);
-  gint w = ABS (rect->x1 - rect->x0);
-  gint h = ABS (rect->y1 - rect->y0);
-  gdouble max_radius = MIN (w, h) / 2.0;
-
-  pos->x = (gint) round (x + CLAMP (rect->radius, 0.0, max_radius));
-  pos->y = y;
-}
-
-/* Return TRUE when (x, y) is on the roundness handle. */
-static gboolean
-rounded_handle_at (const ScreenatorRoundedRect *rect, gint x, gint y)
-{
-  const gint radius = 11;
-  GdkPoint pos;
-  gint dx, dy;
-
-  rounded_handle_position (rect, &pos);
-  dx = pos.x - x;
-  dy = pos.y - y;
-
-  return dx * dx + dy * dy <= radius * radius;
-}
-
-/* Point-in-rectangle test, used to decide whether a press moves the rounded
- * rectangle. */
-static gboolean
-rounded_contains (const ScreenatorRoundedRect *rect, gint x, gint y)
-{
-  return x >= MIN (rect->x0, rect->x1) &&
-	 x <= MAX (rect->x0, rect->x1) &&
-	 y >= MIN (rect->y0, rect->y1) &&
-	 y <= MAX (rect->y0, rect->y1);
-}
-
-/* Repaint the area covered by the rounded rectangle and its handle. */
-static void
-rounded_invalidate (ScreenatorData *data, const ScreenatorRoundedRect *rect)
+frame_invalidate (ScreenatorData *data, const ScreenatorFrameShape *shape)
 {
   GdkRectangle bounds;
   gint pad = (gint) data->pen_width * 2 + 64;
@@ -1602,25 +2395,467 @@ rounded_invalidate (ScreenatorData *data, const ScreenatorRoundedRect *rect)
   if (!data->win)
     return;
 
-  rounded_rect_get_bounds (rect, pad, &bounds);
+  frame_shape_get_bounds (shape, pad, &bounds);
+  data->modified = 1;
   gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
 			      &bounds, 0);
 }
 
-/* Draw the roundness handle on the top edge.  Its distance from the top-left
- * corner is the corner radius. */
+/* Return the frame handle under (x, y), or NONE.  The extra handle is tested
+ * first so it wins when it overlaps the size handle. */
+static ScreenatorFrameHandle
+frame_handle_at (const ScreenatorFrameShape *shape, gint x, gint y)
+{
+  ScreenatorFrameHandle order[3];
+  guint count = 0;
+  guint i;
+
+  if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
+      shape->type == SCREENATOR_SHAPE_BARS)
+    order[count++] = SCREENATOR_FRAME_HANDLE_EXTRA;
+  order[count++] = SCREENATOR_FRAME_HANDLE_ROTATE;
+  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE;
+
+  for (i = 0; i < count; i++)
+    {
+      GdkPoint pos;
+      gint dx, dy;
+
+      frame_handle_position (shape, order[i], &pos);
+      dx = pos.x - x;
+      dy = pos.y - y;
+
+      if (dx * dx + dy * dy <= FRAME_GRIP_RADIUS * FRAME_GRIP_RADIUS)
+	return order[i];
+    }
+
+  return SCREENATOR_FRAME_HANDLE_NONE;
+}
+
+/* Point-in-frame test, used to decide whether a press moves the shape.  The
+ * point is rotated into the local frame first, so rotated shapes still feel
+ * right. */
+static gboolean
+frame_contains (const ScreenatorFrameShape *shape, gint x, gint y)
+{
+  gdouble lx, ly;
+
+  frame_screen_to_local (&shape->frame, x, y, &lx, &ly);
+
+  return fabs (lx) <= shape->frame.w / 2.0 &&
+	 fabs (ly) <= shape->frame.h / 2.0;
+}
+
+/* Remember the state the drag started from, so every handle can work from a
+ * fixed reference instead of accumulating rounding errors. */
 static void
-rounded_draw_handle (ScreenatorData *data, cairo_t *cr,
-		     const ScreenatorRoundedRect *rect)
+frame_begin_drag (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  ScreenatorFrameHandle handle, gint x, gint y)
+{
+  ScreenatorFrameShape *shape = &devdata->frame_shape;
+  gdouble lx, ly;
+
+  devdata->frame_drag = handle;
+  devdata->frame_press_x = x;
+  devdata->frame_press_y = y;
+  devdata->frame_press_cx = shape->frame.cx;
+  devdata->frame_press_cy = shape->frame.cy;
+  devdata->frame_press_w = shape->frame.w;
+  devdata->frame_press_h = shape->frame.h;
+  devdata->frame_press_rotation = shape->frame.rotation;
+  devdata->frame_press_font_size = shape->font_size;
+
+  frame_screen_to_local (&shape->frame, x, y, &lx, &ly);
+  devdata->frame_press_distance = sqrt (lx * lx + ly * ly);
+
+  (void) data;
+}
+
+/* Start a frame shape from the rectangle that was just dragged out. */
+static void
+frame_begin_from_drag (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		      ScreenatorShapeType type,
+		      gint x0, gint y0, gint x1, gint y1)
+{
+  ScreenatorFrameShape *shape = &devdata->frame_shape;
+  gint w = ABS (x1 - x0);
+  gint h = ABS (y1 - y0);
+
+  frame_shape_clear (shape);
+
+  shape->type = type;
+  shape->frame.cx = (x0 + x1) / 2.0;
+  shape->frame.cy = (y0 + y1) / 2.0;
+  shape->frame.w = MAX (w, 4);
+  shape->frame.h = MAX (h, 4);
+  shape->frame.rotation = 0.0;
+  shape->extra = MIN (w, h) / 4.0;
+  shape->count = 5;
+  shape->polar = data->math_polar;
+  if (shape->polar)
+    {
+      shape->expression = g_strdup (data->math_polar_expression);
+      shape->xmin = data->math_theta_min;
+      shape->xmax = data->math_theta_max;
+    }
+  else
+    {
+      shape->expression = g_strdup (data->math_expression);
+      shape->xmin = data->math_xmin;
+      shape->xmax = data->math_xmax;
+    }
+
+  devdata->frame_active = TRUE;
+  devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
+
+  frame_invalidate (data, shape);
+}
+
+/* Move the grabbed handle, or the whole shape, to (x, y).  Rotation follows
+ * the pointer freely; while Ctrl is held it snaps to 0, 30, 45, 60, 90 and
+ * so on. */
+static void
+frame_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		   gint x, gint y, gboolean snap_rotation)
+{
+  ScreenatorFrameShape *shape = &devdata->frame_shape;
+  ScreenatorFrame *frame = &shape->frame;
+  gdouble lx, ly;
+
+  if (!devdata->frame_active ||
+      devdata->frame_drag == SCREENATOR_FRAME_HANDLE_NONE)
+    return;
+
+  frame_invalidate (data, shape);
+
+  switch (devdata->frame_drag)
+    {
+    case SCREENATOR_FRAME_HANDLE_MOVE:
+      frame->cx = devdata->frame_press_cx + (x - devdata->frame_press_x);
+      frame->cy = devdata->frame_press_cy + (y - devdata->frame_press_y);
+      break;
+    case SCREENATOR_FRAME_HANDLE_SIZE:
+      frame_screen_to_local (frame, x, y, &lx, &ly);
+      if (shape->type == SCREENATOR_SHAPE_TEXT)
+	{
+	  gdouble dist = sqrt (lx * lx + ly * ly);
+
+	  if (devdata->frame_press_distance > 1.0 &&
+	      devdata->frame_press_font_size > 0.0)
+	    shape->font_size =
+	      CLAMP (devdata->frame_press_font_size * dist /
+		     devdata->frame_press_distance, 6.0, 300.0);
+
+	  frame_shape_measure_text (shape);
+	}
+      else
+	{
+	  frame->w = MAX (fabs (lx) * 2.0, FRAME_MIN_SIZE);
+	  frame->h = MAX (fabs (ly) * 2.0, FRAME_MIN_SIZE);
+	}
+      break;
+    case SCREENATOR_FRAME_HANDLE_ROTATE:
+      {
+	gdouble dx = x - frame->cx;
+	gdouble dy = y - frame->cy;
+
+	if (dx * dx + dy * dy > 1.0)
+	  {
+	    frame->rotation = atan2 (dy, dx) + G_PI / 2.0;
+
+	    if (snap_rotation)
+	      frame->rotation = snap_common_rotation (frame->rotation);
+	  }
+      }
+      break;
+    case SCREENATOR_FRAME_HANDLE_EXTRA:
+      if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+	{
+	  frame_screen_to_local (frame, x, y, &lx, &ly);
+	  shape->extra = CLAMP (lx + frame->w / 2.0, 0.0,
+				MIN (frame->w, frame->h) / 2.0);
+	}
+      else if (shape->type == SCREENATOR_SHAPE_BARS)
+	{
+	  gdouble px = x - devdata->frame_press_x;
+	  gdouble py = y - devdata->frame_press_y;
+	  gdouble moved = sqrt (px * px + py * py);
+
+	  shape->count = CLAMP (2 + (gint) (moved / 12.0), 2, 40);
+	}
+      break;
+    default:
+      break;
+    }
+
+  frame_invalidate (data, shape);
+}
+
+/* Draw a square handle grip with a dark border, like the polygon's side
+ * handle. */
+static void
+frame_draw_square (cairo_t *cr, gint x, gint y)
+{
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.85);
+  cairo_rectangle (cr, x - 7.0, y - 7.0, 14.0, 14.0);
+  cairo_fill (cr);
+
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.95);
+  cairo_rectangle (cr, x - 6.0, y - 6.0, 12.0, 12.0);
+  cairo_fill (cr);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.9);
+  cairo_set_line_width (cr, 1.0);
+  cairo_rectangle (cr, x - 6.0, y - 6.0, 12.0, 12.0);
+  cairo_stroke (cr);
+}
+
+/* Draw a number next to a handle. */
+static void
+frame_draw_label (cairo_t *cr, gint x, gint y, gint value)
+{
+  gchar label[8];
+  cairo_text_extents_t ext;
+  gdouble tx, ty;
+
+  g_snprintf (label, sizeof (label), "%d", value);
+
+  cairo_select_font_face (cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+			  CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size (cr, 11.0);
+  cairo_text_extents (cr, label, &ext);
+
+  tx = x + 11.0;
+  ty = y - ext.y_bearing - ext.height / 2.0;
+
+  cairo_move_to (cr, tx, ty);
+  cairo_text_path (cr, label);
+
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.9);
+  cairo_set_line_width (cr, 3.0);
+  cairo_stroke_preserve (cr);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.95);
+  cairo_fill (cr);
+}
+
+/* Draw the handles of an editable frame shape. */
+static void
+frame_draw_handles (ScreenatorData *data, cairo_t *cr,
+		    const ScreenatorFrameShape *shape)
 {
   GdkPoint pos;
 
   (void) data;
 
-  rounded_handle_position (rect, &pos);
+  /* A light spoke connects the centre to the rotation handle. */
+  frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_ROTATE, &pos);
+
+  cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.8);
+  cairo_set_line_width (cr, 3.0);
+  cairo_move_to (cr, shape->frame.cx, shape->frame.cy);
+  cairo_line_to (cr, pos.x, pos.y);
+  cairo_stroke (cr);
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.7);
+  cairo_set_line_width (cr, 1.0);
+  cairo_move_to (cr, shape->frame.cx, shape->frame.cy);
+  cairo_line_to (cr, pos.x, pos.y);
+  cairo_stroke (cr);
+
   star_draw_grip (cr, pos.x, pos.y);
+
+  /* The size handle is square and sits on the bottom-right corner. */
+  frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_SIZE, &pos);
+  frame_draw_square (cr, pos.x, pos.y);
+
+  /* The extra handle is the roundness of the rounded rectangle or the line
+   * count of the parallel lines. */
+  if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
+    {
+      frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_EXTRA, &pos);
+      star_draw_grip (cr, pos.x, pos.y);
+    }
+  else if (shape->type == SCREENATOR_SHAPE_BARS)
+    {
+      frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_EXTRA, &pos);
+      frame_draw_square (cr, pos.x, pos.y);
+      frame_draw_label (cr, pos.x, pos.y, CLAMP (shape->count, 1, 40));
+    }
 }
 
+
+/* --- Editable line and arrow -------------------------------------------- */
+
+#define LINE_GRIP_RADIUS 11
+
+/* Repaint the area covered by the line and its handles. */
+static void
+line_invalidate (ScreenatorData *data, const ScreenatorLine *line)
+{
+  GdkRectangle bounds;
+
+  if (!data->win)
+    return;
+
+  line_get_bounds (data, line, &bounds);
+  data->modified = 1;
+  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+			      &bounds, 0);
+}
+
+/* Draw the round grip on each end point. */
+static void
+line_draw_handles (ScreenatorData *data, cairo_t *cr,
+		   const ScreenatorLine *line)
+{
+  (void) data;
+
+  star_draw_grip (cr, line->x0, line->y0);
+  star_draw_grip (cr, line->x1, line->y1);
+}
+
+/* The end handle under (x, y), if any.  The line itself is tested later, so
+ * the handles win when they overlap it. */
+static ScreenatorLineHandle
+line_handle_at (const ScreenatorLine *line, gint x, gint y)
+{
+  gint dx, dy;
+
+  dx = x - line->x0;
+  dy = y - line->y0;
+  if (dx * dx + dy * dy <= LINE_GRIP_RADIUS * LINE_GRIP_RADIUS)
+    return SCREENATOR_LINE_HANDLE_START;
+
+  dx = x - line->x1;
+  dy = y - line->y1;
+  if (dx * dx + dy * dy <= LINE_GRIP_RADIUS * LINE_GRIP_RADIUS)
+    return SCREENATOR_LINE_HANDLE_END;
+
+  return SCREENATOR_LINE_HANDLE_NONE;
+}
+
+/* Distance from (x, y) to the line segment. */
+static gdouble
+line_distance (const ScreenatorLine *line, gint x, gint y)
+{
+  gdouble dx = line->x1 - line->x0;
+  gdouble dy = line->y1 - line->y0;
+  gdouble length2 = dx * dx + dy * dy;
+  gdouble t;
+
+  if (length2 < 1.0)
+    return hypot (x - line->x0, y - line->y0);
+
+  t = ((x - line->x0) * dx + (y - line->y0) * dy) / length2;
+  t = CLAMP (t, 0.0, 1.0);
+
+  return hypot (x - (line->x0 + t * dx), y - (line->y0 + t * dy));
+}
+
+static gboolean
+line_contains (const ScreenatorLine *line, gint x, gint y, gint width)
+{
+  return line_distance (line, x, y) <= MAX (8.0, width / 2.0 + 4.0);
+}
+
+/* Start a new line at the click position; dragging sets the other end. */
+static void
+line_begin (ScreenatorDeviceData *devdata, ScreenatorShapeType type,
+	    gint x, gint y)
+{
+  devdata->line_active = TRUE;
+  devdata->line.type = type;
+  devdata->line.x0 = x;
+  devdata->line.y0 = y;
+  devdata->line.x1 = x;
+  devdata->line.y1 = y;
+  devdata->line_drag = SCREENATOR_LINE_HANDLE_END;
+  devdata->line_press_x = x;
+  devdata->line_press_y = y;
+  devdata->line_press_x0 = x;
+  devdata->line_press_y0 = y;
+  devdata->line_press_x1 = x;
+  devdata->line_press_y1 = y;
+}
+
+/* Remember the state at the start of a handle drag. */
+static void
+line_begin_drag (ScreenatorDeviceData *devdata, ScreenatorLineHandle handle,
+		 gint x, gint y)
+{
+  devdata->line_drag = handle;
+  devdata->line_press_x = x;
+  devdata->line_press_y = y;
+  devdata->line_press_x0 = devdata->line.x0;
+  devdata->line_press_y0 = devdata->line.y0;
+  devdata->line_press_x1 = devdata->line.x1;
+  devdata->line_press_y1 = devdata->line.y1;
+}
+
+/* Place one end point at (x, y) and keep the other end fixed.  The direction
+ * follows the pointer; while Ctrl is held it snaps to 0, 30, 45, 60, 90 and
+ * so on. */
+static void
+line_place_endpoint (ScreenatorLine *line, gboolean start,
+		     gint x, gint y, gboolean snap)
+{
+  gint ax = start ? line->x1 : line->x0;
+  gint ay = start ? line->y1 : line->y0;
+  gdouble angle = atan2 (y - ay, x - ax);
+  gdouble length = hypot (x - ax, y - ay);
+
+  if (snap)
+    angle = snap_common_rotation (angle);
+
+  x = ax + (gint) round (length * cos (angle));
+  y = ay + (gint) round (length * sin (angle));
+
+  if (start)
+    {
+      line->x0 = x;
+      line->y0 = y;
+    }
+  else
+    {
+      line->x1 = x;
+      line->y1 = y;
+    }
+}
+
+/* Move the grabbed end point or the whole line to (x, y). */
+static void
+line_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  gint x, gint y, gboolean snap)
+{
+  ScreenatorLine *line = &devdata->line;
+
+  if (!devdata->line_active ||
+      devdata->line_drag == SCREENATOR_LINE_HANDLE_NONE)
+    return;
+
+  line_invalidate (data, line);
+
+  switch (devdata->line_drag)
+    {
+    case SCREENATOR_LINE_HANDLE_START:
+      line_place_endpoint (line, TRUE, x, y, snap);
+      break;
+    case SCREENATOR_LINE_HANDLE_END:
+      line_place_endpoint (line, FALSE, x, y, snap);
+      break;
+    case SCREENATOR_LINE_HANDLE_MOVE:
+      line->x0 = devdata->line_press_x0 + (x - devdata->line_press_x);
+      line->y0 = devdata->line_press_y0 + (y - devdata->line_press_y);
+      line->x1 = devdata->line_press_x1 + (x - devdata->line_press_x);
+      line->y1 = devdata->line_press_y1 + (y - devdata->line_press_y);
+      break;
+    default:
+      break;
+    }
+
+  line_invalidate (data, line);
+}
 
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
@@ -1636,6 +2871,15 @@ gboolean on_buttonpress (GtkWidget *win,
     g_printerr("DEBUG: Device '%s': Button %i Down State %d at (x,y)=(%.2f : %.2f)\n",
 	       gdk_device_get_name(ev->device), ev->button, ev->state, ev->x, ev->y);
 
+  /* The text editor disables the mouse: every button is swallowed until the
+   * typed text is accepted with Enter (or cancelled with Escape).  The click
+   * must not commit the text and must not reach the application below. */
+  if (data->text_editor)
+    {
+      data->text_pressed = FALSE;
+      return TRUE;
+    }
+
   if (!devdata->is_grabbed)
     return FALSE;
 
@@ -1643,6 +2887,18 @@ gboolean on_buttonpress (GtkWidget *win,
    * it exits painting mode and returns to normal. */
   if (ev->button == 3)
     {
+      if (devdata->frame_active)
+	{
+	  frame_finish (data, devdata);
+	  return TRUE;
+	}
+
+      if (devdata->line_active)
+	{
+	  line_finish (data, devdata);
+	  return TRUE;
+	}
+
       if (devdata->cur_context &&
 	  devdata->cur_context->type == SCREENATOR_SHAPE &&
 	  data->shape_type == SCREENATOR_SHAPE_SPLINE &&
@@ -1670,15 +2926,6 @@ gboolean on_buttonpress (GtkWidget *win,
 	  return TRUE;
 	}
 
-      if (devdata->cur_context &&
-	  devdata->cur_context->type == SCREENATOR_SHAPE &&
-	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
-	  devdata->rounded_active)
-	{
-	  rounded_rect_finish (data, devdata);
-	  return TRUE;
-	}
-
       release_grab (data, NULL);
       return TRUE;
     }
@@ -1697,17 +2944,48 @@ gboolean on_buttonpress (GtkWidget *win,
 
   /* The Text tool writes on screen instead of painting a stroke.  Remember
    * where the button was pressed; the text is placed there when the button
-   * is released, even if the pointer moved slightly in between. */
+   * is released, even if the pointer moved slightly in between.  A text that
+   * was just placed stays editable with its handles until the next click
+   * outside it. */
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_TEXT)
     {
       if (ev->button == 1)
 	{
+	  if (devdata->frame_active &&
+	      devdata->frame_shape.type == SCREENATOR_SHAPE_TEXT)
+	    {
+	      ScreenatorFrameHandle handle =
+		frame_handle_at (&devdata->frame_shape, ev->x, ev->y);
+
+	      if (handle != SCREENATOR_FRAME_HANDLE_NONE)
+		{
+		  frame_begin_drag (data, devdata, handle, ev->x, ev->y);
+		  return TRUE;
+		}
+
+	      if (frame_contains (&devdata->frame_shape, ev->x, ev->y))
+		{
+		  frame_begin_drag (data, devdata,
+				    SCREENATOR_FRAME_HANDLE_MOVE,
+				    ev->x, ev->y);
+		  return TRUE;
+		}
+
+	      /* A click outside commits the text; a new editor opens at the
+	       * click position. */
+	      frame_finish (data, devdata);
+	    }
+
 	  data->text_x = ev->x;
 	  data->text_y = ev->y;
 	  data->text_pressed = TRUE;
 	}
-      return TRUE;
+
+      /* The middle button erases while it is held, even with the Text tool
+       * selected.  Any other button is swallowed. */
+      if (ev->button != 2)
+	return TRUE;
     }
 
   /* Middle mouse button temporarily activates eraser while pressed */
@@ -1890,36 +3168,102 @@ gboolean on_buttonpress (GtkWidget *win,
 	      return TRUE;
 	    }
 
-	  /* A rounded rectangle that is already placed keeps its roundness
-	   * handle until the user presses outside it. */
-	  if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
-	      devdata->rounded_active)
+	  /* The line and arrow stay editable after the drag: each end
+	   * point has a round handle, and pressing the line itself moves
+	   * it. */
+	  if (data->shape_type == SCREENATOR_SHAPE_LINE ||
+	      data->shape_type == SCREENATOR_SHAPE_ARROW)
 	    {
+	      ScreenatorLineHandle handle;
+
 	      if (ev->type == GDK_2BUTTON_PRESS)
 		{
-		  rounded_rect_finish (data, devdata);
+		  line_finish (data, devdata);
 		  return TRUE;
 		}
 
-	      if (rounded_handle_at (&devdata->rounded, ev->x, ev->y))
+	      if (devdata->line_active)
 		{
-		  devdata->rounded_radius_drag = TRUE;
-		  return TRUE;
+		  handle = line_handle_at (&devdata->line, ev->x, ev->y);
+
+		  if (handle != SCREENATOR_LINE_HANDLE_NONE)
+		    {
+		      line_begin_drag (devdata, handle, ev->x, ev->y);
+		      return TRUE;
+		    }
+
+		  if (line_contains (&devdata->line, ev->x, ev->y,
+				     (gint) data->pen_width))
+		    {
+		      line_begin_drag (devdata,
+				       SCREENATOR_LINE_HANDLE_MOVE,
+				       ev->x, ev->y);
+		      return TRUE;
+		    }
+
+		  /* A press outside commits it; the code below starts a new
+		   * one at the click position. */
+		  line_finish (data, devdata);
 		}
 
-	      /* A press inside the rectangle grabs it and moves it. */
-	      if (rounded_contains (&devdata->rounded, ev->x, ev->y))
+	      line_begin (devdata, data->shape_type, ev->x, ev->y);
+	      return TRUE;
+	    }
+
+	  /* The ellipse, rounded rectangle, math plot and parallel lines are
+	   * dragged out once and then stay editable with their handles until
+	   * the user presses outside them. */
+	  if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
+	      data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
+	      data->shape_type == SCREENATOR_SHAPE_MATH ||
+	      data->shape_type == SCREENATOR_SHAPE_BARS)
+	    {
+	      ScreenatorFrameHandle handle;
+
+	      if (ev->type == GDK_2BUTTON_PRESS)
 		{
-		  devdata->rounded_move_drag = TRUE;
-		  devdata->rounded_press_x = ev->x;
-		  devdata->rounded_press_y = ev->y;
-		  devdata->rounded_press = devdata->rounded;
+		  frame_finish (data, devdata);
 		  return TRUE;
 		}
 
-	      /* A press outside commits it; the code below starts a new
-	       * rectangle at the click position. */
-	      rounded_rect_finish (data, devdata);
+	      if (devdata->frame_active)
+		{
+		  handle = frame_handle_at (&devdata->frame_shape,
+					    ev->x, ev->y);
+
+		  if (handle != SCREENATOR_FRAME_HANDLE_NONE)
+		    {
+		      frame_begin_drag (data, devdata, handle, ev->x, ev->y);
+
+		      /* The line-count handle starts at two lines; moving
+		       * the pointer away adds more. */
+		      if (handle == SCREENATOR_FRAME_HANDLE_EXTRA &&
+			  devdata->frame_shape.type == SCREENATOR_SHAPE_BARS)
+			{
+			  devdata->frame_shape.count = 2;
+			  frame_invalidate (data, &devdata->frame_shape);
+			}
+		      return TRUE;
+		    }
+
+		  /* A press inside the frame grabs it and moves it. */
+		  if (frame_contains (&devdata->frame_shape, ev->x, ev->y))
+		    {
+		      frame_begin_drag (data, devdata,
+					SCREENATOR_FRAME_HANDLE_MOVE,
+					ev->x, ev->y);
+		      return TRUE;
+		    }
+
+		  /* A press outside commits it; the code below starts a new
+		   * shape at the click position. */
+		  frame_finish (data, devdata);
+		}
+
+	      devdata->shape_active = TRUE;
+	      devdata->shape_x0 = devdata->shape_x1 = ev->x;
+	      devdata->shape_y0 = devdata->shape_y1 = ev->y;
+	      return TRUE;
 	    }
 
 	  devdata->shape_active = TRUE;
@@ -1976,10 +3320,18 @@ gboolean on_motion (GtkWidget *win,
       devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
 
-  /* Moving the pointer with the Text tool selected does not draw. */
+  /* Moving the pointer with the Text tool selected does not draw, but the
+   * handles of a text that is still editable follow the pointer. */
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_TEXT)
-    return TRUE;
+    {
+      if (devdata->frame_active &&
+	  devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
+	frame_move_handle (data, devdata, ev->x, ev->y,
+			   (ev->state & GDK_CONTROL_MASK) != 0);
+
+      return TRUE;
+    }
 
   /* Update the shape preview while dragging and repaint both the old and the
    * new preview area so the previous outline disappears. */
@@ -1993,7 +3345,8 @@ gboolean on_motion (GtkWidget *win,
 	{
 	  if (devdata->star_active &&
 	      devdata->star_drag != SCREENATOR_STAR_HANDLE_NONE)
-	    star_move_handle (data, devdata, ev->x, ev->y);
+	    star_move_handle (data, devdata, ev->x, ev->y,
+			      (ev->state & GDK_CONTROL_MASK) != 0);
 	  return TRUE;
 	}
 
@@ -2001,42 +3354,33 @@ gboolean on_motion (GtkWidget *win,
 	{
 	  if (devdata->triangle_active &&
 	      devdata->triangle_drag != SCREENATOR_TRIANGLE_HANDLE_NONE)
-	    triangle_move_handle (data, devdata, ev->x, ev->y);
+	    triangle_move_handle (data, devdata, ev->x, ev->y,
+				  (ev->state & GDK_CONTROL_MASK) != 0);
 	  return TRUE;
 	}
 
-      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
-	  devdata->rounded_active)
+      if (data->shape_type == SCREENATOR_SHAPE_LINE ||
+	  data->shape_type == SCREENATOR_SHAPE_ARROW)
 	{
-	  if (devdata->rounded_radius_drag)
-	    {
-	      gint x0 = MIN (devdata->rounded.x0, devdata->rounded.x1);
-	      gint w = ABS (devdata->rounded.x1 - devdata->rounded.x0);
-	      gint h = ABS (devdata->rounded.y1 - devdata->rounded.y0);
-	      gdouble max_radius = MIN (w, h) / 2.0;
-
-	      rounded_invalidate (data, &devdata->rounded);
-	      devdata->rounded.radius =
-		CLAMP ((gdouble) (ev->x - x0), 0.0, max_radius);
-	      rounded_invalidate (data, &devdata->rounded);
-	      return TRUE;
-	    }
-
-	  if (devdata->rounded_move_drag)
-	    {
-	      gint dx = ev->x - devdata->rounded_press_x;
-	      gint dy = ev->y - devdata->rounded_press_y;
-
-	      rounded_invalidate (data, &devdata->rounded);
-	      devdata->rounded.x0 = devdata->rounded_press.x0 + dx;
-	      devdata->rounded.y0 = devdata->rounded_press.y0 + dy;
-	      devdata->rounded.x1 = devdata->rounded_press.x1 + dx;
-	      devdata->rounded.y1 = devdata->rounded_press.y1 + dy;
-	      rounded_invalidate (data, &devdata->rounded);
-	      return TRUE;
-	    }
-
+	  line_move_handle (data, devdata, ev->x, ev->y,
+			    (ev->state & GDK_CONTROL_MASK) != 0);
 	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
+	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
+	  data->shape_type == SCREENATOR_SHAPE_MATH ||
+	  data->shape_type == SCREENATOR_SHAPE_BARS)
+	{
+	  if (devdata->frame_active &&
+	      devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
+	    {
+	      frame_move_handle (data, devdata, ev->x, ev->y,
+				 (ev->state & GDK_CONTROL_MASK) != 0);
+	      return TRUE;
+	    }
+	  /* Without a grabbed handle the generic preview below tracks the
+	   * drag that creates the shape. */
 	}
 
       if (data->shape_type == SCREENATOR_SHAPE_SPLINE)
@@ -2186,6 +3530,14 @@ gboolean on_buttonrelease (GtkWidget *win,
     width = devdata->cur_context->arrowsize * devdata->cur_context->width / 2;
    
 
+  /* The text editor disables the mouse; ignore every button until the typed
+   * text is accepted with Enter. */
+  if (data->text_editor)
+    {
+      data->text_pressed = FALSE;
+      return TRUE;
+    }
+
   if ((ev->x != devdata->lastx) ||
       (ev->y != devdata->lasty))
     on_motion(win, (GdkEventMotion *) ev, user_data);
@@ -2194,10 +3546,18 @@ gboolean on_buttonrelease (GtkWidget *win,
     return FALSE;
 
   /* Open the inline text editor at the position where the button was
-   * pressed, not where it happened to be released. */
+   * pressed, not where it happened to be released.  Releasing a text handle
+   * only ends the drag. */
   if (devdata->cur_context &&
       devdata->cur_context->type == SCREENATOR_TEXT)
     {
+      if (devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
+	{
+	  devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
+	  data->text_pressed = FALSE;
+	  return TRUE;
+	}
+
       if (ev->button == 1)
 	{
 	  gint x = data->text_pressed ? data->text_x : ev->x;
@@ -2269,17 +3629,45 @@ gboolean on_buttonrelease (GtkWidget *win,
 	  return TRUE;
 	}
 
-      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE &&
-	  devdata->rounded_active)
+      if (data->shape_type == SCREENATOR_SHAPE_LINE ||
+	  data->shape_type == SCREENATOR_SHAPE_ARROW)
 	{
-	  /* Releasing the roundness handle or the body ends the drag; the
-	   * rectangle stays editable until it is committed. */
-	  if (devdata->rounded_radius_drag || devdata->rounded_move_drag)
+	  /* Releasing a handle ends the drag; the line stays editable until
+	   * it is committed. */
+	  devdata->line_drag = SCREENATOR_LINE_HANDLE_NONE;
+	  return TRUE;
+	}
+
+      if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
+	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
+	  data->shape_type == SCREENATOR_SHAPE_MATH ||
+	  data->shape_type == SCREENATOR_SHAPE_BARS)
+	{
+	  /* Releasing a handle ends the drag; the shape stays editable until
+	   * it is committed. */
+	  if (devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
 	    {
-	      devdata->rounded_radius_drag = FALSE;
-	      devdata->rounded_move_drag = FALSE;
+	      devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
 	      return TRUE;
 	    }
+
+	  if (devdata->shape_active)
+	    {
+	      gint dx = ABS (devdata->shape_x1 - devdata->shape_x0);
+	      gint dy = ABS (devdata->shape_y1 - devdata->shape_y0);
+
+	      devdata->shape_active = FALSE;
+
+	      /* The dragged-out rectangle becomes the editable frame, so
+	       * the handles can still move, resize and rotate it. */
+	      if (dx > 0 || dy > 0)
+		frame_begin_from_drag (data, devdata, data->shape_type,
+				       devdata->shape_x0, devdata->shape_y0,
+				       devdata->shape_x1, devdata->shape_y1);
+
+	      return TRUE;
+	    }
+	  return TRUE;
 	}
 
       if (devdata->shape_active)
@@ -2292,24 +3680,6 @@ gboolean on_buttonrelease (GtkWidget *win,
 
 	  if (dx > 0 || dy > 0)
 	    {
-	      /* A rounded rectangle stays editable after the drag so its
-	       * roundness handle can adjust the corners. */
-	      if (data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
-		{
-		  gint w = ABS (devdata->shape_x1 - devdata->shape_x0);
-		  gint h = ABS (devdata->shape_y1 - devdata->shape_y0);
-
-		  devdata->rounded.x0 = devdata->shape_x0;
-		  devdata->rounded.y0 = devdata->shape_y0;
-		  devdata->rounded.x1 = devdata->shape_x1;
-		  devdata->rounded.y1 = devdata->shape_y1;
-		  devdata->rounded.radius = MIN (w, h) / 4.0;
-		  devdata->rounded_active = TRUE;
-
-		  rounded_invalidate (data, &devdata->rounded);
-		  return TRUE;
-		}
-
 	      cairo_t *cr;
 
 	      snap_undo_state (data);
@@ -2564,27 +3934,47 @@ install_about_link_style (void)
 }
 
 
+/* The About dialog is only shown, not run in a nested loop, so close it when
+ * one of its buttons is pressed. */
+static void
+on_about_response (GtkDialog *dialog, gint response, gpointer user_data)
+{
+  gtk_widget_destroy (GTK_WIDGET (dialog));
+}
+
 void on_about(GtkMenuItem *menuitem,
 	      gpointer     user_data)
 {
+    ScreenatorData *data = (ScreenatorData *) user_data;
     const gchar *authors [] = {
         "Mahmoud Alnaanah <a href=\"mailto:malnaanah@gmail.com\">malnaanah@gmail.com</a>",
         "Christian Beier (Gromit-MPX 1.4.2)",
         "Simon Budig (Gromit)",
         NULL };
+    GtkWidget *dialog;
 
     install_about_link_style ();
 
-    gtk_show_about_dialog (NULL,
-			   "program-name", "Screenator",
-			   "logo-icon-name", "screenator",
-			   "title", "About Screenator",
-			   "comments", "Screenator is a vibe-coded screen annotation tool for X11, developed by Mahmoud Alnaanah (malnaanah@gmail.com), based on Gromit-MPX 1.4.2.",
-			   "version", VERSION,
-			   "authors", authors,
-			   "copyright", "2026 Mahmoud Alnaanah\nBased on Gromit-MPX 1.4.2, Copyright 2009-2022 Christian Beier, Copyright 2000 Simon Budig",
-			   "license-type", GTK_LICENSE_GPL_2_0,
-			   NULL);
+    /* Built here instead of gtk_show_about_dialog() so the dialog can be kept
+     * above the fullscreen annotation window. */
+    dialog = gtk_about_dialog_new ();
+    g_object_set (dialog,
+		  "program-name", "Screenator",
+		  "logo-icon-name", "screenator",
+		  "title", "About Screenator",
+		  "comments", "Screenator is a vibe-coded screen annotation tool for X11, developed by Mahmoud Alnaanah (malnaanah@gmail.com), based on Gromit-MPX 1.4.2.",
+		  "version", VERSION,
+		  "authors", authors,
+		  "copyright", "2026 Mahmoud Alnaanah\nBased on Gromit-MPX 1.4.2, Copyright 2009-2022 Christian Beier, Copyright 2000 Simon Budig",
+		  "license-type", GTK_LICENSE_GPL_2_0,
+		  NULL);
+    gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
+    gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+    g_signal_connect (dialog, "response",
+		      G_CALLBACK (on_about_response), NULL);
+
+    show_dialog_above_drawings (data, dialog);
+    gtk_widget_show (dialog);
 }
 
 
@@ -2619,16 +4009,29 @@ static const gchar *icon_data_dir (void)
   return NULL;
 }
 
-static gchar *main_icon_path (gboolean svg)
+/* Path of a file installed below the data directory (usually /usr/share). */
+static gchar *icon_path (const gchar *relative)
 {
   const gchar *dir = icon_data_dir ();
 
   if (dir)
-    return g_build_filename (dir, svg ? "icons/hicolor/scalable/apps/screenator.svg"
-                                      : "pixmaps/screenator.png", NULL);
+    return g_build_filename (dir, relative, NULL);
 
-  return g_strdup (svg ? "/usr/share/icons/hicolor/scalable/apps/screenator.svg"
-                       : "/usr/share/pixmaps/screenator.png");
+  return g_build_filename ("/usr/share", relative, NULL);
+}
+
+/* The application icon has two variants: the normal one and the active one,
+ * which is shown in the floating icon while a painting mode is grabbed. */
+static gchar *main_icon_svg_path (gboolean active)
+{
+  return icon_path (active
+		    ? "icons/hicolor/scalable/apps/screenator-active.svg"
+		    : "icons/hicolor/scalable/apps/screenator.svg");
+}
+
+static gchar *main_icon_png_path (void)
+{
+  return icon_path ("pixmaps/screenator.png");
 }
 
 /* The tray indicator resolves icons through the icon theme.  When the
@@ -2643,7 +4046,7 @@ void set_tray_icon (ScreenatorData *data)
   if (!data->trayicon)
     return;
 
-  path = main_icon_path (FALSE);
+  path = main_icon_png_path ();
   if (g_file_test (path, G_FILE_TEST_IS_REGULAR))
     app_indicator_set_icon (data->trayicon, path);
   else
@@ -2667,54 +4070,35 @@ static GdkPixbuf *load_menu_icon (const gchar *name)
 
 static GdkPixbuf *load_icon_pixbuf (ScreenatorData *data, gboolean active)
 {
-  gchar *svg_path;
-  gchar *png_path;
-  GdkPixbuf *base;
+  static const gchar * const normal_svg =
+    "icons/hicolor/scalable/apps/screenator.svg";
   GdkPixbuf *pixbuf;
-  cairo_surface_t *surf;
-  cairo_t *cr;
+  gchar *path;
 
   /* Prefer the SVG so the icon stays sharp at every floating icon size.
    * Fall back to the high-resolution PNG if no SVG loader is installed. */
-  svg_path = main_icon_path (TRUE);
-  png_path = main_icon_path (FALSE);
-  base = gdk_pixbuf_new_from_file_at_scale (svg_path,
-					    data->icon_size, data->icon_size,
-					    TRUE, NULL);
-  if (!base)
-    base = gdk_pixbuf_new_from_file_at_scale (png_path,
-					      data->icon_size, data->icon_size,
-					      TRUE, NULL);
-  g_free (svg_path);
-  g_free (png_path);
+  path = main_icon_svg_path (active);
+  pixbuf = gdk_pixbuf_new_from_file_at_scale (path, data->icon_size,
+					      data->icon_size, TRUE, NULL);
+  g_free (path);
 
-  if (!base)
-    return NULL;
+  /* An older installation may not have the active variant yet. */
+  if (!pixbuf && active)
+    {
+      path = icon_path (normal_svg);
+      pixbuf = gdk_pixbuf_new_from_file_at_scale (path, data->icon_size,
+						  data->icon_size, TRUE, NULL);
+      g_free (path);
+    }
 
-  if (!active)
-    return base;
+  if (!pixbuf)
+    {
+      path = main_icon_png_path ();
+      pixbuf = gdk_pixbuf_new_from_file_at_scale (path, data->icon_size,
+						  data->icon_size, TRUE, NULL);
+      g_free (path);
+    }
 
-  surf = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, data->icon_size, data->icon_size);
-  cr = cairo_create (surf);
-
-  cairo_set_source_rgba (cr, 0, 0, 0, 0);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_paint (cr); /* transparent background */
-
-  gdk_cairo_set_source_pixbuf (cr, base, 0, 0);
-  cairo_paint (cr);
-
-  /* red ring marks the active (painting) state, SVG transparency preserved */
-  cairo_set_source_rgb (cr, 1.0, 0.0, 0.0);
-  cairo_set_line_width (cr, 2.0);
-  cairo_arc (cr, data->icon_size / 2.0, data->icon_size / 2.0, data->icon_size / 2.0 - 2,
-             0, 2 * G_PI);
-  cairo_stroke (cr);
-
-  cairo_destroy (cr);
-  pixbuf = gdk_pixbuf_get_from_surface (surf, 0, 0, data->icon_size, data->icon_size);
-  cairo_surface_destroy (surf);
-  g_object_unref (base);
   return pixbuf;
 }
 
@@ -2732,31 +4116,156 @@ void update_icon_image (ScreenatorData *data)
     g_object_unref (pixbuf);
 }
 
-static void on_icon_color (GtkMenuItem *menuitem, gpointer user_data)
+/* Colours offered by the Line Color menu; the mouse wheel cycles through them
+ * while a tool is active. */
+static const struct { const gchar *label; const gchar *name; } line_colors[] =
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  const gchar *name = g_object_get_data (G_OBJECT (menuitem), "icon-color-name");
-  GdkRGBA color;
+  { "Red", "#FF0000" },
+  { "Green", "#00AA00" },
+  { "Blue", "#0000FF" },
+  { "Yellow", "#FFFF00" },
+  { "Black", "#000000" },
+  { "White", "#FFFFFF" },
+  { "Orange", "#FF8000" },
+  { "Gray", "#808080" }
+};
 
-  if (name && gdk_rgba_parse (&color, name))
+/* Colours offered by the Shapes Fill Color menu; the mouse wheel cycles through
+ * them while the Paint Bucket tool is active. */
+static const struct { const gchar *label; const gchar *name; } fill_colors[] =
+{
+  { "None", "none" },
+  { "Green", "#00AA00" },
+  { "Blue", "#0000FF" },
+  { "Yellow", "#FFFF00" },
+  { "Black", "#000000" },
+  { "White", "#FFFFFF" },
+  { "Red", "#FF0000" },
+  { "Orange", "#FF8000" },
+  { "Gray", "#808080" }
+};
+
+/* Recolour the frames that are still being edited (a text that was just
+ * placed with Enter, an ellipse, a math plot, ...), so a colour chosen from
+ * the menu or the mouse wheel applies to them before they are committed. */
+static void
+update_active_frame_colors (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
     {
-      /* Remember the hue (opacity is a separate setting). */
-      data->pen_color.red = color.red;
-      data->pen_color.green = color.green;
-      data->pen_color.blue = color.blue;
-      data->pen_color.alpha = 1.0;
+      ScreenatorDeviceData *devdata = value;
 
-      apply_pen_settings (data);
-
-      schedule_tray_menu_refresh (data);
+      if (devdata->frame_active)
+	{
+	  devdata->frame_shape.color = data->pen_color;
+	  devdata->frame_shape.color.alpha = 1.0;
+	}
     }
 }
 
-static void on_icon_shape_fill (GtkMenuItem *menuitem, gpointer user_data)
+/* Redraw the annotation window, so a shape that is still being edited picks
+ * up a colour changed from the menu or the mouse wheel immediately. */
+static void
+invalidate_annotation_window (ScreenatorData *data)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  const gchar *name = g_object_get_data (G_OBJECT (menuitem),
-					 "icon-shape-fill-name");
+  if (data->win && gtk_widget_get_window (data->win))
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win), NULL, 0);
+}
+
+/* Eraser sizes offered by the Eraser Size menu; the mouse wheel cycles through
+ * them while the eraser is active. */
+static const guint eraser_widths[] = { 20, 40, 60, 120 };
+
+/* Apply an eraser size exactly like the Eraser Size menu does. */
+static void
+apply_eraser_size (ScreenatorData *data, guint width)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  data->eraser_width = width;
+
+  apply_pen_settings (data);
+  update_eraser_cursor (data);
+
+  /* The cursor is attached to the device grab, so grabbing again is the only
+   * way to replace it.  Do that right away, otherwise the new eraser cursor
+   * would only appear after the next event. */
+  if (data->devdatatable)
+    {
+      g_hash_table_iter_init (&it, data->devdatatable);
+      while (g_hash_table_iter_next (&it, NULL, &value))
+	{
+	  ScreenatorDeviceData *devdata = value;
+
+	  devdata->state = 0;
+
+	  if (devdata->is_grabbed && devdata->cur_context &&
+	      devdata->cur_context->type == SCREENATOR_ERASER)
+	    set_device_cursor (data, devdata->device, devdata->cur_context);
+	}
+    }
+
+  schedule_tray_menu_refresh (data);
+}
+
+/* Step through the eraser sizes, wrapping around at both ends. */
+static void
+cycle_eraser_size (ScreenatorData *data, gboolean down)
+{
+  guint count = G_N_ELEMENTS (eraser_widths);
+  guint current = count;
+  guint i;
+
+  for (i = 0; i < count; i++)
+    if (data->eraser_width == eraser_widths[i])
+      {
+	current = i;
+	break;
+      }
+
+  if (current >= count)
+    current = down ? 0 : count - 1;
+  else if (down)
+    current = (current + 1) % count;
+  else
+    current = (current + count - 1) % count;
+
+  apply_eraser_size (data, eraser_widths[current]);
+}
+
+/* Apply a line colour exactly like the Line Color menu does. */
+static void
+apply_line_color (ScreenatorData *data, const gchar *name)
+{
+  GdkRGBA color;
+
+  if (!name || !gdk_rgba_parse (&color, name))
+    return;
+
+  /* Remember the hue (opacity is a separate setting). */
+  data->pen_color.red = color.red;
+  data->pen_color.green = color.green;
+  data->pen_color.blue = color.blue;
+  data->pen_color.alpha = 1.0;
+
+  apply_pen_settings (data);
+  update_active_frame_colors (data);
+  invalidate_annotation_window (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Apply a shape fill colour exactly like the Shapes Fill Color menu does. */
+static void
+apply_shape_fill (ScreenatorData *data, const gchar *name)
+{
   GdkRGBA color;
 
   if (!name)
@@ -2773,7 +4282,273 @@ static void on_icon_shape_fill (GtkMenuItem *menuitem, gpointer user_data)
       data->shape_fill_enabled = TRUE;
     }
 
+  update_settings_indicator (data);
+  invalidate_annotation_window (data);
   schedule_tray_menu_refresh (data);
+}
+
+/* Index of the current colour in a table, or the table size when the current
+ * colour is not one of the presets. */
+static guint
+color_table_index (const GdkRGBA *current, gboolean include_none)
+{
+  guint i, count = include_none ? G_N_ELEMENTS (fill_colors)
+				: G_N_ELEMENTS (line_colors);
+
+  for (i = include_none ? 1 : 0; i < count; i++)
+    {
+      const gchar *name = include_none ? fill_colors[i].name
+				       : line_colors[i].name;
+      GdkRGBA color;
+
+      if (gdk_rgba_parse (&color, name) &&
+	  current->red == color.red &&
+	  current->green == color.green &&
+	  current->blue == color.blue)
+	return i;
+    }
+
+  return count;
+}
+
+/* Step through the line colours, wrapping around at both ends. */
+static void
+cycle_line_color (ScreenatorData *data, gboolean down)
+{
+  guint count = G_N_ELEMENTS (line_colors);
+  guint current = color_table_index (&data->pen_color, FALSE);
+
+  if (current >= count)
+    current = down ? 0 : count - 1;
+  else if (down)
+    current = (current + 1) % count;
+  else
+    current = (current + count - 1) % count;
+
+  apply_line_color (data, line_colors[current].name);
+}
+
+/* Step through the shape fill colours, including None. */
+static void
+cycle_shape_fill_color (ScreenatorData *data, gboolean down)
+{
+  guint count = G_N_ELEMENTS (fill_colors);
+  guint current;
+
+  if (!data->shape_fill_enabled)
+    current = 0;
+  else
+    current = color_table_index (&data->shape_fill_color, TRUE);
+
+  if (current >= count)
+    current = down ? 0 : count - 1;
+  else if (down)
+    current = (current + 1) % count;
+  else
+    current = (current + count - 1) % count;
+
+  apply_shape_fill (data, fill_colors[current].name);
+}
+
+/* The mouse wheel changes the line colour while a tool is active; over the
+ * Paint Bucket it changes the shape fill colour instead.  The change is the
+ * same as picking the colour from the menu: it is applied to the pen, saved
+ * with the other settings and shown in the settings indicator and menus. */
+gboolean
+on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  static gdouble smooth_accumulator = 0.0;
+  static gint64 last_step_time = 0;
+  gint64 now;
+  gboolean down;
+  gboolean bucket;
+
+  if (!screenator_any_grabbed (data))
+    return FALSE;
+
+  if (ev->direction == GDK_SCROLL_UP)
+    down = FALSE;
+  else if (ev->direction == GDK_SCROLL_DOWN)
+    down = TRUE;
+  else if (ev->direction == GDK_SCROLL_SMOOTH)
+    {
+      /* Touchpads report a stream of small deltas; collect a wheel notch
+       * before changing the colour so one gesture is one step. */
+      smooth_accumulator += ev->delta_y;
+
+      if (smooth_accumulator > -1.0 && smooth_accumulator < 1.0)
+	return TRUE;
+
+      down = smooth_accumulator > 0;
+      smooth_accumulator = 0.0;
+    }
+  else
+    return FALSE;
+
+  /* Some wheels and drivers report one physical notch as two events.  Taking
+   * only one step per short interval keeps the colours in menu order instead
+   * of skipping every other one. */
+  now = g_get_monotonic_time ();
+  if (last_step_time != 0 && now - last_step_time < 40000)
+    return TRUE;
+  last_step_time = now;
+
+  /* The wheel changes the setting that belongs to the active tool: the eraser
+   * size for the eraser, the shape fill colour over the Paint Bucket and the
+   * line colour for every other tool. */
+  bucket = data->forced_context &&
+	   data->forced_context->type == SCREENATOR_SHAPE &&
+	   data->shape_type == SCREENATOR_SHAPE_BUCKET;
+
+  if ((data->forced_context &&
+       data->forced_context->type == SCREENATOR_ERASER) ||
+      data->pen_tool == 3)
+    cycle_eraser_size (data, down);
+  else if (bucket)
+    cycle_shape_fill_color (data, down);
+  else
+    cycle_line_color (data, down);
+
+  return TRUE;
+}
+
+static void on_icon_color (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  const gchar *name = g_object_get_data (G_OBJECT (menuitem), "icon-color-name");
+
+  apply_line_color (data, name);
+}
+
+static void on_icon_shape_fill (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  const gchar *name = g_object_get_data (G_OBJECT (menuitem),
+					 "icon-shape-fill-name");
+
+  apply_shape_fill (data, name);
+}
+
+/* Give the annotation window the keyboard focus while a paper is shown, so
+ * typing does not reach the application below.  The previous focus window is
+ * remembered and restored when the paper is turned off. */
+void
+paper_take_focus (ScreenatorData *data)
+{
+#ifdef GDK_WINDOWING_X11
+  GdkWindow *window;
+  GdkDisplay *display;
+  Display *xdisplay;
+  Window focus = None;
+  int revert = 0;
+
+  if (!data->win)
+    return;
+
+  window = gtk_widget_get_window (data->win);
+  if (!window || !GDK_IS_X11_WINDOW (window))
+    return;
+
+  display = gdk_window_get_display (window);
+  xdisplay = GDK_DISPLAY_XDISPLAY (display);
+
+  if (data->paper_prev_focus == 0)
+    {
+      XGetInputFocus (xdisplay, &focus, &revert);
+      if (focus != None && focus != PointerRoot &&
+	  focus != GDK_WINDOW_XID (window))
+	data->paper_prev_focus = focus;
+    }
+
+  gdk_x11_display_error_trap_push (display);
+  XSetInputFocus (xdisplay, GDK_WINDOW_XID (window), RevertToParent,
+		  CurrentTime);
+  XFlush (xdisplay);
+  gdk_x11_display_error_trap_pop_ignored (display);
+#endif
+}
+
+void
+paper_restore_focus (ScreenatorData *data)
+{
+#ifdef GDK_WINDOWING_X11
+  GdkWindow *window;
+  GdkDisplay *display;
+  Display *xdisplay;
+
+  if (!data->win || data->paper_prev_focus == 0)
+    return;
+
+  window = gtk_widget_get_window (data->win);
+  if (!window || !GDK_IS_X11_WINDOW (window))
+    return;
+
+  display = gdk_window_get_display (window);
+  xdisplay = GDK_DISPLAY_XDISPLAY (display);
+
+  gdk_x11_display_error_trap_push (display);
+  XSetInputFocus (xdisplay, data->paper_prev_focus, RevertToParent,
+		  CurrentTime);
+  XFlush (xdisplay);
+  gdk_x11_display_error_trap_pop_ignored (display);
+
+  data->paper_prev_focus = 0;
+#endif
+}
+
+/* Show one of the screen papers, or turn it off again.  The paper is drawn on
+ * the annotation window below the annotations, so the window has to stay
+ * visible and above the other windows even when painting mode is off. */
+static void
+set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
+{
+  data->paper = paper;
+
+  update_window_shape (data);
+
+  if (gtk_widget_get_window (data->win))
+    {
+      GdkRectangle rect = { 0, 0, data->width, data->height };
+
+      gdk_window_invalidate_rect (gtk_widget_get_window (data->win), &rect, 0);
+    }
+
+  if (paper != SCREENATOR_PAPER_NONE)
+    {
+      if (data->hidden)
+	show_window (data);
+      else
+	{
+	  if (gtk_widget_get_window (data->win))
+	    gdk_window_raise (gtk_widget_get_window (data->win));
+	  raise_icon_window (data);
+	}
+
+      /* The paper is the active window: it keeps the keyboard, so typing does
+       * not reach the application below. */
+      paper_take_focus (data);
+    }
+  else
+    {
+      paper_restore_focus (data);
+
+      if (!data->painted && !screenator_any_grabbed (data))
+	hide_window (data);
+    }
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  ScreenatorPaperType paper =
+    (ScreenatorPaperType) GPOINTER_TO_INT (
+      g_object_get_data (G_OBJECT (menuitem), "icon-paper-type"));
+
+  set_screen_paper (data, paper);
 }
 
 static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
@@ -2792,26 +4567,10 @@ static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
 static void on_icon_eraser_size (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  GHashTableIter it;
-  gpointer value;
   guint width = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (menuitem),
 						     "icon-eraser-width"));
 
-  data->eraser_width = width;
-
-  apply_pen_settings (data);
-  update_eraser_cursor (data);
-
-  /* The cursor is attached to the device grab.  Resetting the tracked state
-   * makes the next event select the tool again and pick up the new cursor. */
-  if (data->devdatatable)
-    {
-      g_hash_table_iter_init (&it, data->devdatatable);
-      while (g_hash_table_iter_next (&it, NULL, &value))
-	((ScreenatorDeviceData *) value)->state = 0;
-    }
-
-  schedule_tray_menu_refresh (data);
+  apply_eraser_size (data, width);
 }
 
 static void on_icon_change_font (GtkMenuItem *menuitem, gpointer user_data)
@@ -2829,10 +4588,14 @@ static void on_icon_change_font (GtkMenuItem *menuitem, gpointer user_data)
   dialog = gtk_font_chooser_dialog_new ("Select Text Font", NULL);
 
   gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
   gtk_font_chooser_set_preview_text (GTK_FONT_CHOOSER (dialog),
 				     "Screenator text annotation");
   if (data->font && *data->font)
     gtk_font_chooser_set_font (GTK_FONT_CHOOSER (dialog), data->font);
+
+  /* Keep the dialog above the annotation window and its drawings. */
+  show_dialog_above_drawings (data, dialog);
 
   /* The font chooser dialog reports GTK_RESPONSE_OK on older and newer GTK3
    * releases, while some builds used GTK_RESPONSE_ACCEPT.  Accept both so the
@@ -2881,6 +4644,8 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
   /* Resize the icon window and reload the icon pixbuf */
   gtk_window_resize (GTK_WINDOW (data->icon_win), new_size, new_size);
   update_icon_image (data);
+  update_settings_indicator (data);
+  raise_icon_window (data);
 
   schedule_tray_menu_refresh (data);
 }
@@ -2888,11 +4653,40 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
 static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  gboolean show = gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
 
-  if (gtk_widget_get_visible (data->icon_win))
-    gtk_widget_hide (data->icon_win);
+  data->show_floating_icon = show;
+
+  if (show)
+    {
+      gtk_widget_show (data->icon_win);
+      update_settings_indicator (data);
+      raise_icon_window (data);
+    }
   else
-    gtk_widget_show (data->icon_win);
+    {
+      icon_cancel_menu_retry (data);
+      icon_ungrab_pointer (data);
+      gtk_widget_hide (data->icon_win);
+      if (data->settings_win)
+	gtk_widget_hide (data->settings_win);
+    }
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
+					       gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  data->show_settings_indicator =
+    gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
+
+  update_settings_indicator (data);
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
 }
 
 static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
@@ -2913,6 +4707,12 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   data->shape_fill_enabled = FALSE;
   gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
   data->shape_fill_color.alpha = 1.0;
+
+  /* Reset Settings also puts the normal desktop back. */
+  data->paper = SCREENATOR_PAPER_NONE;
+  update_window_shape (data);
+  if (!data->painted && !screenator_any_grabbed (data))
+    hide_window (data);
 
   apply_pen_settings (data);
   update_eraser_cursor (data);
@@ -2946,6 +4746,283 @@ static gboolean on_icon_draw (GtkWidget *widget,
   cairo_restore (cr);
 
   return FALSE;
+}
+
+/* ------------------------------------------------------------------
+ * Settings indicator
+ * ------------------------------------------------------------------ */
+
+/* A small settings indicator to the left of the floating icon.  It is a plain
+ * rectangle as tall as the icon, divided into three equal-height pieces that
+ * are centred horizontally: the upper piece is the current line width in the
+ * line colour, the middle piece is 24 pixels of the line colour and the lower
+ * piece is 24 pixels of the shape fill colour (a black and white checkerboard
+ * when shapes are not filled).  A one pixel black outline surrounds the whole
+ * indicator.  It is a separate popup window so it stays above the annotation
+ * window together with the icon, and it lets clicks through to the screen
+ * below. */
+#define SETTINGS_INDICATOR_GAP 6
+#define SETTINGS_INDICATOR_PIECE_WIDTH 24.0
+
+/* Region of the three pieces and their outlines, used to clip the window on
+ * screens without a compositor so the gaps between the pieces stay
+ * transparent instead of showing the window background. */
+static cairo_region_t *
+settings_indicator_region (ScreenatorData *data, gint width, gint height)
+{
+  cairo_region_t *region;
+  cairo_rectangle_int_t rect;
+  gdouble body_x = 1.0;
+  gdouble body_y = 1.0;
+  gdouble body_width = MAX (width - 2.0, 1.0);
+  gdouble body_height = MAX (height - 2.0, 1.0);
+  gdouble piece_height = body_height / 3.0;
+  gdouble line_width = MIN ((gdouble) data->pen_width, body_width);
+  gdouble upper_x = body_x + (body_width - line_width) / 2.0;
+  gdouble middle_x =
+    body_x + (body_width - SETTINGS_INDICATOR_PIECE_WIDTH) / 2.0;
+
+  region = cairo_region_create ();
+
+  /* Upper piece and its one pixel outline. */
+  rect.x = (gint) floor (upper_x - 1.0);
+  rect.y = (gint) floor (body_y - 1.0);
+  rect.width = (gint) ceil (upper_x + line_width + 1.0) - rect.x;
+  rect.height = (gint) ceil (body_y + piece_height + 1.0) - rect.y;
+  cairo_region_union_rectangle (region, &rect);
+
+  /* Middle piece and its outline. */
+  rect.x = (gint) floor (middle_x - 1.0);
+  rect.y = (gint) floor (body_y + piece_height - 1.0);
+  rect.width = (gint) ceil (middle_x + SETTINGS_INDICATOR_PIECE_WIDTH + 1.0)
+	       - rect.x;
+  rect.height = (gint) ceil (body_y + 2.0 * piece_height + 1.0) - rect.y;
+  cairo_region_union_rectangle (region, &rect);
+
+  /* Lower piece and its outline. */
+  rect.x = (gint) floor (middle_x - 1.0);
+  rect.y = (gint) floor (body_y + 2.0 * piece_height - 1.0);
+  rect.width = (gint) ceil (middle_x + SETTINGS_INDICATOR_PIECE_WIDTH + 1.0)
+	       - rect.x;
+  rect.height = (gint) ceil (body_y + 3.0 * piece_height + 1.0) - rect.y;
+  cairo_region_union_rectangle (region, &rect);
+
+  return region;
+}
+
+static void
+position_settings_indicator (ScreenatorData *data)
+{
+  gint icon_x, icon_y, x, y;
+
+  if (!data->settings_win || !data->icon_win)
+    return;
+
+  gtk_window_get_position (GTK_WINDOW (data->icon_win), &icon_x, &icon_y);
+  /* The window includes the one pixel outline on each side; the body is at
+   * least as wide as the middle and lower pieces. */
+  x = icon_x - SETTINGS_INDICATOR_GAP
+      - MAX ((gint) data->pen_width, (gint) SETTINGS_INDICATOR_PIECE_WIDTH) - 1;
+  y = icon_y - 1;
+
+  if (x < 0)
+    x = 0;
+  if (y < 0)
+    y = 0;
+
+  gtk_window_move (GTK_WINDOW (data->settings_win), x, y);
+}
+
+static gboolean
+on_settings_indicator_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  gdouble width = gtk_widget_get_allocated_width (widget);
+  gdouble height = gtk_widget_get_allocated_height (widget);
+  /* The coloured body is inset by the one pixel outline on each side. */
+  gdouble body_x = 1.0;
+  gdouble body_y = 1.0;
+  gdouble body_width = MAX (width - 2.0, 1.0);
+  gdouble body_height = MAX (height - 2.0, 1.0);
+  gdouble piece_height = body_height / 3.0;
+  gdouble line_width = MIN ((gdouble) data->pen_width, body_width);
+  gdouble middle_x =
+    body_x + (body_width - SETTINGS_INDICATOR_PIECE_WIDTH) / 2.0;
+  /* Without a compositor the window has no alpha channel, so the colours are
+   * drawn opaque instead of pretending an opacity that cannot be shown. */
+  gdouble alpha = data->composited ? CLAMP (data->opacity, 0.0, 1.0) : 1.0;
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgba (cr, 0, 0, 0, 0);
+  cairo_paint (cr);
+  cairo_restore (cr);
+
+  /* Upper piece: the current line width, in the line colour. */
+  cairo_save (cr);
+  cairo_rectangle (cr, body_x + (body_width - line_width) / 2.0, body_y,
+		   line_width, piece_height);
+  cairo_set_source_rgba (cr, data->pen_color.red, data->pen_color.green,
+			 data->pen_color.blue, alpha);
+  cairo_fill (cr);
+  cairo_restore (cr);
+
+  /* Middle piece: 24 pixels of the line colour. */
+  cairo_save (cr);
+  cairo_rectangle (cr, middle_x, body_y + piece_height,
+		   SETTINGS_INDICATOR_PIECE_WIDTH, piece_height);
+  cairo_set_source_rgba (cr, data->pen_color.red, data->pen_color.green,
+			 data->pen_color.blue, alpha);
+  cairo_fill (cr);
+  cairo_restore (cr);
+
+  /* Lower piece: 24 pixels of the shape fill colour, or a black and white
+   * checkerboard when shapes are not filled. */
+  cairo_save (cr);
+  cairo_rectangle (cr, middle_x, body_y + 2.0 * piece_height,
+		   SETTINGS_INDICATOR_PIECE_WIDTH, piece_height);
+  cairo_clip (cr);
+
+  if (data->shape_fill_enabled)
+    {
+      cairo_set_source_rgba (cr, data->shape_fill_color.red,
+			     data->shape_fill_color.green,
+			     data->shape_fill_color.blue, alpha);
+      cairo_paint (cr);
+    }
+  else
+    {
+      gint i, j;
+
+      /* Six pixels wide and four pixels high checks. */
+      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 1.0);
+      cairo_paint (cr);
+
+      cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 1.0);
+      for (j = 0; j * 4 < piece_height; j++)
+	for (i = 0; i * 6 < SETTINGS_INDICATOR_PIECE_WIDTH; i++)
+	  if (((i + j) & 1) == 0)
+	    {
+	      cairo_rectangle (cr, middle_x + i * 6,
+			       body_y + 2.0 * piece_height + j * 4, 6.0, 4.0);
+	      cairo_fill (cr);
+	    }
+    }
+  cairo_restore (cr);
+
+  /* A one pixel black outline around each piece individually, always opaque.
+   * The stroke lies outside the piece. */
+  cairo_save (cr);
+  cairo_set_source_rgba (cr, 0, 0, 0, 1.0);
+  cairo_set_line_width (cr, 1.0);
+
+  cairo_rectangle (cr, body_x + (body_width - line_width) / 2.0 - 0.5,
+		   body_y - 0.5, line_width + 1.0, piece_height + 1.0);
+  cairo_stroke (cr);
+
+  cairo_rectangle (cr, middle_x - 0.5, body_y + piece_height - 0.5,
+		   SETTINGS_INDICATOR_PIECE_WIDTH + 1.0, piece_height + 1.0);
+  cairo_stroke (cr);
+
+  cairo_rectangle (cr, middle_x - 0.5, body_y + 2.0 * piece_height - 0.5,
+		   SETTINGS_INDICATOR_PIECE_WIDTH + 1.0, piece_height + 1.0);
+  cairo_stroke (cr);
+
+  cairo_restore (cr);
+
+  return FALSE;
+}
+
+static void
+raise_settings_indicator (ScreenatorData *data)
+{
+  GdkWindow *window;
+
+  if (!data->settings_win || !gtk_widget_get_visible (data->settings_win))
+    return;
+
+  window = gtk_widget_get_window (data->settings_win);
+  if (window)
+    gdk_window_raise (window);
+}
+
+void
+update_settings_indicator (ScreenatorData *data)
+{
+  gint width, height;
+
+  if (!data->settings_win)
+    return;
+
+  if (!data->show_settings_indicator || !data->icon_win ||
+      !gtk_widget_get_visible (data->icon_win))
+    {
+      gtk_widget_hide (data->settings_win);
+      return;
+    }
+
+  /* The body is as wide as the widest piece, plus the one pixel outline on
+   * each side. */
+  width = MAX ((gint) data->pen_width, (gint) SETTINGS_INDICATOR_PIECE_WIDTH) + 2;
+  height = MAX (1, (gint) data->icon_size) + 2;
+
+  gtk_widget_set_size_request (data->settings_win, width, height);
+  gtk_window_resize (GTK_WINDOW (data->settings_win), width, height);
+
+  if (!data->composited)
+    {
+      cairo_region_t *region =
+	settings_indicator_region (data, width, height);
+
+      gtk_widget_shape_combine_region (data->settings_win, region);
+      cairo_region_destroy (region);
+    }
+
+  position_settings_indicator (data);
+
+  if (!gtk_widget_get_visible (data->settings_win))
+    gtk_widget_show (data->settings_win);
+
+  gtk_widget_queue_draw (data->settings_win);
+  raise_settings_indicator (data);
+}
+
+static void
+create_settings_indicator (ScreenatorData *data)
+{
+  GdkScreen *screen;
+  GdkVisual *visual;
+  cairo_region_t *empty;
+
+  data->settings_win = gtk_window_new (GTK_WINDOW_POPUP);
+  gtk_window_set_decorated (GTK_WINDOW (data->settings_win), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (data->settings_win), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (data->settings_win), TRUE);
+  gtk_window_set_keep_above (GTK_WINDOW (data->settings_win), TRUE);
+  gtk_window_set_resizable (GTK_WINDOW (data->settings_win), FALSE);
+  gtk_window_set_type_hint (GTK_WINDOW (data->settings_win),
+			    GDK_WINDOW_TYPE_HINT_DOCK);
+
+  /* Paint the window ourselves so the rounded rectangle is not drawn on the
+   * theme's opaque window background. */
+  gtk_widget_set_app_paintable (data->settings_win, TRUE);
+
+  screen = gtk_widget_get_screen (data->settings_win);
+  visual = gdk_screen_get_rgba_visual (screen);
+  if (visual && gdk_screen_is_composited (screen))
+    gtk_widget_set_visual (data->settings_win, visual);
+
+  g_signal_connect (data->settings_win, "draw",
+		    G_CALLBACK (on_settings_indicator_draw), data);
+
+  gtk_widget_realize (data->settings_win);
+
+  /* The indicator is a display only: let clicks through to the screen below. */
+  empty = cairo_region_create ();
+  gtk_widget_input_shape_combine_region (data->settings_win, empty);
+  cairo_region_destroy (empty);
+
+  update_settings_indicator (data);
 }
 
 void create_icon_window (ScreenatorData *data)
@@ -2994,10 +5071,20 @@ void create_icon_window (ScreenatorData *data)
 		    G_CALLBACK (on_icon_motion), data);
   g_signal_connect (data->icon_win, "button-release-event",
 		    G_CALLBACK (on_icon_button_release), data);
+  g_signal_connect (data->icon_win, "grab-broken-event",
+		    G_CALLBACK (on_icon_grab_broken), data);
 
   data->icon_dragging = FALSE;
+  data->icon_pointer_grabbed = FALSE;
+  data->icon_focus_taken = FALSE;
+  data->icon_prev_focus = 0;
+  data->icon_menu_pending = NULL;
+  data->icon_menu_retry_id = 0;
+  data->icon_menu_retry_count = 0;
   data->icon_drag_start_x = -1;
   data->icon_drag_start_y = -1;
+  data->icon_press_x = -1;
+  data->icon_press_y = -1;
   data->icon_menu_x = -1;
   data->icon_menu_y = -1;
 
@@ -3011,6 +5098,21 @@ void create_icon_window (ScreenatorData *data)
     if (y < 0) y = 0;
     gtk_window_move (GTK_WINDOW (data->icon_win), x, y);
   }
+
+  /* The annotation window is created first; make sure the icon starts above
+   * it, otherwise the annotation window takes the clicks for the icon. */
+  raise_icon_window (data);
+
+  /* The settings indicator sits to the left of the icon. */
+  create_settings_indicator (data);
+
+  /* A hidden floating menu stays hidden after a restart. */
+  if (!data->show_floating_icon)
+    {
+      gtk_widget_hide (data->icon_win);
+      if (data->settings_win)
+	gtk_widget_hide (data->settings_win);
+    }
 }
 
 static void icon_menu_position_func (GtkMenu  *menu,
@@ -3066,17 +5168,16 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     } shapes[] =
       {
 	{ "Marker",             "marker.png",             G_CALLBACK (on_icon_marker) },
-	{ "Free Line",          "free-line.png",          G_CALLBACK (on_icon_free_line) },
+	{ "Line",               "free-line.png",          G_CALLBACK (on_icon_line) },
 	{ "Spline",             "spline.png",             G_CALLBACK (on_icon_spline) },
 	{ "Polygon",            "polygon.png",            G_CALLBACK (on_icon_polygon) },
 	{ "Triangle",           "triangle.png",           G_CALLBACK (on_icon_triangle) },
 	{ "Arrow",              "arrow.png",              G_CALLBACK (on_icon_arrow) },
-	{ "Angled Line",        "angled-line.png",        G_CALLBACK (on_icon_angled_line) },
-	{ "Angled Arrow",       "angled-arrow.png",       G_CALLBACK (on_icon_angled_arrow) },
-	{ "Rectangle",          "rectangle.png",          G_CALLBACK (on_icon_rectangle) },
 	{ "Ellipse",            "ellipse.png",            G_CALLBACK (on_icon_ellipse) },
 	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
-	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) }
+	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) },
+	{ "Math Function",      "math.png",               G_CALLBACK (on_icon_math) },
+	{ "Parallel Lines",     "bars.png",               G_CALLBACK (on_icon_bars) }
       };
     guint i;
 
@@ -3097,12 +5198,13 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
   /* --- line thickness submenu --- */
-  item = gtk_menu_item_new_with_label ("Line Thickness (Pixels)");
+  item = gtk_menu_item_new_with_label ("Line Thickness");
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint widths[] = { 3, 6, 12, 24, 48 };
-    static const gchar * const labels[] = { "3 px", "6 px", "12 px", "24 px", "48 px" };
+    static const guint widths[] = { 1, 2, 3, 6, 12, 24, 48 };
+    static const gchar * const labels[] = { "1 px", "2 px", "3 px", "6 px",
+					    "12 px", "24 px", "48 px" };
     GtkWidget *items[G_N_ELEMENTS (widths)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -3147,27 +5249,18 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const struct { const gchar *label; const gchar *name; } colors[] =
-      {
-	{ "Red", "#FF0000" },
-	{ "Green", "#00AA00" },
-	{ "Blue", "#0000FF" },
-	{ "Yellow", "#FFFF00" },
-	{ "Black", "#000000" },
-	{ "White", "#FFFFFF" }
-      };
-    GtkWidget *items[G_N_ELEMENTS (colors)];
+    GtkWidget *items[G_N_ELEMENTS (line_colors)];
     GtkWidget *active_item = NULL;
     guint i;
 
-    for (i = 0; i < G_N_ELEMENTS (colors); i++)
+    for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
       {
 	GtkWidget *subitem;
 	GdkRGBA color;
 
-	subitem = gtk_radio_menu_item_new_with_label (group, colors[i].label);
+	subitem = gtk_radio_menu_item_new_with_label (group, line_colors[i].label);
 	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
-	if (gdk_rgba_parse (&color, colors[i].name))
+	if (gdk_rgba_parse (&color, line_colors[i].name))
 	  {
 	    GdkRGBA *current = data->default_pen->paint_color;
 
@@ -3178,14 +5271,14 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	      active_item = subitem;
 	  }
 	g_object_set_data (G_OBJECT (subitem), "icon-color-name",
-			   (gpointer) colors[i].name);
+			   (gpointer) line_colors[i].name);
 	items[i] = subitem;
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
       }
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
-    for (i = 0; i < G_N_ELEMENTS (colors); i++)
+    for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
       g_signal_connect (items[i], "activate", G_CALLBACK (on_icon_color), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
@@ -3196,28 +5289,18 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const struct { const gchar *label; const gchar *name; } colors[] =
-      {
-	{ "None", "none" },
-	{ "Green", "#00AA00" },
-	{ "Blue", "#0000FF" },
-	{ "Yellow", "#FFFF00" },
-	{ "Black", "#000000" },
-	{ "White", "#FFFFFF" },
-	{ "Red", "#FF0000" }
-      };
-    GtkWidget *items[G_N_ELEMENTS (colors)];
+    GtkWidget *items[G_N_ELEMENTS (fill_colors)];
     GtkWidget *active_item = NULL;
     guint i;
 
-    for (i = 0; i < G_N_ELEMENTS (colors); i++)
+    for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
       {
 	GtkWidget *subitem;
 
-	subitem = gtk_radio_menu_item_new_with_label (group, colors[i].label);
+	subitem = gtk_radio_menu_item_new_with_label (group, fill_colors[i].label);
 	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
 
-	if (g_ascii_strcasecmp (colors[i].name, "none") == 0)
+	if (g_ascii_strcasecmp (fill_colors[i].name, "none") == 0)
 	  {
 	    if (!data->shape_fill_enabled)
 	      active_item = subitem;
@@ -3227,7 +5310,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	    GdkRGBA color;
 
 	    if (data->shape_fill_enabled &&
-		gdk_rgba_parse (&color, colors[i].name) &&
+		gdk_rgba_parse (&color, fill_colors[i].name) &&
 		data->shape_fill_color.red == color.red &&
 		data->shape_fill_color.green == color.green &&
 		data->shape_fill_color.blue == color.blue)
@@ -3235,22 +5318,66 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	  }
 
 	g_object_set_data (G_OBJECT (subitem), "icon-shape-fill-name",
-			   (gpointer) colors[i].name);
+			   (gpointer) fill_colors[i].name);
 	items[i] = subitem;
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
       }
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
-    for (i = 0; i < G_N_ELEMENTS (colors); i++)
+    for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
       g_signal_connect (items[i], "activate",
 			G_CALLBACK (on_icon_shape_fill), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
+  /* --- screen paper submenu --- */
+  item = gtk_image_menu_item_new_with_label ("Screen Paper");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("paper.png")));
+  submenu = gtk_menu_new ();
+  {
+    GSList *group = NULL;
+    static const struct
+    {
+      const gchar        *label;
+      ScreenatorPaperType paper;
+    } papers[] =
+      {
+	{ "None",  SCREENATOR_PAPER_NONE },
+	{ "Plain", SCREENATOR_PAPER_PLAIN },
+	{ "Ruled", SCREENATOR_PAPER_RULED },
+	{ "Graph", SCREENATOR_PAPER_GRAPH }
+      };
+    GtkWidget *items[G_N_ELEMENTS (papers)];
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (papers); i++)
+      {
+	GtkWidget *subitem =
+	  gtk_radio_menu_item_new_with_label (group, papers[i].label);
+
+	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
+	g_object_set_data (G_OBJECT (subitem), "icon-paper-type",
+			   GINT_TO_POINTER (papers[i].paper));
+	items[i] = subitem;
+	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
+	gtk_widget_show (subitem);
+
+	if (papers[i].paper == data->paper)
+	  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (subitem), TRUE);
+      }
+    for (i = 0; i < G_N_ELEMENTS (papers); i++)
+      g_signal_connect (items[i], "activate",
+			G_CALLBACK (on_icon_paper), data);
+  }
+  gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
   /* --- eraser size submenu (above Opacity) --- */
-  item = gtk_menu_item_new_with_label ("Eraser Size (Pixels)");
+  item = gtk_menu_item_new_with_label ("Eraser Size");
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
@@ -3414,13 +5541,21 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_toggle_vis), data);
 
-  item = gtk_image_menu_item_new_with_label ("Show/Hide Floating Icon");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("hide-menu.png")));
+  item = gtk_check_menu_item_new_with_label ("Show Floating Icon");
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->show_floating_icon);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate",
 		    G_CALLBACK (on_icon_toggle_floating), data);
+
+  item = gtk_check_menu_item_new_with_label ("Show Settings Indicator");
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->show_settings_indicator);
+  /* The indicator sits next to the icon, so it can only be shown with it. */
+  gtk_widget_set_sensitive (item, data->show_floating_icon);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_toggle_settings_indicator), data);
 
   item = gtk_image_menu_item_new_with_label ("Reset Settings");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
@@ -3446,24 +5581,323 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   return menu;
 }
 
-void popup_icon_menu (ScreenatorData *data, gint x, gint y)
+/* GTK refuses to pop up a menu when it cannot grab the keyboard and gives no
+ * error: the menu simply stays hidden.  A virtual machine with automatic
+ * keyboard capture holds the keyboard grab for as long as it has the focus,
+ * which is exactly the case for the floating icon: it never takes the focus
+ * itself, so the virtual machine never lets go.  Borrowing the focus for a
+ * moment makes such an application release the keyboard, and the menu can be
+ * shown afterwards.  The previous focus is restored when the menu is done. */
+#ifdef GDK_WINDOWING_X11
+static gboolean
+icon_take_focus (ScreenatorData *data)
+{
+  GdkWindow *window;
+  Display *display;
+  Window focus = None;
+  int revert = 0;
+
+  if (data->icon_focus_taken || !GDK_IS_X11_DISPLAY (data->display))
+    return FALSE;
+
+  window = data->icon_win ? gtk_widget_get_window (data->icon_win) : NULL;
+  if (!window)
+    return FALSE;
+
+  display = GDK_DISPLAY_XDISPLAY (data->display);
+  XGetInputFocus (display, &focus, &revert);
+
+  if (focus == GDK_WINDOW_XID (window))
+    return FALSE;
+
+  data->icon_prev_focus = (gulong) focus;
+  data->icon_focus_taken = TRUE;
+
+  gdk_x11_display_error_trap_push (data->display);
+  XSetInputFocus (display, GDK_WINDOW_XID (window), RevertToParent,
+		  CurrentTime);
+  gdk_x11_display_error_trap_pop_ignored (data->display);
+
+  return TRUE;
+}
+
+static void
+icon_restore_focus (ScreenatorData *data)
+{
+  GdkWindow *window;
+  Display *display;
+  Window focus;
+  Window current = None;
+  int revert = 0;
+
+  if (!data->icon_focus_taken)
+    return;
+
+  data->icon_focus_taken = FALSE;
+
+  if (!GDK_IS_X11_DISPLAY (data->display))
+    return;
+
+  display = GDK_DISPLAY_XDISPLAY (data->display);
+  focus = (Window) data->icon_prev_focus;
+  data->icon_prev_focus = None;
+
+  /* Only give the focus back if the icon still has it.  A dialog opened from
+   * the menu may have taken it over in the meantime. */
+  window = data->icon_win ? gtk_widget_get_window (data->icon_win) : NULL;
+  if (!window)
+    return;
+
+  gdk_x11_display_error_trap_push (data->display);
+  XGetInputFocus (display, &current, &revert);
+  if (current == GDK_WINDOW_XID (window))
+    {
+      if (focus == None)
+	XSetInputFocus (display, None, RevertToNone, CurrentTime);
+      else if (focus == PointerRoot)
+	XSetInputFocus (display, PointerRoot, RevertToPointerRoot, CurrentTime);
+      else
+	XSetInputFocus (display, focus, RevertToParent, CurrentTime);
+    }
+  gdk_x11_display_error_trap_pop_ignored (data->display);
+}
+#else
+static gboolean
+icon_take_focus (ScreenatorData *data)
+{
+  return FALSE;
+}
+
+static void
+icon_restore_focus (ScreenatorData *data)
+{
+}
+#endif
+
+/* Free the popup menu once it is dismissed.  The flag keeps a repeated
+ * selection-done (a submenu chain) from destroying the menu twice. */
+static void
+on_icon_menu_done (GtkMenuShell *menu, gpointer user_data)
+{
+  if (g_object_get_data (G_OBJECT (menu), "screenator-menu-done"))
+    return;
+
+  g_object_set_data (G_OBJECT (menu), "screenator-menu-done",
+		     GINT_TO_POINTER (1));
+  gtk_widget_destroy (GTK_WIDGET (menu));
+
+  /* The menu borrowed the focus when another application held the keyboard;
+   * give it back. */
+  icon_restore_focus ((ScreenatorData *) user_data);
+}
+
+/* How long to wait for the focus change to make the other application release
+ * the keyboard, and how often to retry. */
+#define ICON_MENU_RETRY_MS 25
+#define ICON_MENU_RETRIES 12
+
+/* Pop the menu up.  GTK leaves the menu hidden when it cannot grab the
+ * keyboard, which is the only way to notice the failure. */
+static gboolean
+icon_menu_show (ScreenatorData *data, GtkWidget *menu)
+{
+  gtk_menu_popup (GTK_MENU (menu), NULL, NULL,
+		  icon_menu_position_func, data,
+		  0, GDK_CURRENT_TIME);
+
+  if (!gtk_widget_get_visible (menu))
+    return FALSE;
+
+  /* The annotation window covers the whole screen, so make sure the menu ends
+   * up above it (and above the icon). */
+  if (gtk_widget_get_window (menu))
+    gdk_window_raise (gtk_widget_get_window (menu));
+
+  return TRUE;
+}
+
+static gboolean
+icon_menu_retry (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (icon_menu_show (data, data->icon_menu_pending))
+    {
+      data->icon_menu_pending = NULL;
+      data->icon_menu_retry_id = 0;
+      return G_SOURCE_REMOVE;
+    }
+
+  if (++data->icon_menu_retry_count >= ICON_MENU_RETRIES)
+    {
+      GtkWidget *menu = data->icon_menu_pending;
+
+      data->icon_menu_pending = NULL;
+      data->icon_menu_retry_id = 0;
+      gtk_widget_destroy (menu);
+      icon_restore_focus (data);
+      return G_SOURCE_REMOVE;
+    }
+
+  return G_SOURCE_CONTINUE;
+}
+
+/* Drop a menu that is still waiting for the keyboard and hand the focus back. */
+static void
+icon_cancel_menu_retry (ScreenatorData *data)
+{
+  if (data->icon_menu_retry_id)
+    {
+      g_source_remove (data->icon_menu_retry_id);
+      data->icon_menu_retry_id = 0;
+    }
+
+  if (data->icon_menu_pending)
+    {
+      gtk_widget_destroy (data->icon_menu_pending);
+      data->icon_menu_pending = NULL;
+    }
+
+  icon_restore_focus (data);
+}
+
+void popup_icon_menu (ScreenatorData *data)
 {
   GtkWidget *menu = build_icon_menu (data);
+  GtkRequisition req;
   GList     *l;
-  gint      ix, iy;
+  gint      ix, iy, mx, my;
+
+  if (!data->icon_win)
+    {
+      gtk_widget_destroy (menu);
+      return;
+    }
 
   /* position the menu below the icon so it does not cover it */
   gtk_window_get_position (GTK_WINDOW (data->icon_win), &ix, &iy);
-  data->icon_menu_x = ix;
-  data->icon_menu_y = iy + data->icon_size + 6;
 
   for (l = gtk_container_get_children (GTK_CONTAINER (menu)); l; l = l->next)
     gtk_widget_show (GTK_WIDGET (l->data));
   g_list_free (gtk_container_get_children (GTK_CONTAINER (menu)));
 
-  gtk_menu_popup (GTK_MENU (menu), NULL, NULL,
-		  icon_menu_position_func, data,
-		  0, GDK_CURRENT_TIME);
+  /* Below the icon by default; flip above it and stay inside the screen when
+   * the icon sits at the bottom or the right edge. */
+  gtk_widget_get_preferred_size (menu, NULL, &req);
+
+  mx = ix;
+  my = iy + (gint) data->icon_size + 6;
+
+  if (my + req.height > (gint) data->height)
+    my = iy - req.height - 6;
+  if (my < 0)
+    my = 0;
+  if (mx + req.width > (gint) data->width)
+    mx = (gint) data->width - req.width;
+  if (mx < 0)
+    mx = 0;
+
+  data->icon_menu_x = mx;
+  data->icon_menu_y = my;
+
+  /* The popup is a separate window; free it when it is dismissed. */
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (on_icon_menu_done), data);
+
+  if (icon_menu_show (data, menu))
+    return;
+
+  /* Some other application holds the keyboard grab, so GTK refused to show
+   * the menu.  Borrow the focus until it lets go, then try again. */
+  if (!icon_take_focus (data))
+    {
+      gtk_widget_destroy (menu);
+      return;
+    }
+
+  data->icon_menu_pending = menu;
+  data->icon_menu_retry_count = 0;
+  data->icon_menu_retry_id = g_timeout_add (ICON_MENU_RETRY_MS,
+					    icon_menu_retry, data);
+}
+
+/* How far the pointer has to move before a click on the icon becomes a drag.
+ * A small threshold keeps a slightly shaky click from moving the icon and
+ * cancelling the menu. */
+#define ICON_DRAG_THRESHOLD 4
+
+/* Movement beyond this is not a drag but a pointer warp (a desktop tool or a
+ * virtual machine moving the pointer).  Following it would throw the icon
+ * across the screen and lose the click. */
+static gint
+icon_drag_limit (ScreenatorData *data)
+{
+  return MAX ((gint) data->icon_size * 2, 64);
+}
+
+/* Hold the pointer while a button is down on the icon.
+ *
+ * GTK 3 does not grab the pointer implicitly, so a release that happens
+ * outside the small icon window is delivered to whatever window is below it
+ * and the menu never opens.  Keeping the pointer grabbed makes the click
+ * survive a small movement or a pointer warp.  The grab is best effort: a
+ * compositor may refuse it, in which case the icon behaves as before. */
+static void
+icon_grab_pointer (ScreenatorData *data)
+{
+  GdkWindow *window;
+  GdkSeat *seat;
+
+  if (data->icon_pointer_grabbed || !data->icon_win)
+    return;
+
+  window = gtk_widget_get_window (data->icon_win);
+  if (!window)
+    return;
+
+  seat = gdk_display_get_default_seat (gdk_window_get_display (window));
+  if (!seat)
+    return;
+
+  if (gdk_seat_grab (seat, window, GDK_SEAT_CAPABILITY_POINTER, FALSE,
+		     NULL, NULL, NULL, NULL) == GDK_GRAB_SUCCESS)
+    data->icon_pointer_grabbed = TRUE;
+}
+
+static void
+icon_ungrab_pointer (ScreenatorData *data)
+{
+  GdkWindow *window;
+  GdkDisplay *display;
+  GdkSeat *seat;
+
+  if (!data->icon_pointer_grabbed)
+    return;
+
+  data->icon_pointer_grabbed = FALSE;
+
+  window = data->icon_win ? gtk_widget_get_window (data->icon_win) : NULL;
+  display = window ? gdk_window_get_display (window)
+		   : gdk_display_get_default ();
+
+  seat = display ? gdk_display_get_default_seat (display) : NULL;
+  if (seat)
+    gdk_seat_ungrab (seat);
+}
+
+/* Another client grabbed the pointer; the click cannot continue. */
+static gboolean
+on_icon_grab_broken (GtkWidget *widget, GdkEventGrabBroken *event,
+		     gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  data->icon_pointer_grabbed = FALSE;
+  data->icon_dragging = FALSE;
+  data->icon_drag_start_x = -1;
+  data->icon_drag_start_y = -1;
+
+  return FALSE;
 }
 
 gboolean on_icon_button_press (GtkWidget   *win,
@@ -3478,10 +5912,22 @@ gboolean on_icon_button_press (GtkWidget   *win,
   if (ev->button != 1 && ev->button != 3)
     return FALSE;
 
+  /* A press that arrives while a previous click is still open (its release
+   * was lost) starts over. */
+  icon_cancel_menu_retry (data);
+  icon_ungrab_pointer (data);
+
   data->icon_dragging = FALSE;
   gtk_window_get_position (GTK_WINDOW (win), &wx, &wy);
   data->icon_drag_start_x = ev->x_root - wx;
   data->icon_drag_start_y = ev->y_root - wy;
+  data->icon_press_x = ev->x_root;
+  data->icon_press_y = ev->y_root;
+
+  /* Keep the icon above the annotations and make sure the release comes back
+   * to it, even when the pointer moves a little or is warped away. */
+  raise_icon_window (data);
+  icon_grab_pointer (data);
 
   return TRUE;
 }
@@ -3491,17 +5937,47 @@ gboolean on_icon_motion (GtkWidget    *win,
 			 gpointer   user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  gint dx, dy, limit;
 
   if (!(ev->state & (GDK_BUTTON1_MASK | GDK_BUTTON3_MASK)))
     return FALSE;
 
-  data->icon_dragging = TRUE;
+  if (data->icon_drag_start_x < 0 || data->icon_drag_start_y < 0)
+    return FALSE;
+
+  dx = ev->x_root - data->icon_press_x;
+  dy = ev->y_root - data->icon_press_y;
+
+  if (!data->icon_dragging)
+    {
+      /* A jump that is too large to be a drag is a pointer warp.  Leave the
+       * icon where it is and keep the click alive. */
+      limit = icon_drag_limit (data);
+      if (ABS (dx) > limit || ABS (dy) > limit)
+	return TRUE;
+
+      if (ABS (dx) < ICON_DRAG_THRESHOLD && ABS (dy) < ICON_DRAG_THRESHOLD)
+	return TRUE;
+
+      /* The offset was recorded on the press and must not change here: it is
+       * the distance from the icon corner to the pointer, and using the
+       * current pointer position instead would cancel the movement. */
+      data->icon_dragging = TRUE;
+    }
+
   {
     gint x = ev->x_root - data->icon_drag_start_x;
     gint y = ev->y_root - data->icon_drag_start_y;
+    gint max_x = (gint) data->width - (gint) data->icon_size;
+    gint max_y = (gint) data->height - (gint) data->icon_size;
+
     if (x < 0) x = 0;
     if (y < 0) y = 0;
+    if (x > max_x) x = MAX (0, max_x);
+    if (y > max_y) y = MAX (0, max_y);
     gtk_window_move (GTK_WINDOW (win), x, y);
+    position_settings_indicator (data);
+    raise_icon_window (data);
   }
 
   return TRUE;
@@ -3512,13 +5988,15 @@ gboolean on_icon_button_release (GtkWidget   *win,
 				 gpointer   user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  gboolean clicked;
 
-  if ((ev->button == 1 || ev->button == 3) && !data->icon_dragging)
-    {
-      gint x, y;
-      gtk_window_get_position (GTK_WINDOW (win), &x, &y);
-      popup_icon_menu (data, x, y);
-    }
+  clicked = (ev->button == 1 || ev->button == 3) && !data->icon_dragging;
+
+  /* Release the pointer before the menu grabs it. */
+  icon_ungrab_pointer (data);
+
+  if (clicked)
+    popup_icon_menu (data);
 
   data->icon_dragging = FALSE;
   data->icon_drag_start_x = -1;
@@ -3527,22 +6005,97 @@ gboolean on_icon_button_release (GtkWidget   *win,
   return TRUE;
 }
 
-/* Show the tool hints.  The general hint appears when any tool is selected;
- * the spline hint is added for the Spline tool.  Each hint has its own
- * "Never show this message again" check box.  Reset Settings deliberately
- * leaves both flags alone, so a hint the user turned off stays off. */
-static void
-show_tool_hint (ScreenatorData *data, gboolean spline)
+/* Tools whose handles snap to the common angles while Ctrl is held.  The
+ * Spline and Paint Bucket tools have no angle snapping. */
+static gboolean
+shape_type_has_snapping (ScreenatorShapeType type)
 {
-  gboolean show_general = !data->hide_tool_hint;
+  switch (type)
+    {
+    case SCREENATOR_SHAPE_SPLINE:
+    case SCREENATOR_SHAPE_BUCKET:
+      return FALSE;
+    default:
+      return TRUE;
+    }
+}
+
+/* One message for every tool, in ScreenatorToolHint order. */
+static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
+{
+  /* SCREENATOR_HINT_PEN */
+  "Left click and drag to draw, middle click to erase, scroll to change the "
+  "line colour, and right click to exit the tool.",
+  /* SCREENATOR_HINT_MARKER */
+  "Left click and drag to draw a highlighter stroke, middle click to erase, "
+  "and right click to exit the tool.",
+  /* SCREENATOR_HINT_ERASER */
+  "Left or middle click and drag to erase, scroll to change the eraser size, "
+  "and right click to exit the tool.",
+  /* SCREENATOR_HINT_TEXT */
+  "Left click to place text, middle click to erase, scroll to change its "
+  "colour, and right click to exit the tool.",
+  /* SCREENATOR_HINT_LINE */
+  "Drag to draw a line, middle click to erase, scroll to change the line "
+  "colour; hold Ctrl to snap the angle, and right click to finish it.",
+  /* SCREENATOR_HINT_ARROW */
+  "Drag to draw an arrow, middle click to erase, scroll to change the line "
+  "colour; hold Ctrl to snap the angle, and right click to finish it.",
+  /* SCREENATOR_HINT_SPLINE */
+  "Left click to add a node, middle click to erase, scroll to change the line "
+  "colour; double-click or right click to finish the curve.",
+  /* SCREENATOR_HINT_POLYGON */
+  "Click to place a polygon, middle click to erase, scroll to change the line "
+  "colour; drag its handles to change its sides, radius and rotation, and "
+  "right click to finish it.",
+  /* SCREENATOR_HINT_TRIANGLE */
+  "Click to place a triangle, middle click to erase, scroll to change the line "
+  "colour; drag its vertex handles to reshape it, and right click to finish "
+  "it.",
+  /* SCREENATOR_HINT_ELLIPSE */
+  "Drag to draw an ellipse, middle click to erase, scroll to change the line "
+  "colour; drag its handles to resize and rotate it, and right click to "
+  "finish it.",
+  /* SCREENATOR_HINT_ROUNDED_RECTANGLE */
+  "Drag to draw a rounded rectangle, middle click to erase, scroll to change "
+  "the line colour; drag its handles to resize, round the corners and rotate "
+  "it, and right click to finish it.",
+  /* SCREENATOR_HINT_MATH */
+  "Drag to draw the plot, middle click to erase, scroll to change the line "
+  "colour; drag its handles to resize and rotate it, and right click to "
+  "finish it.",
+  /* SCREENATOR_HINT_BARS */
+  "Drag to draw the parallel lines, middle click to erase, scroll to change "
+  "the line colour; drag its handles to resize, change the line count and "
+  "rotate it, and right click to finish it.",
+  /* SCREENATOR_HINT_BUCKET */
+  "Left click to fill the enclosed area, middle click to erase, scroll to "
+  "change the fill colour, and right click to exit the tool."
+};
+
+/* Show the tool hints.  The tool hint appears when its tool is selected; the
+ * spline hint is added for the Spline tool, the snap hint for every tool whose
+ * handles snap and the text hint for the Text tool.  Each hint has its own
+ * "Never show this message again" check box.  Reset Settings deliberately
+ * leaves these flags alone, so a hint the user turned off stays off. */
+static void
+show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
+		gboolean snap, gboolean text)
+{
+  const gchar *message = tool_hint_messages[hint];
+  gboolean show_general = !data->hide_tool_hints[hint];
   gboolean show_spline = spline && !data->hide_spline_hint;
+  gboolean show_snap = snap && !data->hide_snap_hint;
+  gboolean show_text = text && !data->hide_text_hint;
   gboolean was_grabbed;
   gboolean changed = FALSE;
   GtkWidget *dialog, *content, *box, *label;
   GtkWidget *general_check = NULL;
   GtkWidget *spline_check = NULL;
+  GtkWidget *snap_check = NULL;
+  GtkWidget *text_check = NULL;
 
-  if (!show_general && !show_spline)
+  if (!show_general && !show_spline && !show_snap && !show_text)
     return;
 
   /* A modal dialog cannot be used while the pointer is grabbed. */
@@ -3561,6 +6114,9 @@ show_tool_hint (ScreenatorData *data, gboolean spline)
   gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
   gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
 
+  /* The hint must stay readable above the drawings. */
+  show_dialog_above_drawings (data, dialog);
+
   content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
   box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_container_set_border_width (GTK_CONTAINER (box), 12);
@@ -3568,8 +6124,7 @@ show_tool_hint (ScreenatorData *data, gboolean spline)
 
   if (show_general)
     {
-      label = gtk_label_new ("Left click to draw, middle click to erase, "
-			     "and right click to exit tool");
+      label = gtk_label_new (message);
       gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
       gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
       gtk_label_set_xalign (GTK_LABEL (label), 0.0);
@@ -3602,13 +6157,56 @@ show_tool_hint (ScreenatorData *data, gboolean spline)
       gtk_box_pack_start (GTK_BOX (box), spline_check, FALSE, FALSE, 0);
     }
 
+  if ((show_general || show_spline) && show_snap)
+    {
+      GtkWidget *separator =
+	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
+      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
+    }
+
+  if (show_snap)
+    {
+      label = gtk_label_new ("Hold CTRL to snap to 0, 30, 45, 60, 90 "
+			     "degrees, etc.");
+      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+      snap_check =
+	gtk_check_button_new_with_label ("Never show this message again");
+      gtk_box_pack_start (GTK_BOX (box), snap_check, FALSE, FALSE, 0);
+    }
+
+  if (show_text && (show_general || show_spline || show_snap))
+    {
+      GtkWidget *separator =
+	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
+      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
+    }
+
+  if (show_text)
+    {
+      label = gtk_label_new ("Mouse buttons are disabled during typing, "
+			     "press Enter key to accept typed text and "
+			     "enable mouse buttons");
+      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+      text_check =
+	gtk_check_button_new_with_label ("Never show this message again");
+      gtk_box_pack_start (GTK_BOX (box), text_check, FALSE, FALSE, 0);
+    }
+
   gtk_widget_show_all (dialog);
   gtk_dialog_run (GTK_DIALOG (dialog));
 
   if (general_check &&
       gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (general_check)))
     {
-      data->hide_tool_hint = TRUE;
+      data->hide_tool_hints[hint] = TRUE;
       changed = TRUE;
     }
 
@@ -3616,6 +6214,20 @@ show_tool_hint (ScreenatorData *data, gboolean spline)
       gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (spline_check)))
     {
       data->hide_spline_hint = TRUE;
+      changed = TRUE;
+    }
+
+  if (snap_check &&
+      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (snap_check)))
+    {
+      data->hide_snap_hint = TRUE;
+      changed = TRUE;
+    }
+
+  if (text_check &&
+      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (text_check)))
+    {
+      data->hide_text_hint = TRUE;
       changed = TRUE;
     }
 
@@ -3638,7 +6250,8 @@ void on_icon_pen (GtkMenuItem *menuitem,
 
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
   spline_cancel_all (data);
   data->forced_context = data->default_pen;
   data->pen_tool = 1;
@@ -3653,8 +6266,443 @@ void on_icon_pen (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, FALSE);
+  show_tool_hint (data, SCREENATOR_HINT_PEN, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
+}
+
+/* --- Math Function dialog -------------------------------------------------
+ *
+ * The expression and the range are entered in a small dialog.  Rectangular
+ * plots use y = f(x) over an x range; polar plots use r = f(theta) over a
+ * theta range.  "pi" and "e" are the constants, and the expression is checked
+ * before it is stored.  Each mode keeps its own expression and range.
+ */
+
+/* Copy the current expression and range into every editable math plot. */
+static void
+math_dialog_update_frames (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->frame_active &&
+	  devdata->frame_shape.type == SCREENATOR_SHAPE_MATH)
+	{
+	  GdkRectangle bounds;
+	  gint pad = (gint) data->pen_width * 2 + 64;
+
+	  frame_shape_get_bounds (&devdata->frame_shape, pad, &bounds);
+
+	  g_free (devdata->frame_shape.expression);
+	  devdata->frame_shape.polar = data->math_polar;
+	  if (data->math_polar)
+	    {
+	      devdata->frame_shape.expression =
+		g_strdup (data->math_polar_expression);
+	      devdata->frame_shape.xmin = data->math_theta_min;
+	      devdata->frame_shape.xmax = data->math_theta_max;
+	    }
+	  else
+	    {
+	      devdata->frame_shape.expression =
+		g_strdup (data->math_expression);
+	      devdata->frame_shape.xmin = data->math_xmin;
+	      devdata->frame_shape.xmax = data->math_xmax;
+	    }
+
+	  if (data->win)
+	    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
+					&bounds, 0);
+	}
+    }
+}
+
+/* Widgets shared with the coordinate-system toggle. */
+typedef struct
+{
+  GtkWidget *rect_grid;
+  GtkWidget *polar_grid;
+  GtkWidget *help;
+  GtkWidget *rect_entry;
+  GtkWidget *polar_entry;
+  GtkWidget *preset_combo;
+  gboolean   polar;
+  gboolean   updating;
+} MathDialogWidgets;
+
+/* Ready-made functions offered by the preset drop-down.  The polar variant
+ * uses theta in place of x. */
+typedef struct
+{
+  const gchar *rect;
+  const gchar *polar;
+} MathPreset;
+
+static const MathPreset math_presets[] =
+{
+  { "cos(2*pi*x)", "cos(2*pi*theta)" },
+  { "sin(2*pi*x)", "sin(2*pi*theta)" },
+  { "unit(x)", "unit(theta)" },
+  { "delta(x)", "delta(theta)" },
+  { "e^(x)", "e^(theta)" },
+  { "log(x)", "log(theta)" },
+  { "1/x", "1/theta" },
+  { "sin(2*pi*x)/(2*pi*x)", "sin(2*pi*theta)/(2*pi*theta)" },
+  { "(cos(2*pi*x)+2)*cos(20*pi*x)", "(cos(2*pi*theta)+2)*cos(20*pi*theta)" }
+};
+
+/* Fill the preset drop-down with the expressions for the active mode. */
+static void
+math_dialog_fill_presets (MathDialogWidgets *widgets)
+{
+  guint i;
+
+  widgets->updating = TRUE;
+  gtk_combo_box_text_remove_all (GTK_COMBO_BOX_TEXT (widgets->preset_combo));
+
+  for (i = 0; i < G_N_ELEMENTS (math_presets); i++)
+    {
+      const gchar *text = widgets->polar
+	? math_presets[i].polar : math_presets[i].rect;
+
+      gtk_combo_box_text_append_text (
+	GTK_COMBO_BOX_TEXT (widgets->preset_combo), text);
+    }
+
+  gtk_combo_box_set_active (GTK_COMBO_BOX (widgets->preset_combo), -1);
+  widgets->updating = FALSE;
+}
+
+/* Put the chosen preset into the active expression entry. */
+static void
+math_dialog_preset_changed (GtkComboBox *combo, gpointer user_data)
+{
+  MathDialogWidgets *widgets = user_data;
+  GtkWidget *entry;
+  gchar *text;
+
+  if (widgets->updating)
+    return;
+
+  text = gtk_combo_box_text_get_active_text (GTK_COMBO_BOX_TEXT (combo));
+
+  if (!text)
+    return;
+
+  entry = widgets->polar ? widgets->polar_entry : widgets->rect_entry;
+  gtk_entry_set_text (GTK_ENTRY (entry), text);
+  gtk_editable_set_position (GTK_EDITABLE (entry), -1);
+  g_free (text);
+
+  /* Clear the choice so the same preset can be picked again. */
+  widgets->updating = TRUE;
+  gtk_combo_box_set_active (combo, -1);
+  widgets->updating = FALSE;
+}
+
+static void
+math_dialog_mode_changed (GtkToggleButton *button, gpointer user_data)
+{
+  MathDialogWidgets *widgets = user_data;
+  gboolean polar = gtk_toggle_button_get_active (button);
+
+  widgets->polar = polar;
+  gtk_widget_set_visible (widgets->rect_grid, !polar);
+  gtk_widget_set_visible (widgets->polar_grid, polar);
+  gtk_label_set_text (GTK_LABEL (widgets->help),
+		      polar
+		      ? "Use theta for the angle and pi and e for the "
+			"constants, for example cos(3*theta). Functions: "
+			"sin, cos, tan, sqrt, abs, exp, log, unit, delta."
+		      : "Use pi and e for the constants, for example "
+			"cos(2*pi*x). Functions: sin, cos, tan, sqrt, abs, "
+			"exp, log, unit, delta.");
+  math_dialog_fill_presets (widgets);
+}
+
+/* Build one mode's fields: the left-hand side label, the expression entry and
+ * the two range spin buttons. */
+static GtkWidget *
+math_dialog_build_grid (const gchar *lhs, const gchar *range_label,
+			const gchar *expression, gdouble min, gdouble max,
+			GtkWidget **entry_out, GtkWidget **min_out,
+			GtkWidget **max_out)
+{
+  GtkWidget *grid = gtk_grid_new ();
+  GtkWidget *label;
+  GtkWidget *entry;
+  GtkWidget *min_spin;
+  GtkWidget *max_spin;
+
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 6);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 8);
+
+  label = gtk_label_new (lhs);
+  gtk_widget_set_halign (label, GTK_ALIGN_START);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 0, 1, 1);
+
+  entry = gtk_entry_new ();
+  gtk_entry_set_text (GTK_ENTRY (entry), expression ? expression : "");
+  gtk_entry_set_width_chars (GTK_ENTRY (entry), 30);
+  gtk_entry_set_activates_default (GTK_ENTRY (entry), TRUE);
+  gtk_grid_attach (GTK_GRID (grid), entry, 1, 0, 3, 1);
+
+  label = gtk_label_new (range_label);
+  gtk_widget_set_halign (label, GTK_ALIGN_START);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 1, 1, 1);
+
+  min_spin = gtk_spin_button_new_with_range (-1e6, 1e6, 0.1);
+  gtk_spin_button_set_digits (GTK_SPIN_BUTTON (min_spin), 4);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (min_spin), min);
+  gtk_grid_attach (GTK_GRID (grid), min_spin, 1, 1, 1, 1);
+
+  label = gtk_label_new ("to");
+  gtk_widget_set_halign (label, GTK_ALIGN_START);
+  gtk_grid_attach (GTK_GRID (grid), label, 2, 1, 1, 1);
+
+  max_spin = gtk_spin_button_new_with_range (-1e6, 1e6, 0.1);
+  gtk_spin_button_set_digits (GTK_SPIN_BUTTON (max_spin), 4);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (max_spin), max);
+  gtk_grid_attach (GTK_GRID (grid), max_spin, 3, 1, 1, 1);
+
+  *entry_out = entry;
+  *min_out = min_spin;
+  *max_out = max_spin;
+
+  return grid;
+}
+
+static gboolean
+show_math_dialog (ScreenatorData *data)
+{
+  gboolean was_grabbed = screenator_any_grabbed (data);
+  gboolean old_suspend = data->suspend_frame_finish;
+  GtkWidget *dialog;
+  GtkWidget *content;
+  GtkWidget *box;
+  GtkWidget *mode_box;
+  GtkWidget *rect_radio;
+  GtkWidget *polar_radio;
+  GtkWidget *preset_box;
+  GtkWidget *preset_label;
+  GtkWidget *preset_combo;
+  GtkWidget *rect_grid;
+  GtkWidget *polar_grid;
+  GtkWidget *rect_entry, *rect_min, *rect_max;
+  GtkWidget *polar_entry, *polar_min, *polar_max;
+  GtkWidget *help;
+  MathDialogWidgets widgets;
+  gboolean accepted = FALSE;
+  gint response;
+
+  /* Opening the dialog releases the pointer grab.  Keep editable math plots
+   * alive so the new settings can be applied to them when the dialog closes. */
+  data->suspend_frame_finish = TRUE;
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  dialog = gtk_dialog_new_with_buttons ("Math Function",
+					NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"Cancel", GTK_RESPONSE_CANCEL,
+					"OK", GTK_RESPONSE_OK,
+					NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+
+  /* The dialog must stay above the drawings it edits. */
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  mode_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+  rect_radio = gtk_radio_button_new_with_label (NULL,
+						"Rectangular  y = f(x)");
+  polar_radio = gtk_radio_button_new_with_label_from_widget (
+    GTK_RADIO_BUTTON (rect_radio), "Polar  r = f(theta)");
+  gtk_box_pack_start (GTK_BOX (mode_box), rect_radio, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (mode_box), polar_radio, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), mode_box, FALSE, FALSE, 0);
+
+  preset_box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  preset_label = gtk_label_new ("Preset:");
+  gtk_widget_set_halign (preset_label, GTK_ALIGN_START);
+  preset_combo = gtk_combo_box_text_new ();
+  gtk_widget_set_hexpand (preset_combo, TRUE);
+  gtk_widget_set_size_request (preset_combo, 240, -1);
+  gtk_box_pack_start (GTK_BOX (preset_box), preset_label, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (preset_box), preset_combo, TRUE, TRUE, 0);
+  gtk_box_pack_start (GTK_BOX (box), preset_box, FALSE, FALSE, 0);
+
+  rect_grid = math_dialog_build_grid ("y =", "x from",
+				      data->math_expression,
+				      data->math_xmin, data->math_xmax,
+				      &rect_entry, &rect_min, &rect_max);
+  gtk_box_pack_start (GTK_BOX (box), rect_grid, FALSE, FALSE, 0);
+
+  polar_grid = math_dialog_build_grid ("r =", "theta from",
+				       data->math_polar_expression,
+				       data->math_theta_min,
+				       data->math_theta_max,
+				       &polar_entry, &polar_min, &polar_max);
+  gtk_box_pack_start (GTK_BOX (box), polar_grid, FALSE, FALSE, 0);
+
+  help = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (help), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (help), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (help), 44);
+  gtk_box_pack_start (GTK_BOX (box), help, FALSE, FALSE, 0);
+
+  if (data->math_polar)
+    gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (polar_radio), TRUE);
+
+  widgets.rect_grid = rect_grid;
+  widgets.polar_grid = polar_grid;
+  widgets.help = help;
+  widgets.rect_entry = rect_entry;
+  widgets.polar_entry = polar_entry;
+  widgets.preset_combo = preset_combo;
+  widgets.polar = data->math_polar;
+  widgets.updating = FALSE;
+  g_signal_connect (polar_radio, "toggled",
+		    G_CALLBACK (math_dialog_mode_changed), &widgets);
+  g_signal_connect (preset_combo, "changed",
+		    G_CALLBACK (math_dialog_preset_changed), &widgets);
+
+  gtk_widget_show_all (dialog);
+  math_dialog_mode_changed (GTK_TOGGLE_BUTTON (polar_radio), &widgets);
+
+  while ((response = gtk_dialog_run (GTK_DIALOG (dialog))) == GTK_RESPONSE_OK)
+    {
+      gboolean polar =
+	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (polar_radio));
+      const gchar *expression =
+	gtk_entry_get_text (GTK_ENTRY (polar ? polar_entry : rect_entry));
+      gdouble lo = gtk_spin_button_get_value (
+	GTK_SPIN_BUTTON (polar ? polar_min : rect_min));
+      gdouble hi = gtk_spin_button_get_value (
+	GTK_SPIN_BUTTON (polar ? polar_max : rect_max));
+      gchar *error = NULL;
+
+      if (!expression || !*expression)
+	error = g_strdup (polar
+			  ? "Enter a function of theta, for example "
+			    "cos(3*theta)."
+			  : "Enter a function of x, for example "
+			    "cos(2*pi*x).");
+      else if (!math_expression_is_valid (expression, &error))
+	{
+	  /* math_expression_is_valid() filled in the message. */
+	}
+      else if (!(hi > lo))
+	error = g_strdup (polar
+			  ? "The ending theta value must be greater than the "
+			    "starting value."
+			  : "The ending x value must be greater than the "
+			    "starting value.");
+
+      if (!error)
+	{
+	  /* Keep both modes' values so switching between them does not lose
+	   * the other plot. */
+	  g_free (data->math_expression);
+	  data->math_expression =
+	    g_strdup (gtk_entry_get_text (GTK_ENTRY (rect_entry)));
+	  data->math_xmin =
+	    gtk_spin_button_get_value (GTK_SPIN_BUTTON (rect_min));
+	  data->math_xmax =
+	    gtk_spin_button_get_value (GTK_SPIN_BUTTON (rect_max));
+
+	  g_free (data->math_polar_expression);
+	  data->math_polar_expression =
+	    g_strdup (gtk_entry_get_text (GTK_ENTRY (polar_entry)));
+	  data->math_theta_min =
+	    gtk_spin_button_get_value (GTK_SPIN_BUTTON (polar_min));
+	  data->math_theta_max =
+	    gtk_spin_button_get_value (GTK_SPIN_BUTTON (polar_max));
+
+	  data->math_polar = polar;
+	  accepted = TRUE;
+	  break;
+	}
+
+      {
+	GtkWidget *message =
+	  gtk_message_dialog_new (GTK_WINDOW (dialog),
+				  GTK_DIALOG_MODAL |
+				  GTK_DIALOG_DESTROY_WITH_PARENT,
+				  GTK_MESSAGE_ERROR,
+				  GTK_BUTTONS_OK,
+				  "%s", error);
+
+	gtk_window_set_keep_above (GTK_WINDOW (message), TRUE);
+	gtk_window_set_position (GTK_WINDOW (message), GTK_WIN_POS_CENTER);
+	show_dialog_above_drawings (data, message);
+	gtk_dialog_run (GTK_DIALOG (message));
+	gtk_widget_destroy (message);
+      }
+
+      g_free (error);
+    }
+
+  gtk_widget_destroy (dialog);
+
+  data->suspend_frame_finish = old_suspend;
+  if (was_grabbed)
+    acquire_grab (data, NULL);
+
+  if (accepted)
+    {
+      math_dialog_update_frames (data);
+      write_keyfile (data);
+    }
+
+  return accepted;
+}
+
+/* The tool hint that belongs to a shape tool. */
+static ScreenatorToolHint
+shape_tool_hint (ScreenatorShapeType shape)
+{
+  switch (shape)
+    {
+    case SCREENATOR_SHAPE_LINE:
+      return SCREENATOR_HINT_LINE;
+    case SCREENATOR_SHAPE_ARROW:
+      return SCREENATOR_HINT_ARROW;
+    case SCREENATOR_SHAPE_SPLINE:
+      return SCREENATOR_HINT_SPLINE;
+    case SCREENATOR_SHAPE_STAR:
+      return SCREENATOR_HINT_POLYGON;
+    case SCREENATOR_SHAPE_TRIANGLE:
+      return SCREENATOR_HINT_TRIANGLE;
+    case SCREENATOR_SHAPE_ELLIPSE:
+      return SCREENATOR_HINT_ELLIPSE;
+    case SCREENATOR_SHAPE_ROUNDED_RECTANGLE:
+      return SCREENATOR_HINT_ROUNDED_RECTANGLE;
+    case SCREENATOR_SHAPE_MATH:
+      return SCREENATOR_HINT_MATH;
+    case SCREENATOR_SHAPE_BARS:
+      return SCREENATOR_HINT_BARS;
+    case SCREENATOR_SHAPE_BUCKET:
+      return SCREENATOR_HINT_BUCKET;
+    default:
+      return SCREENATOR_HINT_PEN;
+    }
 }
 
 /* Select one of the shape tools.  All of them share the default_shape
@@ -3668,7 +6716,8 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
 
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
   spline_cancel_all (data);
   data->forced_context = data->default_shape;
   data->shape_type = shape;
@@ -3681,20 +6730,22 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
       devdata->state = 0;
     }
 
-  show_tool_hint (data, shape == SCREENATOR_SHAPE_SPLINE);
+  show_tool_hint (data, shape_tool_hint (shape),
+		  shape == SCREENATOR_SHAPE_SPLINE,
+		  shape_type_has_snapping (shape), FALSE);
   acquire_grab (data, NULL);
 }
 
 void on_icon_arrow (GtkMenuItem *menuitem,
 		    gpointer     user_data)
 {
-  select_shape_tool ((ScreenatorData *) user_data, 2, SCREENATOR_SHAPE_FREE_ARROW);
+  select_shape_tool ((ScreenatorData *) user_data, 2, SCREENATOR_SHAPE_ARROW);
 }
 
-void on_icon_free_line (GtkMenuItem *menuitem,
-			gpointer     user_data)
+void on_icon_line (GtkMenuItem *menuitem,
+		   gpointer     user_data)
 {
-  select_shape_tool ((ScreenatorData *) user_data, 9, SCREENATOR_SHAPE_FREE_LINE);
+  select_shape_tool ((ScreenatorData *) user_data, 9, SCREENATOR_SHAPE_LINE);
 }
 
 void on_icon_spline (GtkMenuItem *menuitem,
@@ -3714,20 +6765,6 @@ void on_icon_triangle (GtkMenuItem *menuitem,
 {
   select_shape_tool ((ScreenatorData *) user_data, 15,
 		     SCREENATOR_SHAPE_TRIANGLE);
-}
-
-void on_icon_angled_arrow (GtkMenuItem *menuitem,
-			   gpointer     user_data)
-{
-  select_shape_tool ((ScreenatorData *) user_data, 10,
-		     SCREENATOR_SHAPE_ANGLED_ARROW);
-}
-
-void on_icon_rectangle (GtkMenuItem *menuitem,
-			gpointer     user_data)
-{
-  select_shape_tool ((ScreenatorData *) user_data, 5,
-		     SCREENATOR_SHAPE_RECTANGLE);
 }
 
 void on_icon_ellipse (GtkMenuItem *menuitem,
@@ -3751,11 +6788,21 @@ void on_icon_bucket (GtkMenuItem *menuitem,
 		     SCREENATOR_SHAPE_BUCKET);
 }
 
-void on_icon_angled_line (GtkMenuItem *menuitem,
-			  gpointer     user_data)
+void on_icon_math (GtkMenuItem *menuitem,
+		   gpointer     user_data)
 {
-  select_shape_tool ((ScreenatorData *) user_data, 8,
-		     SCREENATOR_SHAPE_ANGLED_LINE);
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  /* Ask for the expression and range, then start the tool. */
+  if (show_math_dialog (data))
+    select_shape_tool (data, 16, SCREENATOR_SHAPE_MATH);
+}
+
+void on_icon_bars (GtkMenuItem *menuitem,
+		   gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 17,
+		     SCREENATOR_SHAPE_BARS);
 }
 
 void on_icon_text (GtkMenuItem *menuitem,
@@ -3768,7 +6815,8 @@ void on_icon_text (GtkMenuItem *menuitem,
 
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
   spline_cancel_all (data);
   data->forced_context = data->default_text;
   data->pen_tool = 4;
@@ -3780,7 +6828,7 @@ void on_icon_text (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, FALSE);
+  show_tool_hint (data, SCREENATOR_HINT_TEXT, FALSE, FALSE, TRUE);
   acquire_grab (data, NULL);
 }
 
@@ -3794,7 +6842,8 @@ void on_icon_eraser (GtkMenuItem *menuitem,
 
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
   spline_cancel_all (data);
   data->forced_context = data->default_eraser;
   data->pen_tool = 3;
@@ -3806,7 +6855,7 @@ void on_icon_eraser (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, FALSE);
+  show_tool_hint (data, SCREENATOR_HINT_ERASER, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -3822,7 +6871,8 @@ void on_icon_marker (GtkMenuItem *menuitem,
    * must not change the global pen settings. */
   star_finish_all (data);
   triangle_finish_all (data);
-  rounded_rect_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
   spline_cancel_all (data);
   data->forced_context = data->default_marker;
   data->pen_tool = 11;
@@ -3834,6 +6884,6 @@ void on_icon_marker (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, FALSE);
+  show_tool_hint (data, SCREENATOR_HINT_MARKER, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
 }

@@ -1,4 +1,4 @@
-Screenator 2.0
+Screenator 3.0
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 2.0 (amd64)
-  - Screenator-2.0-x86_64.AppImage
+  - screenator 3.0 (amd64)
+  - Screenator-3.0-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,18 +18,23 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_2.0_amd64.deb
-                          Screenator-2.0-x86_64.AppImage
+                          screenator_3.0_amd64.deb
+                          Screenator-3.0-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
-  - The Shapes submenu holds the Marker, Free Line, Spline, Polygon, Triangle,
-    Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
-    Paint Bucket tools.  Shapes are drawn by dragging; Free Line and Arrow follow the
-    drag direction, while Angled Line and Angled Arrow snap to 0, 30, 45, 60,
-    90, 120, 135 and 150 degrees.  Arrow and Angled Arrow add an arrowhead at
-    the end point.  Spline is placed click by click: each click adds a node, the
+  - The Shapes submenu holds the Marker, Line, Spline, Polygon, Triangle,
+    Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
+    Lines tools.  Shapes are drawn by dragging; the Line and Arrow follow the
+    drag direction, which snaps to 0, 30, 45, 60, 90 and so on while Ctrl is
+    held, and follows the pointer without it.
+    The Arrow adds a triangular arrowhead at the end point.  The head grows
+    with the line thickness and stays easy to see even with a thin line.  A
+    placed line or arrow stays
+    editable: each end point has a round handle, and dragging the line itself
+    moves the whole shape; clicking outside, double-clicking or right-clicking
+    commits it.  Spline is placed click by click: each click adds a node, the
     nodes are joined by a smooth Bezier curve, and dragging a node moves it.
     Every node has two round Bezier handles: dragging one mirrors the other so
     the curve stays smooth, and holding Ctrl while dragging moves only that
@@ -41,40 +46,117 @@ Features:
     adds sides and moving back towards it removes them, down to 3 at the
     handle), one round handle sets the radius, one sets the rotation, and one
     moves the inner vertices outwards until the shape becomes a regular
-    polygon.  Drag inside the shape to move it; clicking empty space commits it
-    and places the next one, and a double-click or right-click commits it.
+    polygon; that handle snaps to the flat edge when it gets close, so a
+    regular polygon is easy to hit.  Drag inside the shape to move it; clicking
+    empty space commits it and places the next one, and a double-click or
+    right-click commits it.
     Triangle is placed with a single click and keeps three round vertex
-    handles, so it can be stretched and skewed freely; drag inside it to move
-    it, click empty space to commit it and place the next one, and
-    double-click or right-click to commit it.  The Rounded Rectangle keeps a
-    roundness handle on its top edge after the drag: moving it away from the
-    corner rounds the corners more and moving it back makes them sharper.
+    handles, so it can be stretched and skewed freely; holding Ctrl while
+    dragging a vertex snaps the angle at that vertex to 30, 45, 60 or 90
+    degrees.  Drag inside it to move it, click empty space to commit it and
+    place the next one, and double-click or right-click to commit it.
+    The Ellipse and Rounded Rectangle stay editable after the drag.  Every
+    placed shape keeps a square handle on its bottom-right corner and a round
+    rotation handle above it, and dragging inside the shape moves it; rotation
+    is free, and holding Ctrl snaps it to 0, 30, 45, 60, 90 and so on.
+    The Rounded Rectangle also keeps a roundness handle on its top edge: moving
+    it away from the corner rounds the corners more and moving it back makes
+    them sharper.  Clicking outside the shape, double-clicking or right-clicking
+    commits it.
+    Math Function opens a dialog for the expression and the range.  The
+    Rectangular mode plots y = f(x) over an x range and takes a function of x;
+    the Polar mode plots r = f(theta) over a theta range, where theta is
+    reserved for the angle and the default range is 0 to 2*pi, a full circle.
+    pi and e are the constants pi and Euler's number, and multiplication can be
+    implied (2pi*x).  A preset drop-down fills the expression with
+    cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), e^(x), log(x), 1/x,
+    sin(2*pi*x)/(2*pi*x) or (cos(2*pi*x)+2)*cos(20*pi*x); in polar mode the
+    same presets use theta instead of x.  unit(x)
+    is the unit step, and delta(x) is the Dirac delta, drawn as an arrow where
+    its argument is zero.  The defaults are cos(2*pi*x) from x = -2 to x = 2
+    and cos(3*theta) from theta = 0 to 2*pi; each mode keeps its own expression
+    and range.  The plot is drawn inside a frame that is dragged out like the
+    other shapes and is scaled to fill it, so the size handle also sets its
+    amplitude; polar plots use one scale for both axes, so the curve stays
+    round in a non-square frame.  The plot can be moved, resized and rotated
+    with the usual handles.  Selecting the tool from the Shapes menu asks for
+    the expression first, and choosing it again changes the expression; a plot
+    that is still editable updates at once.
+    A point where the expression is undefined is filled in with its limit when
+    both sides agree, so sin(x)/x is drawn through x = 0; a real pole such as
+    1/x or tan(x) breaks the curve instead.
+    Parallel Lines draws between 2 and 40 evenly spaced vertical lines with the
+    current line thickness.  The square handle outside the left edge sets their
+    number: pressing it resets the shape to two lines and moving away adds
+    more.  The lines can be moved, resized and rotated with the usual handles.
     Paint Bucket fills the closed area under the click with the Shapes Fill
     Color; an area that reaches the screen edge is treated as not closed and is
-    left unchanged.
+    left unchanged.  With None selected the bucket erases the enclosed fill
+    instead, leaving the strokes around it.
   - The Marker draws a yellow highlighter stroke with a fixed 32 px width and
     50% opacity.  It keeps its own settings, so the global colour, thickness
     and opacity are not changed when it is selected.
-  - A Shapes Fill Color submenu fills rectangles, ellipses, rounded
-    rectangles, polygons and triangles with one of the line colours, or leaves
-    them unfilled (the default).  After None, the colours are listed Green, Blue,
-    Yellow, Black, White, Red; Green is the default fill, so the Paint Bucket
-    fills green out of the box.  The angled line is never filled.
+  - Line Thickness offers 1, 2, 3, 6, 12, 24 and 48 pixels; the menu marks the
+    entry closest to the current width.
+  - A Shapes Fill Color submenu fills ellipses, rounded rectangles, polygons
+    and triangles with one of the line colours, or leaves them unfilled (the
+    default).  After None, the colours are listed Green, Blue, Yellow, Black,
+    White, Red, Orange and Gray; Green is the default fill, so the Paint Bucket
+    fills green out of the box.  Lines and arrows are never filled.
   - The Text tool shows an I-beam cursor and lets you write directly on the
     screen: click where the text should start and type in the small inline
     editor that appears there.  The text uses the pen colour and the selected
-    font; Enter places it and Escape cancels.  Right-to-left text such as
-    Arabic extends to the left of the click position.
-  - A small draggable floating icon.  Left or right click opens the menu.
+    font and is centred vertically on the click point; Enter places it and
+    Escape cancels.  While the editor is open the mouse buttons are disabled, so
+    a click cannot leave painting mode or reach the application below; Enter or
+    Escape enables them again.  The text and its blinking caret are drawn above
+    the annotations and the screen paper, so they stay visible even over a
+    drawing.  The middle mouse button still erases while it is held, also with
+    the Text tool selected.  Right-to-left
+    text such as Arabic extends to the left of the click position.  A placed
+    text stays editable: drag it to move it, drag its square handle to change
+    the font size and drag its round handle to rotate it.
+  - A small draggable floating icon.  Left or right click opens the menu.  The
+    icon switches to its active (red) variant while a painting mode is on.
+  - A small settings indicator sits to the left of the floating icon.  It is a
+    rectangle as tall as the icon, divided into three equal-height pieces that
+    are centred horizontally: the upper piece is the line thickness in the line
+    colour, the middle piece is 24 pixels of the line colour and the lower
+    piece is 24 pixels of the shape fill colour (a black and white checkerboard
+    when shapes are not filled).  Each piece is surrounded by a one pixel black
+    outline.  "Show Settings Indicator" in the menu turns it off and on; it is
+    on by default and is disabled while the floating icon is hidden.
   - The same menu is available from the system tray icon.
-  - Selecting a tool shows a short hint about the mouse buttons, with a
-    "Never show this message again" option.  The Spline hint also explains
-    how to move its handles and has its own option.
-    Reset Settings keeps both choices.
+  - Dialogs and message boxes, such as the Math Function dialog and the tool
+    hints, are shown with the drawings temporarily hidden, so they are never
+    covered by them; the drawings come back when the dialog is closed.  This
+    also works in virtual machines without a compositor.
+  - A Screen Paper submenu turns the screen into paper for drawing and writing.
+    None shows the normal desktop, Plain a white page, Ruled a white page with
+    blue writing lines and Graph a white page with a grey square grid.  The
+    paper is drawn below the annotations and above the other windows (the
+    floating icon and its menu stay above it), takes the mouse and keyboard so
+    clicks and typing do not reach the desktop or the applications below, stays
+    when Clear Screen is selected and is remembered across restarts.
+  - Selecting a tool shows a short hint that describes that tool: its mouse
+    buttons, what the mouse wheel changes and how its handles work.  Each
+    tool's message has its own "Never show this message again" option, so
+    turning one off leaves the other tools' messages alone.  The Spline hint
+    also explains how to move its handles and has its own option; the tools
+    whose handles snap show a hint about holding Ctrl to snap to 0, 30, 45,
+    60, 90 degrees and so on, also with its own option.  Selecting the Text
+    tool explains that the mouse buttons are disabled while typing and has its
+    own option.  Reset Settings keeps all the choices.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
-    across restarts.  The eraser cursor is drawn as a circle that matches the
+    across restarts, together with whether the floating icon and the settings
+    indicator are shown.  The eraser cursor is drawn as a circle that matches the
     selected eraser size.
+  - While painting mode is active, the mouse wheel steps through the line
+    colours; with the Paint Bucket tool it steps through the shape fill colours
+    and with the Eraser it steps through the eraser sizes instead.  The change
+    is the same as picking it from the menu, so it is kept when another tool is
+    selected and is shown in the settings indicator and the menus.
   - Pen strokes are smoothed with curved segments, and motion event
     compression is disabled so fast strokes stay smooth.
   - Reset Settings restores red, 6 px, 100% opacity, no shape fill, Arial Bold
@@ -87,8 +169,9 @@ Features:
 
 Configuration:
   ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser
-                                    width, opacity, shape fill, text font, icon
-                                    size, hint choices).
+                                    width, opacity, shape fill, screen paper,
+                                    text font, icon size, math expression and
+                                    range, hint choices).
   ~/.config/screenator.cfg          User tool configuration.
   /etc/screenator/screenator.cfg    System-wide tool configuration, used when
                                     the user configuration does not exist.
@@ -100,7 +183,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 2.0.
+    was changed to 3.0.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
@@ -109,13 +192,16 @@ Differences from Gromit-MPX 1.4.2:
     marks the entry closest to the current width.
   - A Text tool with an I-beam cursor and a Change Font dialog were added.
     Text is typed directly on screen at the click position in the pen colour
-    and the chosen Pango font; Enter places it and Escape cancels.  The font is
-    saved with the other menu settings.
-  - A Shapes submenu was added with Free Line, Spline, Polygon, Triangle,
-    Arrow, Angled Line, Angled Arrow, Rectangle, Ellipse, Rounded Rectangle and
-    Paint Bucket tools.  Shapes are drag-drawn; the free line and the arrow follow the drag
-    direction, while the angled line and angled arrow snap to fixed angles.
-    The arrow tools draw an arrowhead at the end point.  The spline is placed
+    and the chosen Pango font; Enter places it and Escape cancels.  The mouse
+    buttons are disabled while the inline editor is open and enabled again by
+    Enter or Escape.  The font is saved with the other menu settings.
+  - A Shapes submenu was added with Line, Spline, Polygon, Triangle, Arrow,
+    Ellipse, Rounded Rectangle and Paint Bucket tools.  Shapes are drag-drawn;
+    the line and the arrow follow the drag direction, which snaps to 0, 30,
+    45, 60, 90 and so on while Ctrl is held.  The
+    arrow draws an arrowhead at the end point.  A placed line or arrow keeps a
+    round handle on each end point, and dragging the line moves the whole
+    shape.  The spline is placed
     click by click: each click adds a node, the nodes are joined by a smooth
     Bezier curve, and dragging a node moves it.  Each node has two round Bezier
     handles; dragging one mirrors the other so the curve stays smooth, and
@@ -125,22 +211,46 @@ Differences from Gromit-MPX 1.4.2:
     number of sides (3 to 16), radius, rotation and inner radius; pressing the
     side handle resets the shape to 3 sides, moving away from the handle adds
     sides and moving back towards it removes them, while the inner radius turns
-    the shape into a regular polygon as it grows.  Drag inside the shape to
-    move it, click empty space to commit it and place the next one, and
-    double-click or right-click to commit it.
+    the shape into a regular polygon as it grows and snaps to the flat edge
+    when the handle gets close.  Drag inside the shape to move it, click empty
+    space to commit it and place the next one, and double-click or right-click
+    to commit it.
     The triangle is placed with a single click and has a round handle on each
     of its three vertices; dragging a handle moves that vertex, so the shape
-    can be stretched and skewed.  Drag inside it to move it, click empty space
-    to commit it and place the next one, and double-click or right-click to
-    commit it.  The rounded rectangle keeps a roundness handle on its top edge
+    can be stretched and skewed, and holding Ctrl snaps the angle at the
+    dragged vertex to 30, 45, 60 or 90 degrees.  Drag inside it to move it,
+    click empty space to commit it and place the next one, and double-click or
+    right-click to commit it.  The rounded rectangle keeps a roundness handle on its top edge
     after the drag, which rounds the corners more when moved away from the
-    corner and makes them sharper when moved back.
+    corner and makes them sharper when moved back.  The ellipse and rounded
+    rectangle stay editable after the drag: each keeps a square size handle on
+    its bottom-right corner and a round rotation handle above it, dragging
+    inside moves it, and holding Ctrl snaps the rotation to 0, 30, 45, 60, 90
+    and so on.
+    The text tool's placed text is editable in the same way, with its size
+    handle changing the font size.
     The paint bucket fills the closed area under the click with the shape fill
     colour and shows a bucket cursor; a region that reaches the screen edge is
     treated as not closed and is left unchanged.
-    Rectangles, ellipses, rounded rectangles, polygons and triangles can
-    optionally be filled with a shape fill colour, which is saved with the
-    other menu settings.
+    The Math Function tool asks for an expression and a range in a dialog.
+    The Rectangular mode plots y = f(x) and takes a function of x; the Polar
+    mode plots r = f(theta), reserves theta for the angle and defaults to the
+    full circle from 0 to 2*pi.  pi and e are the constants pi and Euler's
+    number, implied multiplication is accepted, and the defaults are
+    cos(2*pi*x) from -2 to 2 and cos(3*theta) from 0 to 2*pi.  A preset
+    drop-down offers cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), e^(x),
+    log(x), 1/x, sin(2*pi*x)/(2*pi*x) and (cos(2*pi*x)+2)*cos(20*pi*x), with
+    theta in place of x in polar mode.  unit(x)
+    is the unit step, and delta(x) is the Dirac delta, drawn as an arrow where
+    its argument is zero.  Each mode keeps its own expression and range.  The plot is scaled to fill the frame (polar
+    plots keep the curve round in a non-square frame), and an editable plot
+    follows a new expression immediately.  The Parallel Lines tool draws 2 to 40 evenly
+    spaced vertical lines with the current line thickness, and a square handle
+    outside the left edge sets their number.  Both tools use the usual move,
+    size and rotation handles.
+    Ellipses, rounded rectangles, polygons and triangles can optionally be
+    filled with a shape fill colour, which is saved with the other menu
+    settings.
   - A Marker tool was added to the Shapes submenu.  It draws a translucent
     yellow highlighter stroke with a fixed 32 px width and does not change the
     global colour, thickness or opacity.
@@ -150,9 +260,22 @@ Differences from Gromit-MPX 1.4.2:
     Change Font, and pen strokes are smoothed with curved segments.
   - While painting mode is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes; the
     keys are grabbed only while painting, so they keep their normal meaning in
-    other applications.
+    other applications.  The shortcut also works while Caps Lock or Num Lock
+    is on.
   - The About dialog names the author and email, and states that Screenator is
     a vibe-coded screen annotation app based on Gromit-MPX 1.4.2.
+  - Dialogs and message boxes hide the drawings while they are open, so their
+    contents are never hidden behind them; the drawings are restored when the
+    dialog closes.  This also works in virtual machines without a compositor,
+    where the window manager cannot stack a dialog above the fullscreen
+    annotation window.
+  - A Screen Paper submenu turns the screen into white paper for drawing and
+    writing.  The paper is drawn below the annotations and above the other
+    windows, stays when the screen is cleared and is saved with the other menu
+    settings.
+  - A small settings indicator to the left of the floating icon shows the line
+    colour, thickness and opacity and the shape fill colour.  It is on by
+    default and can be turned off with "Show Settings Indicator".
 
 Build:
   cd screenator

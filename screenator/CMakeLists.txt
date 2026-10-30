@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 2.0 LANGUAGES C)
+project(screenator VERSION 3.0 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
@@ -66,6 +66,7 @@ install(FILES README.md AUTHORS DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES screenator.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
 install(FILES data/screenator.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
 install(FILES data/screenator.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES data/screenator-active.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES
     data/pen.png
     data/arrow.png
@@ -75,11 +76,10 @@ install(FILES
     data/polygon.png
     data/triangle.png
     data/bucket.png
-    data/rectangle.png
+    data/math.png
+    data/bars.png
     data/ellipse.png
     data/rounded-rectangle.png
-    data/angled-line.png
-    data/angled-arrow.png
     data/marker.png
     data/eraser.png
     data/undo.png
@@ -87,8 +87,8 @@ install(FILES
     data/trash.png
     data/reset-settings.png
     data/hide.png
-    data/hide-menu.png
     data/font-settings.png
     data/shapes.png
+    data/paper.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/screenator)
 install(FILES data/screenator.appdata.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)

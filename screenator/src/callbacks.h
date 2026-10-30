@@ -70,6 +70,8 @@ gboolean on_motion (GtkWidget *win, GdkEventMotion *ev, gpointer user_data);
 
 gboolean on_buttonrelease (GtkWidget *win, GdkEventButton *ev, gpointer user_data);
 
+gboolean on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data);
+
 void on_mainapp_selection_get (GtkWidget          *widget,
 			       GtkSelectionData   *selection_data,
 			       guint               info,
@@ -142,8 +144,8 @@ void on_icon_pen (GtkMenuItem *menuitem,
 void on_icon_arrow (GtkMenuItem *menuitem,
 		    gpointer     user_data);
 
-void on_icon_free_line (GtkMenuItem *menuitem,
-			gpointer     user_data);
+void on_icon_line (GtkMenuItem *menuitem,
+		   gpointer     user_data);
 
 void on_icon_spline (GtkMenuItem *menuitem,
 		     gpointer     user_data);
@@ -154,12 +156,6 @@ void on_icon_polygon (GtkMenuItem *menuitem,
 void on_icon_triangle (GtkMenuItem *menuitem,
 		       gpointer     user_data);
 
-void on_icon_angled_arrow (GtkMenuItem *menuitem,
-			   gpointer     user_data);
-
-void on_icon_rectangle (GtkMenuItem *menuitem,
-			gpointer     user_data);
-
 void on_icon_ellipse (GtkMenuItem *menuitem,
 		      gpointer     user_data);
 
@@ -169,8 +165,11 @@ void on_icon_rounded_rectangle (GtkMenuItem *menuitem,
 void on_icon_bucket (GtkMenuItem *menuitem,
 		     gpointer     user_data);
 
-void on_icon_angled_line (GtkMenuItem *menuitem,
-			  gpointer     user_data);
+void on_icon_math (GtkMenuItem *menuitem,
+		   gpointer     user_data);
+
+void on_icon_bars (GtkMenuItem *menuitem,
+		   gpointer     user_data);
 
 void on_icon_text (GtkMenuItem *menuitem,
 		   gpointer     user_data);
@@ -181,6 +180,6 @@ void on_icon_eraser (GtkMenuItem *menuitem,
 void on_icon_marker (GtkMenuItem *menuitem,
 		     gpointer     user_data);
 
-void popup_icon_menu (ScreenatorData *data, gint x, gint y);
+void popup_icon_menu (ScreenatorData *data);
 
 #endif
