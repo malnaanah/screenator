@@ -434,6 +434,7 @@ typedef struct
   guint        pen_width;
   guint        eraser_width;
   GdkRGBA      pen_color;
+  GdkRGBA      custom_line_color;
   GdkRGBA      marker_color; /* fixed yellow, 50% opacity for the Marker tool */
   gint         pen_tool;   /* 0 = config default, 1 = pen, 2 = arrow, 3 = eraser,
 			      4 = text, 5 = rectangle, 6 = ellipse,
@@ -467,6 +468,7 @@ typedef struct
   gboolean                suspend_frame_finish;
   gboolean             shape_fill_enabled;
   GdkRGBA              shape_fill_color;
+  GdkRGBA              custom_fill_color;
 
   /* Inline text editor shown at the click position */
   GtkWidget   *text_editor;

@@ -507,12 +507,16 @@ void read_keyfile(ScreenatorData *data)
     data->pen_width = KEY_DFLT_PEN_WIDTH;
     data->eraser_width = KEY_DFLT_ERASER_WIDTH;
     gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
+    gdk_rgba_parse (&data->custom_line_color, "#FF00FF");
+    data->custom_line_color.alpha = 1.0;
     data->pen_tool = 0;
     data->icon_size = KEY_DFLT_ICON_SIZE;
     data->font = g_strdup (KEY_DFLT_FONT);
     data->shape_fill_enabled = FALSE;
     gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
     data->shape_fill_color.alpha = 1.0;
+    gdk_rgba_parse (&data->custom_fill_color, "#FF00FF");
+    data->custom_fill_color.alpha = 1.0;
     data->paper = SCREENATOR_PAPER_NONE;
     data->math_expression = g_strdup ("cos(2*pi*x)");
     data->math_xmin = -2.0;
@@ -552,6 +556,34 @@ void read_keyfile(ScreenatorData *data)
 	    // 0.0 is treated as "not set" so strokes never become invisible
 	    if (opacity > 0.0 && opacity <= 1.0)
 		data->opacity = opacity;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "CustomLineColor", NULL))
+	{
+	    gchar *value = g_key_file_get_string (key_file, "Drawing",
+						  "CustomLineColor", NULL);
+	    GdkRGBA parsed;
+
+	    if (value && gdk_rgba_parse (&parsed, value))
+		{
+		    parsed.alpha = 1.0;
+		    data->custom_line_color = parsed;
+		}
+	    g_free (value);
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "CustomFillColor", NULL))
+	{
+	    gchar *value = g_key_file_get_string (key_file, "Drawing",
+						  "CustomFillColor", NULL);
+	    GdkRGBA parsed;
+
+	    if (value && gdk_rgba_parse (&parsed, value))
+		{
+		    parsed.alpha = 1.0;
+		    data->custom_fill_color = parsed;
+		}
+	    g_free (value);
 	}
 
     if (g_key_file_has_key (key_file, "Drawing", "PenWidth", NULL))
@@ -804,6 +836,8 @@ void write_keyfile(ScreenatorData *data)
     gchar *color = pen_color_to_string (&data->pen_color);
     gchar *fill = data->shape_fill_enabled
 	? pen_color_to_string (&data->shape_fill_color) : g_strdup ("none");
+    gchar *custom_line = pen_color_to_string (&data->custom_line_color);
+    gchar *custom_fill = pen_color_to_string (&data->custom_fill_color);
 
     g_key_file_set_double (key_file, "Drawing", "Opacity", data->opacity);
     g_key_file_set_integer (key_file, "Drawing", "PenWidth", data->pen_width);
@@ -815,6 +849,8 @@ void write_keyfile(ScreenatorData *data)
 			   (data->font && *data->font) ? data->font
 						       : KEY_DFLT_FONT);
     g_key_file_set_string (key_file, "Drawing", "ShapeFill", fill);
+    g_key_file_set_string (key_file, "Drawing", "CustomLineColor", custom_line);
+    g_key_file_set_string (key_file, "Drawing", "CustomFillColor", custom_fill);
     g_key_file_set_string (key_file, "Drawing", "Paper",
 			   data->paper == SCREENATOR_PAPER_PLAIN ? "plain" :
 			   data->paper == SCREENATOR_PAPER_RULED ? "ruled" :
@@ -869,6 +905,8 @@ void write_keyfile(ScreenatorData *data)
 			    data->save_annotations_on_exit);
     g_free (color);
     g_free (fill);
+    g_free (custom_line);
+    g_free (custom_fill);
 
     // Save as a file.
     if (!g_key_file_save_to_file (key_file, filename, &error)) {

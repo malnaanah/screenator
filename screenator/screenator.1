@@ -22,7 +22,7 @@ The settings indicator is a ring around the floating icon. The inner white
 ring is divided into seven equal sectors, one for each line thickness (1, 2,
 3, 6, 12, 24 and 48 pixels), each with a one pixel black stroke. Starting at
 angle 0 and going counter clockwise, the sectors up to and including the
-selected thickness are filled light orange. The outer six pixel ring has the
+selected thickness are filled magenta. The outer six pixel ring has the
 line colour in its upper half and the shape fill colour in its lower half; when
 shapes are not filled, the lower half shows twelve black and white radial
 stripes. Both halves have a one pixel black stroke. Left or right click on the
@@ -34,9 +34,10 @@ The Marker draws a yellow highlighter stroke with a fixed 32 pixel width and
 50% opacity. Its settings are independent of the line colour, thickness and
 opacity chosen for the other tools.
 .br
-While painting mode is active, the mouse wheel steps through the line colours;
-with the Paint Bucket tool it steps through the shape fill colours and with the
-Eraser it steps through the eraser sizes instead. The change is the same as
+While painting mode is active, the mouse wheel steps through the line colours,
+including the custom colour; with the Paint Bucket tool it steps through the
+shape fill colours, also including the custom colour, and with the Eraser it
+steps through the eraser sizes instead. The change is the same as
 picking it from the menu, so it is kept when another tool is selected and is
 shown in the settings indicator and the menus.
 .br
@@ -52,7 +53,9 @@ each end point has a round handle, and dragging the line itself moves the whole
 shape; clicking outside, double-clicking or right-clicking commits it.
 Ellipses, rounded rectangles, polygons and triangles can be filled using the
 "Shapes Fill Color" submenu; the default is no fill and green is its first
-colour.
+colour. Both the line colour and the shape fill colour have a "Custom..."
+entry that opens a colour chooser; the custom colour starts as magenta and is
+remembered.
 .br
 The "Screen Paper" submenu turns the screen into paper for drawing and
 writing: None shows the normal desktop, Plain a white page, Ruled a white page
@@ -160,7 +163,8 @@ annotations on exit" on (the default), the drawings are saved to
 when Screenator quits and restored on the next start; the screen paper follows
 its own setting. "Clear Screen" removes the saved drawing.
 .br
-Selecting a tool shows a short hint that describes that tool: its mouse
+Selecting a tool shows a short hint that starts with the tool's name and
+describes that tool: its mouse
 buttons, what the mouse wheel changes and how its handles work. Each tool's
 message can be turned off separately with "Never show this message again";
 the Spline hint, which also explains how to move its handles, has its own

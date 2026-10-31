@@ -283,6 +283,7 @@ static gboolean text_preview_shape (ScreenatorData *data,
 static void text_preview_refresh (ScreenatorData *data);
 static void text_preview_clear (ScreenatorData *data);
 static gboolean text_caret_bounds (ScreenatorData *data, GdkRectangle *rect);
+static gint text_editor_line_height (ScreenatorData *data);
 static void icon_grab_pointer (ScreenatorData *data);
 static void icon_ungrab_pointer (ScreenatorData *data);
 static void icon_cancel_menu_retry (ScreenatorData *data);
@@ -680,6 +681,24 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
   if (!data->text_entry)
     return;
 
+  /* Right-to-left text ends at the click.  Computing the origin from the
+   * text ink avoids the first character being drawn at the left edge before
+   * the widened RTL entry has been allocated. */
+  if (data->text_editor_rtl)
+    {
+      PangoLayout *layout = gtk_entry_get_layout (GTK_ENTRY (data->text_entry));
+
+      if (layout)
+	{
+	  PangoRectangle ink;
+
+	  pango_layout_get_pixel_extents (layout, &ink, NULL);
+	  *x = data->text_x - ink.x - MAX (ink.width, 1);
+	  *y = data->text_y - text_editor_line_height (data) / 2;
+	  return;
+	}
+    }
+
   gtk_widget_get_allocation (data->text_entry, &allocation);
   gtk_entry_get_layout_offsets (GTK_ENTRY (data->text_entry),
 				&layout_x, &layout_y);
@@ -832,7 +851,18 @@ text_caret_bounds (ScreenatorData *data, GdkRectangle *rect)
   text_editor_origin (data, &origin_x, &origin_y);
   pango_layout_get_pixel_size (layout, NULL, &line_height);
 
-  rect->x = origin_x + pos.x / PANGO_SCALE;
+  if (data->text_editor_rtl)
+    {
+      /* Pango reports the position from the left of the layout.  In RTL text
+       * the insertion point grows to the left, so mirror it inside the text
+       * width: the end of the text is the left edge, not the right one. */
+      gint lw = 0;
+
+      pango_layout_get_pixel_size (layout, &lw, NULL);
+      rect->x = origin_x + lw - pos.x / PANGO_SCALE;
+    }
+  else
+    rect->x = origin_x + pos.x / PANGO_SCALE;
   rect->y = origin_y + pos.y / PANGO_SCALE;
   rect->width = 2;
   rect->height = MAX (MAX (pos.height / PANGO_SCALE, line_height), 1);
@@ -1087,12 +1117,16 @@ size_text_editor (ScreenatorData *data, PangoDirection direction)
   gtk_entry_get_layout_offsets (GTK_ENTRY (data->text_entry),
 				&layout_x, &layout_y);
 
+  /* Remember the position that was requested: text_editor_origin() uses it
+   * instead of the window manager's lagging position. */
+  data->text_editor_x = direction == PANGO_DIRECTION_RTL
+    ? data->text_x - available
+    : data->text_x;
+  data->text_editor_y = data->text_y - text_editor_line_height (data) / 2
+    - layout_y;
+
   gtk_window_move (GTK_WINDOW (data->text_editor),
-		   direction == PANGO_DIRECTION_RTL
-		     ? data->text_x - available
-		     : data->text_x,
-		   data->text_y - text_editor_line_height (data) / 2
-		     - layout_y);
+		   data->text_editor_x, data->text_editor_y);
 
   data->text_editor_sized = TRUE;
   data->text_editor_rtl = (direction == PANGO_DIRECTION_RTL);
@@ -4576,6 +4610,85 @@ apply_shape_fill (ScreenatorData *data, const gchar *name)
   schedule_tray_menu_refresh (data);
 }
 
+static gchar *
+rgba_to_hex (const GdkRGBA *color)
+{
+  return g_strdup_printf ("#%02X%02X%02X",
+			  (guint) (CLAMP (color->red, 0.0, 1.0) * 255.0 + 0.5),
+			  (guint) (CLAMP (color->green, 0.0, 1.0) * 255.0 + 0.5),
+			  (guint) (CLAMP (color->blue, 0.0, 1.0) * 255.0 + 0.5));
+}
+
+typedef struct
+{
+  ScreenatorData *data;
+  gboolean        fill;
+} CustomColorRequest;
+
+/* Show the colour chooser after the menu has closed, so the menu cannot stay
+ * open behind the modal dialog. */
+static gboolean
+custom_color_idle (gpointer user_data)
+{
+  CustomColorRequest *request = user_data;
+  ScreenatorData *data = request->data;
+  gboolean fill = request->fill;
+  GtkWidget *dialog;
+  GdkRGBA color = fill ? data->custom_fill_color : data->custom_line_color;
+  gint response;
+
+  dialog = gtk_color_chooser_dialog_new (fill ? "Shapes Fill Color"
+					 : "Line Color", NULL);
+  gtk_color_chooser_set_use_alpha (GTK_COLOR_CHOOSER (dialog), FALSE);
+  gtk_color_chooser_set_rgba (GTK_COLOR_CHOOSER (dialog), &color);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  show_dialog_above_drawings (data, dialog);
+
+  response = gtk_dialog_run (GTK_DIALOG (dialog));
+  if (response == GTK_RESPONSE_OK)
+    {
+      gchar *hex;
+
+      gtk_color_chooser_get_rgba (GTK_COLOR_CHOOSER (dialog), &color);
+      color.alpha = 1.0;
+      hex = rgba_to_hex (&color);
+
+      if (fill)
+	{
+	  data->custom_fill_color = color;
+	  apply_shape_fill (data, hex);
+	}
+      else
+	{
+	  data->custom_line_color = color;
+	  apply_line_color (data, hex);
+	}
+
+      g_free (hex);
+      write_keyfile (data);
+    }
+
+  gtk_widget_destroy (dialog);
+  g_free (request);
+  schedule_tray_menu_refresh (data);
+
+  return G_SOURCE_REMOVE;
+}
+
+static void
+on_icon_custom_color (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  const gchar *target =
+    g_object_get_data (G_OBJECT (menuitem), "icon-custom-target");
+  CustomColorRequest *request = g_new0 (CustomColorRequest, 1);
+
+  request->data = data;
+  request->fill = g_strcmp0 (target, "fill") == 0;
+  g_idle_add (custom_color_idle, request);
+}
+
 /* Index of the current colour in a table, or the table size when the current
  * colour is not one of the presets. */
 static guint
@@ -4604,24 +4717,35 @@ color_table_index (const GdkRGBA *current, gboolean include_none)
 static void
 cycle_line_color (ScreenatorData *data, gboolean down)
 {
-  guint count = G_N_ELEMENTS (line_colors);
+  guint presets = G_N_ELEMENTS (line_colors);
+  guint count = presets + 1;   /* the last entry is the custom colour */
   guint current = color_table_index (&data->pen_color, FALSE);
 
-  if (current >= count)
-    current = down ? 0 : count - 1;
-  else if (down)
+  if (current > presets)
+    current = presets;
+
+  if (down)
     current = (current + 1) % count;
   else
     current = (current + count - 1) % count;
 
-  apply_line_color (data, line_colors[current].name);
+  if (current == presets)
+    {
+      gchar *hex = rgba_to_hex (&data->custom_line_color);
+
+      apply_line_color (data, hex);
+      g_free (hex);
+    }
+  else
+    apply_line_color (data, line_colors[current].name);
 }
 
 /* Step through the shape fill colours, including None. */
 static void
 cycle_shape_fill_color (ScreenatorData *data, gboolean down)
 {
-  guint count = G_N_ELEMENTS (fill_colors);
+  guint presets = G_N_ELEMENTS (fill_colors);
+  guint count = presets + 1;   /* the last entry is the custom colour */
   guint current;
 
   if (!data->shape_fill_enabled)
@@ -4629,14 +4753,23 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
   else
     current = color_table_index (&data->shape_fill_color, TRUE);
 
-  if (current >= count)
-    current = down ? 0 : count - 1;
-  else if (down)
+  if (current > presets)
+    current = presets;
+
+  if (down)
     current = (current + 1) % count;
   else
     current = (current + count - 1) % count;
 
-  apply_shape_fill (data, fill_colors[current].name);
+  if (current == presets)
+    {
+      gchar *hex = rgba_to_hex (&data->custom_fill_color);
+
+      apply_shape_fill (data, hex);
+      g_free (hex);
+    }
+  else
+    apply_shape_fill (data, fill_colors[current].name);
 }
 
 /* The mouse wheel changes the line colour while a tool is active; over the
@@ -5267,8 +5400,8 @@ static void
 draw_settings_indicator (ScreenatorData *data, cairo_t *cr,
 			 gdouble width, gdouble height, gboolean mask)
 {
-  /* Light orange (#FFB347) for the selected thickness sectors. */
-  static const GdkRGBA light_orange = { 1.0, 179.0 / 255.0, 71.0 / 255.0, 1.0 };
+  /* Magenta for the selected thickness sectors. */
+  static const GdkRGBA magenta = { 1.0, 0.0, 1.0, 1.0 };
   static const GdkRGBA white = { 1.0, 1.0, 1.0, 1.0 };
   gdouble cx = width / 2.0;
   gdouble cy = height / 2.0;
@@ -5292,7 +5425,7 @@ draw_settings_indicator (ScreenatorData *data, cairo_t *cr,
       gdouble a1 = -(i + 1) * step;
 
       paint_ring_sector (cr, cx, cy, r0, r1, a0, a1, TRUE,
-			 (guint) i < filled ? &light_orange : &white, mask);
+			 (guint) i < filled ? &magenta : &white, mask);
     }
 
   /* Outer ring, upper half: line colour. */
@@ -5720,6 +5853,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     GSList *group = NULL;
     GtkWidget *items[G_N_ELEMENTS (line_colors)];
     GtkWidget *active_item = NULL;
+    GtkWidget *custom_item = NULL;
     guint i;
 
     for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
@@ -5745,10 +5879,31 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
       }
+
+    {
+      GtkWidget *sep = gtk_separator_menu_item_new ();
+      GtkWidget *custom =
+	gtk_radio_menu_item_new_with_label (group, "Custom...");
+
+      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom));
+      g_object_set_data (G_OBJECT (custom), "icon-custom-target",
+			 (gpointer) "line");
+      if (!active_item)
+	active_item = custom;
+      custom_item = custom;
+      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), sep);
+      gtk_widget_show (sep);
+      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), custom);
+      gtk_widget_show (custom);
+    }
+
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
     for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
       g_signal_connect (items[i], "activate", G_CALLBACK (on_icon_color), data);
+    if (custom_item)
+      g_signal_connect (custom_item, "activate",
+			G_CALLBACK (on_icon_custom_color), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
@@ -5760,6 +5915,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     GSList *group = NULL;
     GtkWidget *items[G_N_ELEMENTS (fill_colors)];
     GtkWidget *active_item = NULL;
+    GtkWidget *custom_item = NULL;
     guint i;
 
     for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
@@ -5792,11 +5948,32 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
       }
+
+    {
+      GtkWidget *sep = gtk_separator_menu_item_new ();
+      GtkWidget *custom =
+	gtk_radio_menu_item_new_with_label (group, "Custom...");
+
+      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom));
+      g_object_set_data (G_OBJECT (custom), "icon-custom-target",
+			 (gpointer) "fill");
+      if (!active_item)
+	active_item = custom;
+      custom_item = custom;
+      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), sep);
+      gtk_widget_show (sep);
+      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), custom);
+      gtk_widget_show (custom);
+    }
+
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
     for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
       g_signal_connect (items[i], "activate",
 			G_CALLBACK (on_icon_shape_fill), data);
+    if (custom_item)
+      g_signal_connect (custom_item, "activate",
+			G_CALLBACK (on_icon_custom_color), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
@@ -6618,6 +6795,15 @@ shape_type_has_snapping (ScreenatorShapeType type)
     }
 }
 
+/* Tool names for the start of the hint messages, in ScreenatorToolHint order. */
+static const gchar * const tool_hint_names[SCREENATOR_HINT_COUNT] =
+{
+  "Pen tool", "Marker tool", "Eraser tool", "Text tool", "Line tool",
+  "Arrow tool", "Spline tool", "Polygon tool", "Triangle tool",
+  "Ellipse tool", "Rounded Rectangle tool", "Math Function tool",
+  "Parallel Lines tool", "Paint Bucket tool"
+};
+
 /* One message for every tool, in ScreenatorToolHint order. */
 static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
 {
@@ -6723,7 +6909,8 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
   if (show_general)
     {
       gchar *full_message =
-	g_strconcat (message, "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
+	g_strconcat (tool_hint_names[hint], ": ", message,
+		     "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
 		     "mode to undo and redo.", NULL);
 
       label = gtk_label_new (full_message);

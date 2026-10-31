@@ -24,9 +24,10 @@ and you can keep using your applications while it is visible.
   change the line colour, thickness or opacity used by the other tools.
 - Line Thickness offers 1, 2, 3, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
-- While painting mode is active, the mouse wheel steps through the line colours;
-  with the Paint Bucket tool it steps through the shape fill colours and with
-  the Eraser it steps through the eraser sizes instead. The change is the same
+- While painting mode is active, the mouse wheel steps through the line colours
+  (including the custom colour); with the Paint Bucket tool it steps through
+  the shape fill colours (also including the custom colour) and with the
+  Eraser it steps through the eraser sizes instead. The change is the same
   as picking it from the menu, so it is kept when another tool is selected and
   is shown in the settings indicator and the menus.
 - Shapes are drawn by dragging: press where the shape should start, move the
@@ -37,7 +38,10 @@ and you can keep using your applications while it is visible.
   dragging the line itself moves the whole shape. Clicking outside,
   double-clicking or right-clicking commits it. The ellipse, rounded rectangle,
   polygon and triangle can optionally be filled using the Shapes Fill Color
-  submenu; the default is no fill and green is its first colour.
+  submenu; the default is no fill and green is its first colour. Line Color
+  and Shapes Fill Color also have a Custom... entry. It opens a colour
+  chooser; the custom colour starts as magenta and the last choice is
+  remembered.
 - Spline is placed click by click: each click adds a node and the nodes are
   joined by a smooth Bezier curve. Every node has two round Bezier handles:
   drag one and the opposite handle mirrors it so the curve stays smooth; hold
@@ -122,7 +126,7 @@ and you can keep using your applications while it is visible.
   inner white ring is divided into seven equal sectors, one for each line
   thickness (1, 2, 3, 6, 12, 24 and 48 pixels), each with a one pixel black
   stroke. Starting at angle 0 and going counter clockwise, the sectors up to
-  and including the selected thickness are filled light orange. The outer six
+  and including the selected thickness are filled magenta. The outer six
   pixel ring has the line colour in its upper half and the shape fill colour
   in its lower half; when shapes are not filled, the lower half shows twelve black
   and white radial stripes. Both halves have a one pixel black stroke. Left or
@@ -144,7 +148,8 @@ and you can keep using your applications while it is visible.
   hides the floating icon and Ctrl+T shows or hides the drawings. A message
   explains these shortcuts when a paper is selected and has its own "Never
   show this message again" option.
-- Selecting a tool shows a short hint that describes that tool: its mouse
+- Selecting a tool shows a short hint that starts with the tool's name and
+  describes that tool: its mouse
   buttons, what the mouse wheel changes and how its handles work. Each tool's
   message has its own "Never show this message again" option, so turning one
   off leaves the other tools' messages alone. The Spline hint additionally
@@ -181,8 +186,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_3.4_amd64.deb`
-- `Screenator-3.4-x86_64.AppImage`
+- `screenator_4.0_amd64.deb`
+- `Screenator-4.0-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

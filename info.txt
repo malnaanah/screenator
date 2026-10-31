@@ -1,4 +1,4 @@
-Screenator 3.4
+Screenator 4.0
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 3.4 (amd64)
-  - Screenator-3.4-x86_64.AppImage
+  - screenator 4.0 (amd64)
+  - Screenator-4.0-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_3.4_amd64.deb
-                          Screenator-3.4-x86_64.AppImage
+                          screenator_4.0_amd64.deb
+                          Screenator-4.0-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -109,7 +109,9 @@ Features:
     and triangles with one of the line colours, or leaves them unfilled (the
     default).  After None, the colours are listed Green, Blue, Yellow, Black,
     White, Red, Orange and Gray; Green is the default fill, so the Paint Bucket
-    fills green out of the box.  Lines and arrows are never filled.
+    fills green out of the box.  Lines and arrows are never filled.  Line
+    Color and Shapes Fill Color also have a Custom... entry that opens a
+    colour chooser; the custom colour starts as magenta and is remembered.
   - The Text tool shows an I-beam cursor and lets you write directly on the
     screen: click where the text should start and type in the small inline
     editor that appears there.  The text uses the pen colour and the selected
@@ -129,7 +131,7 @@ Features:
     inner white ring is divided into seven equal sectors, one for each line
     thickness (1, 2, 3, 6, 12, 24 and 48 pixels), each with a one pixel black
     stroke.  Starting at angle 0 and going counter clockwise, the sectors up
-    to and including the selected thickness are filled light orange.  The outer
+    to and including the selected thickness are filled magenta.  The outer
     six pixel ring has the line colour in its upper half and the shape fill
     colour in its lower half; when shapes are not filled, the lower half shows twelve
     black and white radial stripes.  Both halves have a one pixel black
@@ -153,7 +155,8 @@ Features:
     drawings.  A
     message explains these shortcuts when a paper is selected and has its own
     "Never show this message again" option.
-  - Selecting a tool shows a short hint that describes that tool: its mouse
+  - Selecting a tool shows a short hint that starts with the tool's name and
+    describes that tool: its mouse
     buttons, what the mouse wheel changes and how its handles work.  Each
     tool's message has its own "Never show this message again" option, so
     turning one off leaves the other tools' messages alone.  The Spline hint
@@ -168,8 +171,9 @@ Features:
     indicator are shown.  The eraser cursor is drawn as a circle that matches the
     selected eraser size.
   - While painting mode is active, the mouse wheel steps through the line
-    colours; with the Paint Bucket tool it steps through the shape fill colours
-    and with the Eraser it steps through the eraser sizes instead.  The change
+    colours, including the custom colour; with the Paint Bucket tool it steps
+    through the shape fill colours, also including the custom colour, and with
+    the Eraser it steps through the eraser sizes instead.  The change
     is the same as picking it from the menu, so it is kept when another tool is
     selected and is shown in the settings indicator and the menus.
   - Pen strokes are smoothed with curved segments, and motion event
@@ -198,7 +202,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 3.4.
+    was changed to 4.0.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
@@ -291,7 +295,7 @@ Differences from Gromit-MPX 1.4.2:
     windows, stays when the screen is cleared and is saved with the other menu
     settings.
   - A settings ring around the floating icon shows the line thickness as
-    light orange sectors, the line colour in its upper half and the shape fill
+    magenta sectors, the line colour in its upper half and the shape fill
     colour in its lower half.  It is on by default and can be turned off with
     "Show Settings Indicator".
 

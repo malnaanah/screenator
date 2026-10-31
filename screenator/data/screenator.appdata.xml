@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="4.0" date="2026-11-01">
+      <description>
+        <p>Adds a settings indicator ring around the floating icon: the inner ring shows the line thickness as magenta sectors (one per thickness), and the outer six pixel ring shows the line colour and the shape fill colour, or twelve black and white stripes when shapes are not filled. Line Color and Shapes Fill Color have a Custom... entry that opens a colour chooser, starts at magenta and is remembered; the mouse wheel includes the custom colour. Tool hints now start with the tool name, and right-to-left text is previewed and its caret placed correctly. Includes the changes since 3.0: the Settings submenu with Save annotations on exit, rect(x) in the Math Function presets, screen-paper shortcuts and their message, four corner resize handles for editable shapes, and math plots scaled to fill their frames.</p>
+      </description>
+    </release>
     <release version="3.4" date="2026-11-01">
       <description>
         <p>Redesigns the settings indicator as a ring around the floating icon. The inner white ring is divided into seven sectors, one for each line thickness, and the sectors up to the selected thickness are filled light orange; every sector has a one pixel black stroke. The outer six pixel ring shows the line colour in its upper half and the shape fill colour in its lower half, or twelve black and white radial stripes when shapes are not filled. Left or right clicking the ring opens the same menu as the floating icon. The first text caret is now drawn at the centred editor position from the first frame, so it no longer leaves a static line below the blinking caret.</p>
