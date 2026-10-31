@@ -6402,8 +6402,7 @@ static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
 {
   /* SCREENATOR_HINT_PEN */
   "Left click and drag to draw, middle click to erase, scroll to change the "
-  "line colour, and right click to exit the tool.  Press Ctrl+Z and "
-  "Ctrl+Shift+Z in drawing mode to undo and redo.",
+  "line colour, and right click to exit the tool.",
   /* SCREENATOR_HINT_MARKER */
   "Left click and drag to draw a highlighter stroke, middle click to erase, "
   "and right click to exit the tool.",
@@ -6502,7 +6501,12 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
 
   if (show_general)
     {
-      label = gtk_label_new (message);
+      gchar *full_message =
+	g_strconcat (message, "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
+		     "mode to undo and redo.", NULL);
+
+      label = gtk_label_new (full_message);
+      g_free (full_message);
       gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
       gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
       gtk_label_set_xalign (GTK_LABEL (label), 0.0);
