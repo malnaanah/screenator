@@ -302,6 +302,15 @@ gboolean on_expose (GtkWidget *widget,
   if(data->debug)
     g_printerr("DEBUG: got draw event\n");
 
+  /* The visibility toggle hides the drawings but keeps the screen paper. */
+  if (data->hide_drawings)
+    {
+      if (data->paper != SCREENATOR_PAPER_NONE)
+	draw_screen_paper (data, cr);
+
+      return TRUE;
+    }
+
   /* The screen paper is drawn first, so it stays below the annotations and is
    * not part of the backbuffer: clearing the screen leaves it in place. */
   if (data->paper != SCREENATOR_PAPER_NONE)
@@ -677,11 +686,36 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
 				&layout_x, &layout_y);
   window = gtk_widget_get_window (data->text_entry);
 
-  if (window)
-    gdk_window_get_root_coords (window,
-				allocation.x + layout_x,
-				allocation.y + layout_y,
-				x, y);
+  /* Before the editor is placed the entry's window still reports (0, 0),
+   * which would draw the first caret at the top-left corner.  Use the click
+   * position until the window is really on screen. */
+  if (window && data->text_editor_positioned &&
+      gtk_widget_get_mapped (data->text_entry))
+    {
+      gint root_x = 0, root_y = 0;
+
+      gdk_window_get_root_coords (window,
+				  allocation.x + layout_x,
+				  allocation.y + layout_y,
+				  &root_x, &root_y);
+
+      if (root_x == 0 && root_y == 0 &&
+	  (data->text_x > 1 || data->text_y > 1))
+	{
+	  *x = data->text_x;
+	  *y = data->text_y;
+	}
+      else
+	{
+	  *x = root_x;
+	  *y = root_y;
+	}
+    }
+  else
+    {
+      *x = data->text_x;
+      *y = data->text_y;
+    }
 }
 
 /* Build the frame that the text in the editor will become.  The preview is
@@ -1022,6 +1056,7 @@ position_text_editor (ScreenatorData *data)
     y = 0;
 
   gtk_window_move (GTK_WINDOW (data->text_editor), x, y);
+  data->text_editor_positioned = TRUE;
 
   /* The annotation window has to be visible where the preview is drawn. */
   update_window_shape (data);
@@ -1317,6 +1352,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   data->text_x = x;
   data->text_y = y;
   data->text_editor_active = FALSE;
+  data->text_editor_positioned = FALSE;
   data->text_editor_sized = FALSE;
   data->text_editor_rtl = FALSE;
   data->text_preview_valid = FALSE;
@@ -4080,7 +4116,7 @@ void on_toggle_vis(GtkMenuItem *menuitem,
 		   gpointer     user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  toggle_visibility(data);
+  toggle_drawings_visibility(data);
 }
 
 
@@ -4706,13 +4742,65 @@ paper_restore_focus (ScreenatorData *data)
 #endif
 }
 
+/* Explain the shortcuts that work while the screen paper has the keyboard.
+ * The message has its own "Never show this message again" option. */
+static void
+show_paper_shortcuts_hint (ScreenatorData *data)
+{
+  GtkWidget *dialog, *content, *box, *label, *check;
+
+  if (data->hide_paper_hint || data->top_dialog)
+    return;
+
+  dialog = gtk_dialog_new_with_buttons ("Screenator", NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"OK", GTK_RESPONSE_OK, NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  label = gtk_label_new ("While the screen paper is active, these shortcuts "
+			 "work for Screenator: Ctrl+Z undo, Ctrl+Shift+Z redo, "
+			 "Alt+F4 quit, Ctrl+F show or hide the floating icon, "
+			 "and Ctrl+T show or hide the drawings.");
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  check = gtk_check_button_new_with_label ("Never show this message again");
+  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
+
+  gtk_widget_show_all (dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+
+  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)))
+    {
+      data->hide_paper_hint = TRUE;
+      write_keyfile (data);
+    }
+
+  gtk_widget_destroy (dialog);
+}
+
 /* Show one of the screen papers, or turn it off again.  The paper is drawn on
  * the annotation window below the annotations, so the window has to stay
  * visible and above the other windows even when painting mode is off. */
 static void
 set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
 {
+  data->hide_drawings = FALSE;
   data->paper = paper;
+  update_paper_shortcuts (data, paper != SCREENATOR_PAPER_NONE);
 
   update_window_shape (data);
 
@@ -4750,6 +4838,19 @@ set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
   schedule_tray_menu_refresh (data);
 }
 
+/* Show the shortcut message after the menu has closed, so the menu cannot
+ * stay open behind the modal dialog. */
+static gboolean
+show_paper_hint_idle (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    show_paper_shortcuts_hint (data);
+
+  return G_SOURCE_REMOVE;
+}
+
 static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
@@ -4757,7 +4858,17 @@ static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
     (ScreenatorPaperType) GPOINTER_TO_INT (
       g_object_get_data (G_OBJECT (menuitem), "icon-paper-type"));
 
-  set_screen_paper (data, paper);
+  {
+    ScreenatorPaperType previous = data->paper;
+
+    set_screen_paper (data, paper);
+
+    /* Explain the shortcuts only when a paper is turned on, not when the
+     * paper type changes or when it is turned off again. */
+    if (previous == SCREENATOR_PAPER_NONE &&
+	paper != SCREENATOR_PAPER_NONE)
+      g_idle_add (show_paper_hint_idle, data);
+  }
 }
 
 static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
@@ -4859,11 +4970,9 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
   schedule_tray_menu_refresh (data);
 }
 
-static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
+void
+set_floating_icon_visible (ScreenatorData *data, gboolean show)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  gboolean show = gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
-
   data->show_floating_icon = show;
 
   if (show)
@@ -4883,6 +4992,15 @@ static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
+}
+
+static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  set_floating_icon_visible (data,
+			     gtk_check_menu_item_get_active (
+			       GTK_CHECK_MENU_ITEM (menuitem)));
 }
 
 static void on_icon_toggle_save_annotations (GtkMenuItem *menuitem,

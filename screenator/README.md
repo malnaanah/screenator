@@ -136,7 +136,11 @@ and you can keep using your applications while it is visible.
   is drawn below the annotations and above the other windows (the floating
   icon and its menu stay above it), takes the mouse and keyboard so clicks and
   typing do not reach the desktop or the applications below, stays when Clear
-  Screen is selected and is remembered across restarts.
+  Screen is selected and is remembered across restarts. While a paper is
+  active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Alt+F4 quits, Ctrl+F shows or
+  hides the floating icon and Ctrl+T shows or hides the drawings. A message
+  explains these shortcuts when a paper is selected and has its own "Never
+  show this message again" option.
 - Selecting a tool shows a short hint that describes that tool: its mouse
   buttons, what the mouse wheel changes and how its handles work. Each tool's
   message has its own "Never show this message again" option, so turning one
@@ -174,8 +178,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_3.2_amd64.deb`
-- `Screenator-3.2-x86_64.AppImage`
+- `screenator_3.3_amd64.deb`
+- `Screenator-3.3-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

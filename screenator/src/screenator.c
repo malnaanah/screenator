@@ -530,6 +530,28 @@ void toggle_visibility (ScreenatorData *data)
     hide_window (data);
 }
 
+/* The menu entry and Ctrl+T toggle the drawings.  With a screen paper the
+ * paper has to stay visible and active, so only the annotations are hidden;
+ * without a paper the whole annotation window is hidden as before. */
+void toggle_drawings_visibility (ScreenatorData *data)
+{
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+      data->hide_drawings = !data->hide_drawings;
+
+      if (window)
+	{
+	  GdkRectangle rect = { 0, 0, data->width, data->height };
+
+	  gdk_window_invalidate_rect (window, &rect, 0);
+	}
+    }
+  else
+    toggle_visibility (data);
+}
+
 
 /* ------------------------------------------------------------------
  * Screen paper
@@ -2638,7 +2660,7 @@ math_draw_arrow_head (cairo_t *cr, gdouble tip_x, gdouble tip_y,
  * radial arrow at that angle. */
 static void
 frame_draw_math_deltas (ScreenatorData *data, cairo_t *cr,
-			const ScreenatorFrameShape *shape)
+			const ScreenatorFrameShape *shape, gdouble baseline)
 {
   GArray *roots;
   MathNode *root;
@@ -2705,7 +2727,9 @@ frame_draw_math_deltas (ScreenatorData *data, cairo_t *cr,
 	    ((value - lo) / span) * shape->frame.w;
 	  gdouble tip_y = -shape->frame.h / 2.0 * 0.9;
 
-	  cairo_move_to (cr, x, 0.0);
+	  cairo_move_to (cr, x, CLAMP (baseline,
+				       -shape->frame.h / 2.0,
+				       shape->frame.h / 2.0));
 	  cairo_line_to (cr, x, tip_y);
 	  math_draw_arrow_head (cr, x, tip_y, 0.0, -1.0, head);
 	}
@@ -2723,7 +2747,9 @@ frame_draw_rect_math (ScreenatorData *data, cairo_t *cr,
 {
   gdouble ys[MATH_SAMPLES + 1];
   gdouble maxabs = math_sample (shape, ys, FALSE);
-  gdouble sy;
+  gdouble min = G_MAXDOUBLE;
+  gdouble max = -G_MAXDOUBLE;
+  gdouble range;
   GdkRGBA color = data->pen_color;
   gboolean pen_down = FALSE;
   gint i;
@@ -2731,7 +2757,20 @@ frame_draw_rect_math (ScreenatorData *data, cairo_t *cr,
   if (shape->frame.w < 1.0 || shape->frame.h < 1.0 || maxabs <= 0.0)
     return;
 
-  sy = (shape->frame.h / 2.0) / maxabs;
+  /* Scale the real minimum and maximum of the curve to the frame, so a
+   * positive function fills the frame from the bottom handles to the top
+   * instead of being centred around zero. */
+  for (i = 0; i <= MATH_SAMPLES; i++)
+    if (isfinite (ys[i]) && fabs (ys[i]) <= maxabs * 1.02)
+      {
+	min = MIN (min, ys[i]);
+	max = MAX (max, ys[i]);
+      }
+
+  if (max < min)
+    return;
+
+  range = max - min;
 
   color.alpha = data->opacity;
   gdk_cairo_set_source_rgba (cr, &color);
@@ -2743,7 +2782,12 @@ frame_draw_rect_math (ScreenatorData *data, cairo_t *cr,
     {
       gdouble lx = -shape->frame.w / 2.0 +
 	(i / (gdouble) MATH_SAMPLES) * shape->frame.w;
-      gdouble ly = -ys[i] * sy;
+      /* A constant curve sits on the bottom edge, so a delta spike can use
+       * the full height of the frame. */
+      gdouble ly = range > 1e-9
+	? shape->frame.h / 2.0 -
+	  ((ys[i] - min) / range) * shape->frame.h
+	: shape->frame.h / 2.0;
 
       /* Break the path at undefined points and at poles. */
       if (!isfinite (ys[i]) || fabs (ys[i]) > maxabs * 1.02)
@@ -2762,7 +2806,11 @@ frame_draw_rect_math (ScreenatorData *data, cairo_t *cr,
     }
 
   cairo_stroke (cr);
-  frame_draw_math_deltas (data, cr, shape);
+  frame_draw_math_deltas (data, cr, shape,
+			  range > 1e-9
+			  ? shape->frame.h / 2.0 -
+			    ((0.0 - min) / range) * shape->frame.h
+			  : shape->frame.h / 2.0);
 }
 
 /* Plot r = f(theta) in polar coordinates.  The angle runs over the stored
@@ -2818,7 +2866,7 @@ frame_draw_polar_math (ScreenatorData *data, cairo_t *cr,
     }
 
   cairo_stroke (cr);
-  frame_draw_math_deltas (data, cr, shape);
+  frame_draw_math_deltas (data, cr, shape, 0.0);
 }
 
 /* Draw the Math tool's plot in the selected coordinate system. */
@@ -3820,7 +3868,11 @@ void main_do_event (GdkEventAny *event,
        event->type == GDK_KEY_RELEASE) &&
       event->window == data->root &&
       (keycode == data->hot_keycode || keycode == data->undo_keycode ||
-       keycode == data->undo_ctrl_keycode))
+       keycode == data->undo_ctrl_keycode ||
+       keycode == data->paper_z_keycode ||
+       keycode == data->paper_f_keycode ||
+       keycode == data->paper_t_keycode ||
+       keycode == data->paper_f4_keycode))
     {
       /* redirect the event to our main window, so that GTK+ doesn't
        * throw it away (there is no GtkWidget for the root window...)
@@ -4079,6 +4131,8 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   */
   data->devdatatable = g_hash_table_new(NULL, NULL);
   setup_input_devices (data);
+
+  update_paper_shortcuts (data, data->paper != SCREENATOR_PAPER_NONE);
 
 
 

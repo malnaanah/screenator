@@ -484,6 +484,110 @@ grab_undo_shortcut (ScreenatorData *data, gboolean grab)
     data->undo_ctrl_keycode = 0;
 }
 
+static guint
+paper_shortcut_keycode (guint keyval)
+{
+  GdkKeymapKey *keys = NULL;
+  gint n_keys = 0;
+  guint keycode = 0;
+  gint i;
+
+  if (!gdk_keymap_get_entries_for_keyval (
+	  gdk_keymap_get_for_display (gdk_display_get_default ()),
+	  keyval, &keys, &n_keys))
+    return 0;
+
+  for (i = 0; i < n_keys; i++)
+    if (keys[i].level == 0)
+      {
+	keycode = keys[i].keycode;
+	break;
+      }
+  if (!keycode && n_keys > 0)
+    keycode = keys[0].keycode;
+
+  g_free (keys);
+  return keycode;
+}
+
+static void
+grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
+		gboolean grab)
+{
+  GList *devices, *d;
+  gint i;
+
+  if (!keycode || !GDK_IS_X11_DISPLAY (data->display))
+    return;
+
+  devices = gdk_device_manager_list_devices (
+      gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
+
+  for (d = devices; d; d = d->next)
+    {
+      XIEventMask mask;
+      unsigned char bits[4] = { 0, 0, 0, 0 };
+      XIGrabModifiers modifiers[4];
+      const guint lock_masks[] = { 0, LockMask, Mod2Mask,
+				   LockMask | Mod2Mask };
+      gint nmods = 0;
+
+      if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
+	continue;
+
+      for (i = 0; i < (gint) G_N_ELEMENTS (lock_masks); i++)
+	{
+	  modifiers[nmods].modifiers = modifier | lock_masks[i];
+	  modifiers[nmods].status = 0;
+	  nmods++;
+	}
+
+      mask.mask = bits;
+      mask.mask_len = sizeof (bits);
+      XISetMask (bits, XI_KeyPress);
+      XISetMask (bits, XI_KeyRelease);
+
+      gdk_x11_display_error_trap_push (data->display);
+
+      if (grab)
+	XIGrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+		       gdk_x11_device_get_id (d->data), keycode,
+		       GDK_WINDOW_XID (data->root),
+		       GrabModeAsync, GrabModeAsync, True,
+		       &mask, nmods, modifiers);
+      else
+	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+			 gdk_x11_device_get_id (d->data), keycode,
+			 GDK_WINDOW_XID (data->root), nmods, modifiers);
+
+      gdk_x11_display_error_trap_pop_ignored (data->display);
+    }
+
+  g_list_free (devices);
+}
+
+/* Grab the paper shortcuts so Ctrl+F, Ctrl+T and Alt+F4 work even after
+ * Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and the
+ * painting grab), so it is not grabbed twice.  The hardware keycodes are
+ * resolved once and also used by the snooper, so the shortcuts keep working
+ * with a non-Latin keyboard layout. */
+void
+update_paper_shortcuts (ScreenatorData *data, gboolean grab)
+{
+  if (!data->paper_z_keycode)
+    data->paper_z_keycode = paper_shortcut_keycode (GDK_KEY_z);
+  if (!data->paper_f_keycode)
+    data->paper_f_keycode = paper_shortcut_keycode (GDK_KEY_f);
+  if (!data->paper_t_keycode)
+    data->paper_t_keycode = paper_shortcut_keycode (GDK_KEY_t);
+  if (!data->paper_f4_keycode)
+    data->paper_f4_keycode = paper_shortcut_keycode (GDK_KEY_F4);
+
+  grab_paper_key (data, data->paper_f_keycode, ControlMask, grab);
+  grab_paper_key (data, data->paper_t_keycode, ControlMask, grab);
+  grab_paper_key (data, data->paper_f4_keycode, Mod1Mask, grab);
+}
+
 void release_grab (ScreenatorData *data, 
 		   GdkDevice *dev)
 {
@@ -729,6 +833,49 @@ gint snoop_key_press(GtkWidget   *grab_widget,
   /* The keys belong to the dialog while one is open. */
   if (data->top_dialog)
     return FALSE;
+
+  /* Shortcuts that work while the screen paper has the keyboard focus. */
+  if (event->type == GDK_KEY_PRESS &&
+      data->paper != SCREENATOR_PAPER_NONE)
+    {
+      gboolean ctrl = (event->state & GDK_CONTROL_MASK) != 0;
+      gboolean shift = (event->state & GDK_SHIFT_MASK) != 0;
+      gboolean alt = (event->state & GDK_MOD1_MASK) != 0;
+      guint key = event->hardware_keycode;
+
+      if (alt && !ctrl && !shift && key == data->paper_f4_keycode)
+	{
+	  gtk_main_quit ();
+	  return TRUE;
+	}
+
+      if (ctrl && !alt && key == data->paper_z_keycode)
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  if (shift)
+	    redo_drawing (data);
+	  else
+	    undo_drawing (data);
+	  return TRUE;
+	}
+
+      if (ctrl && !alt && !shift && key == data->paper_f_keycode)
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  set_floating_icon_visible (data, !data->show_floating_icon);
+	  return TRUE;
+	}
+
+      if (ctrl && !alt && !shift && key == data->paper_t_keycode)
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  toggle_drawings_visibility (data);
+	  return TRUE;
+	}
+    }
 
   if (event->type == GDK_KEY_PRESS &&
       event->hardware_keycode == data->hot_keycode)

@@ -448,6 +448,7 @@ typedef struct
   gboolean     hide_spline_hint;
   gboolean     hide_snap_hint;
   gboolean     hide_text_hint;
+  gboolean     hide_paper_hint;
 
   /* Shape tools */
   ScreenatorPaintContext *default_shape;
@@ -475,6 +476,7 @@ typedef struct
   gint         text_y;
   gboolean     text_pressed;
   gboolean     text_editor_active;
+  gboolean     text_editor_positioned; /* the editor window has been placed */
   gboolean     text_editor_sized;  /* fixed width chosen for this editor */
   gboolean     text_editor_rtl;    /* editor width was sized for RTL text */
   /* The text being typed is previewed in the annotation window, above the
@@ -513,6 +515,11 @@ typedef struct
   guint        client;
   guint        painted;
   gboolean     hidden;
+  gboolean     hide_drawings;  /* paper stays visible, annotations do not */
+  guint        paper_z_keycode;
+  guint        paper_f_keycode;
+  guint        paper_t_keycode;
+  guint        paper_f4_keycode;
   gboolean     debug;
 
   /* Screen paper drawn below the annotations. */
@@ -530,6 +537,7 @@ typedef struct
 
 
 void toggle_visibility (ScreenatorData *data);
+void toggle_drawings_visibility (ScreenatorData *data);
 void hide_window (ScreenatorData *data);
 void show_window (ScreenatorData *data);
 
@@ -609,6 +617,8 @@ gboolean math_expression_is_valid (const gchar *expression, gchar **error);
 gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);
 void remove_saved_annotations (void);
+void set_floating_icon_visible (ScreenatorData *data, gboolean show);
+void update_paper_shortcuts (ScreenatorData *data, gboolean grab);
 
 void devdata_free (ScreenatorDeviceData *devdata);
 void stroke_begin (ScreenatorData *data, GdkDevice *dev);

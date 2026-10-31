@@ -525,6 +525,7 @@ void read_keyfile(ScreenatorData *data)
     data->hide_spline_hint = FALSE;
     data->hide_snap_hint = FALSE;
     data->hide_text_hint = FALSE;
+    data->hide_paper_hint = FALSE;
     data->show_settings_indicator = TRUE;
     data->show_floating_icon = TRUE;
     data->save_annotations_on_exit = TRUE;
@@ -743,6 +744,10 @@ void read_keyfile(ScreenatorData *data)
 	data->hide_text_hint =
 	    g_key_file_get_boolean (key_file, "Drawing", "HideTextHint", NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing", "HidePaperHint", NULL))
+	data->hide_paper_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HidePaperHint", NULL);
+
     if (g_key_file_has_key (key_file, "Drawing", "ShowSettingsIndicator", NULL))
 	data->show_settings_indicator =
 	    g_key_file_get_boolean (key_file, "Drawing",
@@ -854,6 +859,8 @@ void write_keyfile(ScreenatorData *data)
 			    data->hide_snap_hint);
     g_key_file_set_boolean (key_file, "Drawing", "HideTextHint",
 			    data->hide_text_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HidePaperHint",
+			    data->hide_paper_hint);
     g_key_file_set_boolean (key_file, "Drawing", "ShowSettingsIndicator",
 			    data->show_settings_indicator);
     g_key_file_set_boolean (key_file, "Drawing", "ShowFloatingIcon",
