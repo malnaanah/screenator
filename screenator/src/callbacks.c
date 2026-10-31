@@ -199,7 +199,6 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   GtkWidget *previous;
-  GdkWindow *annotation;
 
   previous = g_object_get_data (G_OBJECT (widget),
 				"screenator-previous-dialog");
@@ -209,11 +208,9 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
   if (previous)
     return;
 
-  /* Put the annotation window back on top, with the icon above it. */
-  annotation = data->win ? gtk_widget_get_window (data->win) : NULL;
-  if (annotation)
-    gdk_window_raise (annotation);
-  raise_icon_window (data);
+  /* Do not raise the annotation window or the icon here: they were already
+   * in their stacking position, and raising the fullscreen annotation window
+   * again can put it over the desktop panel and its menus. */
 
   /* Give the keyboard back to the paper or to the previous application. */
   dialog_restore_focus (data);
@@ -4198,73 +4195,178 @@ void on_redo(GtkMenuItem *menuitem,
 }
 
 
-/* Some themes use a very dim colour for links.  The About dialog is the only
- * place where Screenator shows a link, so use the normal text colour there to
- * keep the licence line readable. */
-static void
-install_about_link_style (void)
+/* About is built here rather than with GtkAboutDialog: the old dialog brought
+ * a lot of Gromit-MPX/GtkAboutDialog machinery (Credits, links and a
+ * screen-wide link CSS provider) that this simple information window does not
+ * need.  Like the other dialogs it is a borderless popup above the drawings,
+ * but it deliberately does not take the input focus when it maps: taking focus
+ * from the panel's closing tray menu left the whole panel unresponsive for a
+ * while.  Focus is given only when the pointer enters it or the user clicks
+ * it, i.e. after the tray menu has closed.  For the same reason the focus is
+ * never stored or restored on close. */
+
+static GtkWidget *
+build_about_dialog (void)
 {
-  static gboolean installed = FALSE;
-  GtkCssProvider *provider;
+  GtkWidget *dialog;
+  GtkWidget *content;
+  GtkWidget *box;
+  GtkWidget *image;
+  GtkWidget *label;
+  gchar *markup;
 
-  if (installed)
-    return;
+  dialog = gtk_dialog_new_with_buttons ("About Screenator", NULL, 0,
+					"_Close", GTK_RESPONSE_CLOSE,
+					NULL);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
 
-  provider = gtk_css_provider_new ();
-  gtk_css_provider_load_from_data (provider,
-				   "*:link, *:visited { color: @theme_fg_color; }",
-				   -1, NULL);
-  gtk_style_context_add_provider_for_screen (gdk_screen_get_default (),
-					     GTK_STYLE_PROVIDER (provider),
-					     GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-  g_object_unref (provider);
-  installed = TRUE;
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 24);
+  gtk_widget_set_size_request (box, 420, -1);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  image = gtk_image_new_from_icon_name ("screenator", GTK_ICON_SIZE_DIALOG);
+  gtk_image_set_pixel_size (GTK_IMAGE (image), 96);
+  gtk_widget_set_halign (image, GTK_ALIGN_CENTER);
+  gtk_box_pack_start (GTK_BOX (box), image, FALSE, FALSE, 0);
+
+  markup = g_strdup_printf ("<span size=\"x-large\" weight=\"bold\">"
+			    "Screenator %s</span>", VERSION);
+  label = gtk_label_new (NULL);
+  gtk_label_set_markup (GTK_LABEL (label), markup);
+  g_free (markup);
+  gtk_widget_set_halign (label, GTK_ALIGN_CENTER);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  label = gtk_label_new ("A screen annotation tool for X11, developed by "
+			 "Mahmoud Alnaanah (malnaanah@gmail.com).");
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_label_set_justify (GTK_LABEL (label), GTK_JUSTIFY_CENTER);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 52);
+  gtk_widget_set_halign (label, GTK_ALIGN_CENTER);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  label = gtk_label_new ("Based on Gromit-MPX 1.4.2\n"
+			 "Copyright 2009-2022 Christian Beier\n"
+			 "Copyright 2000 Simon Budig");
+  gtk_label_set_justify (GTK_LABEL (label), GTK_JUSTIFY_CENTER);
+  gtk_widget_set_halign (label, GTK_ALIGN_CENTER);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  label = gtk_label_new ("Copyright 2026 Mahmoud Alnaanah\n\n"
+			 "This program comes with absolutely no warranty.\n"
+			 "See the GNU General Public License, version 2 or "
+			 "later for details.");
+  gtk_label_set_justify (GTK_LABEL (label), GTK_JUSTIFY_CENTER);
+  gtk_widget_set_halign (label, GTK_ALIGN_CENTER);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  return dialog;
 }
 
-
-/* The About dialog is only shown, not run in a nested loop, so close it when
- * one of its buttons is pressed. */
 static void
-on_about_response (GtkDialog *dialog, gint response, gpointer user_data)
+about_take_focus (GtkWidget *dialog)
 {
-  gtk_widget_destroy (GTK_WIDGET (dialog));
+#ifdef GDK_WINDOWING_X11
+  GdkWindow *window = gtk_widget_get_window (dialog);
+  GdkDisplay *display;
+  Display *xdisplay;
+
+  if (!window || !GDK_IS_X11_WINDOW (window))
+    return;
+
+  display = gdk_window_get_display (window);
+  xdisplay = GDK_DISPLAY_XDISPLAY (display);
+
+  gdk_x11_display_error_trap_push (display);
+  XSetInputFocus (xdisplay, GDK_WINDOW_XID (window), RevertToParent,
+		  CurrentTime);
+  XFlush (xdisplay);
+  gdk_x11_display_error_trap_pop_ignored (display);
+#endif
+}
+
+static gboolean
+on_about_pointer (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (data->about_dialog)
+    about_take_focus (data->about_dialog);
+
+  return FALSE;
+}
+
+static gboolean
+on_about_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  GdkWindow *window = gtk_widget_get_window (widget);
+  GtkRequisition req;
+
+  if (window)
+    {
+      /* No window manager places an override-redirect window: centre it. */
+      gtk_widget_get_preferred_size (widget, NULL, &req);
+      gtk_window_move (GTK_WINDOW (widget),
+		       MAX (0, (gdk_screen_width () - req.width) / 2),
+		       MAX (0, (gdk_screen_height () - req.height) / 2));
+
+      /* The annotation window and the floating icon are above the other
+       * windows, so raise the dialog above them. */
+      gdk_window_raise (window);
+    }
+
+  /* Deliberately no gtk_window_present() and no input focus here. */
+  return FALSE;
 }
 
 void on_about(GtkMenuItem *menuitem,
 	      gpointer     user_data)
 {
     ScreenatorData *data = (ScreenatorData *) user_data;
-    const gchar *authors [] = {
-        "Mahmoud Alnaanah <a href=\"mailto:malnaanah@gmail.com\">malnaanah@gmail.com</a>",
-        "Christian Beier (Gromit-MPX 1.4.2)",
-        "Simon Budig (Gromit)",
-        NULL };
     GtkWidget *dialog;
+    gboolean was_grabbed;
 
-    install_about_link_style ();
+    if (data->about_dialog)
+      {
+	GdkWindow *window = gtk_widget_get_window (data->about_dialog);
 
-    /* Built here instead of gtk_show_about_dialog() so the dialog can be kept
-     * above the fullscreen annotation window. */
-    dialog = gtk_about_dialog_new ();
-    g_object_set (dialog,
-		  "program-name", "Screenator",
-		  "logo-icon-name", "screenator",
-		  "title", "About Screenator",
-		  "comments", "Screenator is a vibe-coded screen annotation tool for X11, developed by Mahmoud Alnaanah (malnaanah@gmail.com), based on Gromit-MPX 1.4.2.",
-		  "version", VERSION,
-		  "authors", authors,
-		  "copyright", "2026 Mahmoud Alnaanah\nBased on Gromit-MPX 1.4.2, Copyright 2009-2022 Christian Beier, Copyright 2000 Simon Budig",
-		  "license-type", GTK_LICENSE_GPL_2_0,
-		  NULL);
-    gtk_window_set_modal (GTK_WINDOW (dialog), TRUE);
-    gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
-    g_signal_connect (dialog, "response",
-		      G_CALLBACK (on_about_response), NULL);
+	if (window)
+	  gdk_window_raise (window);
+	return;
+      }
 
-    show_dialog_above_drawings (data, dialog);
-    gtk_widget_show (dialog);
+    dialog = build_about_dialog ();
+
+    /* A borderless popup, like the other dialogs, but without their focus
+     * stealing when it maps. */
+    make_dialog_popup (dialog);
+    gtk_widget_add_events (dialog, GDK_ENTER_NOTIFY_MASK |
+				   GDK_BUTTON_PRESS_MASK);
+    g_signal_connect (dialog, "map-event",
+		      G_CALLBACK (on_about_map), data);
+    g_signal_connect (dialog, "enter-notify-event",
+		      G_CALLBACK (on_about_pointer), data);
+    g_signal_connect (dialog, "button-press-event",
+		      G_CALLBACK (on_about_pointer), data);
+
+    /* About must be clickable while painting mode is active.  The drawings
+     * stay visible; only the pointer grab is released for the dialog. */
+    was_grabbed = screenator_any_grabbed (data);
+    if (was_grabbed)
+      release_grab (data, NULL);
+
+    data->about_dialog = dialog;
+    gtk_widget_show_all (dialog);
+    gtk_dialog_run (GTK_DIALOG (dialog));
+    data->about_dialog = NULL;
+    gtk_widget_destroy (dialog);
+
+    if (was_grabbed)
+      acquire_grab (data, NULL);
 }
-
 
 /* ------------------------------------------------------------------
 * Movable on-screen icon

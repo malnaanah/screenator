@@ -520,6 +520,7 @@ typedef struct
   guint        painted;
   gboolean     hidden;
   gboolean     hide_drawings;  /* paper stays visible, annotations do not */
+  GtkWidget   *about_dialog;
   guint        paper_z_keycode;
   guint        paper_f_keycode;
   guint        paper_t_keycode;
