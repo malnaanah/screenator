@@ -6402,7 +6402,8 @@ static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
 {
   /* SCREENATOR_HINT_PEN */
   "Left click and drag to draw, middle click to erase, scroll to change the "
-  "line colour, and right click to exit the tool.",
+  "line colour, and right click to exit the tool.  Press Ctrl+Z and "
+  "Ctrl+Shift+Z in drawing mode to undo and redo.",
   /* SCREENATOR_HINT_MARKER */
   "Left click and drag to draw a highlighter stroke, middle click to erase, "
   "and right click to exit the tool.",
