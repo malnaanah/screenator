@@ -242,7 +242,10 @@ typedef enum
 {
   SCREENATOR_FRAME_HANDLE_NONE = 0,
   SCREENATOR_FRAME_HANDLE_MOVE,     /* drag inside the frame */
-  SCREENATOR_FRAME_HANDLE_SIZE,     /* square handle on the bottom-right corner */
+  SCREENATOR_FRAME_HANDLE_SIZE_TL,  /* square handles on the four corners */
+  SCREENATOR_FRAME_HANDLE_SIZE_TR,
+  SCREENATOR_FRAME_HANDLE_SIZE_BL,
+  SCREENATOR_FRAME_HANDLE_SIZE_BR,
   SCREENATOR_FRAME_HANDLE_ROTATE,   /* round handle above the frame */
   SCREENATOR_FRAME_HANDLE_EXTRA     /* roundness or line count */
 } ScreenatorFrameHandle;
@@ -399,6 +402,10 @@ typedef struct
 
   /* Whether the floating icon (the menu button) is shown. */
   gboolean     show_floating_icon;
+
+  /* Whether the drawings are saved when Screenator quits and restored on the
+   * next start. */
+  gboolean     save_annotations_on_exit;
 
   /* Dialog shown above the drawings, and the state that is restored when the
    * last dialog closes (see show_dialog_above_drawings()). */
@@ -593,12 +600,15 @@ void frame_handle_position (const ScreenatorFrameShape *shape,
 			    ScreenatorFrameHandle handle, GdkPoint *pos);
 void frame_screen_to_local (const ScreenatorFrame *frame, gdouble x, gdouble y,
 			    gdouble *lx, gdouble *ly);
+void frame_local_to_screen (const ScreenatorFrame *frame, gdouble lx, gdouble ly,
+			    gdouble *x, gdouble *y);
 void frame_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
 void frame_finish_all (ScreenatorData *data);
 void text_editor_finish (ScreenatorData *data);
 gboolean math_expression_is_valid (const gchar *expression, gchar **error);
 gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);
+void remove_saved_annotations (void);
 
 void devdata_free (ScreenatorDeviceData *devdata);
 void stroke_begin (ScreenatorData *data, GdkDevice *dev);

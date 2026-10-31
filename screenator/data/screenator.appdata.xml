@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="3.2" date="2026-10-31">
+      <description>
+        <p>Adds a Settings submenu with Save annotations on exit, Change Font, Show Floating Icon, Show Settings Indicator and Reset Settings. With Save annotations on exit on (the default), the drawings are saved to ~/.config/screenator-annotations.png when Screenator quits and restored on the next start; Clear Screen removes the saved drawing. Adds rect(x), a rectangle pulse that is 1 for |x| &lt;= 1/2 and 0 elsewhere, to the Math Function presets and functions. The settings indicator now takes input, so clicks and scrolling on it no longer reach the desktop or the application below. Editable shapes now have four square size handles, one on each corner, and dragging a corner resizes the shape with the opposite corner fixed; the text tool scales its font from the corner drag.</p>
+      </description>
+    </release>
     <release version="3.1" date="2026-10-31">
       <description>
         <p>Keeps the drawings and the screen paper visible while a dialog is open. The Math Function settings, the tool hints, the About dialog and the font chooser are now shown above the full-screen annotation window instead of hiding it, are centred, and take the keyboard focus directly. Clicks outside a dialog no longer paint on the paper, and the global hotkeys stay with the dialog while it is open. The dialogs have no window-manager title bar and are closed with their own buttons.</p>

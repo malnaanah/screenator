@@ -15,10 +15,10 @@ and you can keep using your applications while it is visible.
   Pen, Text, Eraser, Shapes (Marker, Line, Spline, Polygon, Triangle, Arrow,
   Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel Lines),
   Line Thickness, Line Color, Shapes Fill Color, Screen Paper, Eraser Size,
-  Opacity, Floating Icon Size, Undo, Redo, Change Font, Clear Screen, Toggle
-  Visibility, Show Floating Icon, Show Settings Indicator, Reset Settings,
-  About and Quit. The icon
-  turns into its active (red) variant while a painting mode is on.
+  Opacity, Floating Icon Size, Undo, Redo, Clear Screen, Toggle Visibility,
+  Settings (Save Annotations on Exit, Change Font, Show Floating Icon, Show
+  Settings Indicator, Reset Settings), About and Quit. The icon turns into
+  its active (red) variant while a painting mode is on.
 - Marker draws a translucent yellow highlighter stroke at 50% opacity with a
   fixed 32 px width. It has its own settings and switching to it does not
   change the line colour, thickness or opacity used by the other tools.
@@ -62,7 +62,7 @@ and you can keep using your applications while it is visible.
   triangle to move it. Clicking empty space commits it and places the next one,
   and a double-click or right-click commits it.
 - The ellipse and rounded rectangle stay editable after the drag. Every placed
-  shape has a square size handle on its bottom-right corner, a round rotation
+  shape has a square size handle on each of its four corners, a round rotation
   handle above it and can be moved by dragging inside it. Rotation is free;
   holding `Ctrl` snaps it to 0, 30, 45, 60, 90 and so on. The rounded
   rectangle keeps a roundness handle on its top edge as well: drag it away from
@@ -75,12 +75,12 @@ and you can keep using your applications while it is visible.
   reserved for the angle and the default range is 0 to 2π (a full circle).
   `pi` and `e` are the constants π and Euler's number, and multiplication can
   be implied (`2pi*x`). A preset drop-down fills the expression with
-  `cos(2*pi*x)`, `sin(2*pi*x)`, `unit(x)`, `delta(x)`, `e^(x)`, `log(x)`,
-  `1/x`, `sin(2*pi*x)/(2*pi*x)` or `(cos(2*pi*x)+2)*cos(20*pi*x)`; in polar
-  mode the same presets use `theta` instead of `x`. `unit(x)` is the unit step,
-  and `delta(x)` is the Dirac
-  delta, drawn as
-  an arrow at the point where its argument is zero. The defaults are
+  `cos(2*pi*x)`, `sin(2*pi*x)`, `unit(x)`, `delta(x)`, `rect(x)`, `e^(x)`,
+  `log(x)`, `1/x`, `sin(2*pi*x)/(2*pi*x)` or
+  `(cos(2*pi*x)+2)*cos(20*pi*x)`; in polar mode the same presets use `theta`
+  instead of `x`. `unit(x)` is the unit step, `delta(x)` is the Dirac delta,
+  drawn as an arrow at the point where its argument is zero, and `rect(x)` is
+  a rectangle pulse that is 1 for |x| <= 1/2 and 0 elsewhere. The defaults are
   `cos(2*pi*x)` from x = -2 to x = 2 and `cos(3*theta)` from theta = 0 to 2π;
   each mode keeps its own expression and range. The plot is drawn inside a
   frame that is dragged out like a shape and is scaled to fill it, so the size
@@ -116,7 +116,7 @@ and you can keep using your applications while it is visible.
   so they stay visible even over a drawing. The middle mouse button still
   erases while it is held, also with the Text tool selected. Right-to-left text
   such as Arabic extends to the left of the click position. A placed text stays editable: drag it to move it, drag
-  its square handle to change the font size and its round handle to rotate it.
+  a corner handle to change the font size and its round handle to rotate it.
 - The same menu is shown by the system tray icon.
 - A small settings indicator sits to the left of the floating icon. It is a
   rectangle as tall as the icon, divided into three equal-height pieces that
@@ -174,8 +174,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_3.1_amd64.deb`
-- `Screenator-3.1-x86_64.AppImage`
+- `screenator_3.2_amd64.deb`
+- `Screenator-3.2-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

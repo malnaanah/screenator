@@ -28,6 +28,7 @@
 #include <stdarg.h>
 #include <math.h>
 #include <stdlib.h>
+#include <glib/gstdio.h>
 #include <pango/pangocairo.h>
 
 #include "callbacks.h"
@@ -646,6 +647,130 @@ update_window_shape (ScreenatorData *data)
 }
 
 
+/* ------------------------------------------------------------------
+ * Saved annotations
+ *
+ * The drawing layer is saved as a PNG when Screenator quits and painted back
+ * into the backbuffer on the next start.  The screen paper is not part of it:
+ * it is drawn separately and follows its own setting.
+ * ------------------------------------------------------------------ */
+
+static gchar *
+annotations_path (void)
+{
+  return g_build_filename (g_get_user_config_dir (),
+			   "screenator-annotations.png", NULL);
+}
+
+/* TRUE if the surface has at least one visible pixel. */
+static gboolean
+surface_has_annotations (cairo_surface_t *surface)
+{
+  gint width, height, stride, x, y;
+  guchar *pixels;
+
+  if (!surface ||
+      cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS ||
+      cairo_image_surface_get_format (surface) != CAIRO_FORMAT_ARGB32)
+    return FALSE;
+
+  cairo_surface_flush (surface);
+  width = cairo_image_surface_get_width (surface);
+  height = cairo_image_surface_get_height (surface);
+  stride = cairo_image_surface_get_stride (surface);
+  pixels = cairo_image_surface_get_data (surface);
+  if (!pixels)
+    return FALSE;
+
+  for (y = 0; y < height; y++)
+    {
+      guint32 *row = (guint32 *) (pixels + y * stride);
+
+      for (x = 0; x < width; x++)
+	if ((row[x] >> 24) != 0)
+	  return TRUE;
+    }
+
+  return FALSE;
+}
+
+static void
+save_annotations (ScreenatorData *data)
+{
+  gchar *path;
+
+  if (!data->backbuffer)
+    return;
+
+  path = annotations_path ();
+
+  /* No drawings: remove an older file instead of saving a blank one. */
+  if (!surface_has_annotations (data->backbuffer))
+    {
+      g_unlink (path);
+      g_free (path);
+      return;
+    }
+
+  cairo_surface_flush (data->backbuffer);
+  if (cairo_surface_write_to_png (data->backbuffer, path) != CAIRO_STATUS_SUCCESS)
+    g_printerr ("Could not save the annotations to %s\n", path);
+
+  g_free (path);
+}
+
+/* Paint the saved drawing layer back into the backbuffer.  Returns TRUE if
+ * there was something to restore. */
+static gboolean
+load_annotations (ScreenatorData *data)
+{
+  gchar *path;
+  cairo_surface_t *saved;
+  cairo_t *cr;
+  gboolean loaded = FALSE;
+  gint width, height;
+
+  if (!data->save_annotations_on_exit || !data->backbuffer)
+    return FALSE;
+
+  path = annotations_path ();
+  saved = cairo_image_surface_create_from_png (path);
+  g_free (path);
+
+  if (cairo_surface_status (saved) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (saved);
+      return FALSE;
+    }
+
+  if (surface_has_annotations (saved))
+    {
+      width = cairo_image_surface_get_width (saved);
+      height = cairo_image_surface_get_height (saved);
+
+      cr = cairo_create (data->backbuffer);
+      if (width > 0 && height > 0)
+	cairo_scale (cr, (gdouble) data->width / width,
+		     (gdouble) data->height / height);
+      cairo_set_source_surface (cr, saved, 0, 0);
+      cairo_paint (cr);
+      cairo_destroy (cr);
+      loaded = TRUE;
+    }
+
+  cairo_surface_destroy (saved);
+  return loaded;
+}
+
+void remove_saved_annotations (void)
+{
+  gchar *path = annotations_path ();
+
+  g_unlink (path);
+  g_free (path);
+}
+
+
 void clear_screen (ScreenatorData *data)
 {
   cairo_t *cr = cairo_create(data->backbuffer);
@@ -660,6 +785,7 @@ void clear_screen (ScreenatorData *data)
   update_window_shape (data);
 
   data->painted = 0;
+  remove_saved_annotations ();
 
   if(data->debug)
     g_printerr ("DEBUG: Cleared screen.\n");
@@ -1623,7 +1749,7 @@ frame_shape_clear (ScreenatorFrameShape *shape)
 }
 
 /* Local (unrotated) frame coordinates to screen coordinates. */
-static void
+void
 frame_local_to_screen (const ScreenatorFrame *frame, gdouble lx, gdouble ly,
 		       gdouble *x, gdouble *y)
 {
@@ -1729,7 +1855,19 @@ frame_handle_position (const ScreenatorFrameShape *shape,
 
   switch (handle)
     {
-    case SCREENATOR_FRAME_HANDLE_SIZE:
+    case SCREENATOR_FRAME_HANDLE_SIZE_TL:
+      lx = -frame->w / 2.0;
+      ly = -frame->h / 2.0;
+      break;
+    case SCREENATOR_FRAME_HANDLE_SIZE_TR:
+      lx = frame->w / 2.0;
+      ly = -frame->h / 2.0;
+      break;
+    case SCREENATOR_FRAME_HANDLE_SIZE_BL:
+      lx = -frame->w / 2.0;
+      ly = frame->h / 2.0;
+      break;
+    case SCREENATOR_FRAME_HANDLE_SIZE_BR:
       lx = frame->w / 2.0;
       ly = frame->h / 2.0;
       break;
@@ -1813,6 +1951,13 @@ math_delta (gdouble value)
   return 0.0;
 }
 
+/* Rectangle pulse: one for |value| <= 1/2 and zero elsewhere. */
+static gdouble
+math_rect (gdouble value)
+{
+  return (value >= -0.5 && value <= 0.5) ? 1.0 : 0.0;
+}
+
 static const MathFunctionDef math_functions[] =
 {
   { "sin", sin }, { "cos", cos }, { "tan", tan },
@@ -1821,7 +1966,8 @@ static const MathFunctionDef math_functions[] =
   { "sqrt", sqrt }, { "abs", fabs }, { "exp", exp },
   { "log", log }, { "ln", log }, { "log10", log10 },
   { "floor", floor }, { "ceil", ceil },
-  { "unit", math_unit }, { "delta", math_delta }
+  { "unit", math_unit }, { "delta", math_delta },
+  { "rect", math_rect }
 };
 
 typedef struct
@@ -3938,11 +4084,15 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 
   gtk_widget_show_all (data->win);
 
-  data->painted = 0;
+  /* Restore the drawings saved when Screenator last quit. */
+  data->painted = load_annotations (data) ? 1 : 0;
+  if (data->painted)
+    update_window_shape (data);
+
   hide_window (data);
 
-  /* A saved screen paper is shown right away. */
-  if (data->paper != SCREENATOR_PAPER_NONE)
+  /* A saved screen paper or some restored annotations are shown right away. */
+  if (data->paper != SCREENATOR_PAPER_NONE || data->painted)
     show_window (data);
 
   data->timeout_id = g_timeout_add (20, reshape, data);
@@ -4315,6 +4465,10 @@ int main (int argc, char **argv)
   setup_main_app (data, argc, argv);
   gtk_main ();
   shutdown_input_devices(data);
+  if (data->save_annotations_on_exit)
+    save_annotations (data);
+  else
+    remove_saved_annotations ();
   write_keyfile(data); // save keyfile config
   g_free (data);
   return 0;

@@ -1,4 +1,4 @@
-Screenator 3.1
+Screenator 3.2
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 3.1 (amd64)
-  - Screenator-3.1-x86_64.AppImage
+  - screenator 3.2 (amd64)
+  - Screenator-3.2-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,12 +18,18 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_3.1_amd64.deb
-                          Screenator-3.1-x86_64.AppImage
+                          screenator_3.2_amd64.deb
+                          Screenator-3.2-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
+  - The Settings submenu holds Save Annotations on Exit, Change Font, Show
+    Floating Icon, Show Settings Indicator and Reset Settings.  With Save
+    Annotations on Exit on (the default), the drawings are saved to
+    ~/.config/screenator-annotations.png when Screenator quits and restored on
+    the next start; the screen paper follows its own setting and Clear Screen
+    removes the saved drawing.
   - The Shapes submenu holds the Marker, Line, Spline, Polygon, Triangle,
     Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
     Lines tools.  Shapes are drawn by dragging; the Line and Arrow follow the
@@ -56,7 +62,7 @@ Features:
     degrees.  Drag inside it to move it, click empty space to commit it and
     place the next one, and double-click or right-click to commit it.
     The Ellipse and Rounded Rectangle stay editable after the drag.  Every
-    placed shape keeps a square handle on its bottom-right corner and a round
+    placed shape keeps a square handle on each of its four corners and a round
     rotation handle above it, and dragging inside the shape moves it; rotation
     is free, and holding Ctrl snaps it to 0, 30, 45, 60, 90 and so on.
     The Rounded Rectangle also keeps a roundness handle on its top edge: moving
@@ -69,15 +75,16 @@ Features:
     reserved for the angle and the default range is 0 to 2*pi, a full circle.
     pi and e are the constants pi and Euler's number, and multiplication can be
     implied (2pi*x).  A preset drop-down fills the expression with
-    cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), e^(x), log(x), 1/x,
-    sin(2*pi*x)/(2*pi*x) or (cos(2*pi*x)+2)*cos(20*pi*x); in polar mode the
-    same presets use theta instead of x.  unit(x)
-    is the unit step, and delta(x) is the Dirac delta, drawn as an arrow where
-    its argument is zero.  The defaults are cos(2*pi*x) from x = -2 to x = 2
-    and cos(3*theta) from theta = 0 to 2*pi; each mode keeps its own expression
-    and range.  The plot is drawn inside a frame that is dragged out like the
-    other shapes and is scaled to fill it, so the size handle also sets its
-    amplitude; polar plots use one scale for both axes, so the curve stays
+    cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), rect(x), e^(x), log(x),
+    1/x, sin(2*pi*x)/(2*pi*x) or (cos(2*pi*x)+2)*cos(20*pi*x); in polar mode
+    the same presets use theta instead of x.  unit(x) is the unit step,
+    delta(x) is the Dirac delta, drawn as an arrow where its argument is zero,
+    and rect(x) is a rectangle pulse that is 1 for |x| <= 1/2 and 0 elsewhere.
+    The defaults are cos(2*pi*x) from x = -2 to x = 2 and cos(3*theta) from
+    theta = 0 to 2*pi; each mode keeps its own expression and range.  The plot
+    is drawn inside a frame that is dragged out like the other shapes and is
+    scaled to fill it, so the corner handles also set its amplitude; polar plots
+    use one scale for both axes, so the curve stays
     round in a non-square frame.  The plot can be moved, resized and rotated
     with the usual handles.  Selecting the tool from the Shapes menu asks for
     the expression first, and choosing it again changes the expression; a plot
@@ -114,7 +121,7 @@ Features:
     drawing.  The middle mouse button still erases while it is held, also with
     the Text tool selected.  Right-to-left
     text such as Arabic extends to the left of the click position.  A placed
-    text stays editable: drag it to move it, drag its square handle to change
+    text stays editable: drag it to move it, drag a corner handle to change
     the font size and drag its round handle to rotate it.
   - A small draggable floating icon.  Left or right click opens the menu.  The
     icon switches to its active (red) variant while a painting mode is on.
@@ -183,7 +190,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 3.1.
+    was changed to 3.2.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
@@ -224,7 +231,7 @@ Differences from Gromit-MPX 1.4.2:
     after the drag, which rounds the corners more when moved away from the
     corner and makes them sharper when moved back.  The ellipse and rounded
     rectangle stay editable after the drag: each keeps a square size handle on
-    its bottom-right corner and a round rotation handle above it, dragging
+    each of its four corners and a round rotation handle above it, dragging
     inside moves it, and holding Ctrl snaps the rotation to 0, 30, 45, 60, 90
     and so on.
     The text tool's placed text is editable in the same way, with its size
@@ -238,16 +245,18 @@ Differences from Gromit-MPX 1.4.2:
     full circle from 0 to 2*pi.  pi and e are the constants pi and Euler's
     number, implied multiplication is accepted, and the defaults are
     cos(2*pi*x) from -2 to 2 and cos(3*theta) from 0 to 2*pi.  A preset
-    drop-down offers cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), e^(x),
-    log(x), 1/x, sin(2*pi*x)/(2*pi*x) and (cos(2*pi*x)+2)*cos(20*pi*x), with
-    theta in place of x in polar mode.  unit(x)
-    is the unit step, and delta(x) is the Dirac delta, drawn as an arrow where
-    its argument is zero.  Each mode keeps its own expression and range.  The plot is scaled to fill the frame (polar
-    plots keep the curve round in a non-square frame), and an editable plot
-    follows a new expression immediately.  The Parallel Lines tool draws 2 to 40 evenly
-    spaced vertical lines with the current line thickness, and a square handle
-    outside the left edge sets their number.  Both tools use the usual move,
-    size and rotation handles.
+    drop-down offers cos(2*pi*x), sin(2*pi*x), unit(x), delta(x), rect(x),
+    e^(x), log(x), 1/x, sin(2*pi*x)/(2*pi*x) and
+    (cos(2*pi*x)+2)*cos(20*pi*x), with theta in place of x in polar mode.
+    unit(x) is the unit step, delta(x) is the Dirac delta, drawn as an arrow
+    where its argument is zero, and rect(x) is a rectangle pulse that is 1 for
+    |x| <= 1/2 and 0 elsewhere.  Each mode keeps its own expression and range.
+    The plot is scaled to fill the frame (polar plots keep the curve round in a
+    non-square frame), and an editable plot follows a new expression
+    immediately.  The Parallel Lines tool draws 2 to 40 evenly spaced vertical
+    lines with the current line thickness, and a square handle outside the left
+    edge sets their number.  Both tools use the usual move, size and rotation
+    handles.
     Ellipses, rounded rectangles, polygons and triangles can optionally be
     filled with a shape fill colour, which is saved with the other menu
     settings.

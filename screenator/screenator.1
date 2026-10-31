@@ -85,7 +85,7 @@ space commits it and places the next one, and a double-click or right-click
 commits it.
 .br
 The Ellipse and Rounded Rectangle stay editable after they have been dragged
-out. Every placed shape keeps a square size handle on its bottom-right corner
+out. Every placed shape keeps a square size handle on each of its four corners
 and a round rotation handle above it, and dragging inside the shape moves it;
 rotation is free, and holding Ctrl snaps it to 0, 30, 45, 60, 90 and so on.
 The Rounded Rectangle also keeps a roundness handle on its top edge:
@@ -99,14 +99,15 @@ Polar mode plots r = f(theta) over a theta range, where theta is reserved for
 the angle and the default range is 0 to 2*pi, a full circle. "pi" and "e" are
 the constants pi and Euler's number, and multiplication can be implied
 ("2pi*x"). A preset drop-down fills the expression with "cos(2*pi*x)",
-"sin(2*pi*x)", "unit(x)", "delta(x)", "e^(x)", "log(x)", "1/x",
-"sin(2*pi*x)/(2*pi*x)" or "(cos(2*pi*x)+2)*cos(20*pi*x)"; in polar mode the
-same presets use theta instead of x. unit(x) is
-the unit step, and delta(x) is the Dirac delta, drawn as an arrow at the point
-where its argument is zero. The defaults are "cos(2*pi*x)" from x = -2 to
+"sin(2*pi*x)", "unit(x)", "delta(x)", "rect(x)", "e^(x)", "log(x)",
+"1/x", "sin(2*pi*x)/(2*pi*x)" or "(cos(2*pi*x)+2)*cos(20*pi*x)"; in polar
+mode the same presets use theta instead of x. unit(x) is the unit step,
+delta(x) is the Dirac delta, drawn as an arrow at the point where its argument
+is zero, and rect(x) is a rectangle pulse that is 1 for |x| <= 1/2 and 0
+elsewhere. The defaults are "cos(2*pi*x)" from x = -2 to
 x = 2 and "cos(3*theta)" from theta = 0 to 2*pi; each mode keeps its own
 expression and range. The plot is drawn inside a frame that is dragged out
-like the other shapes and is scaled to fill it, so the size handle also sets
+like the other shapes and is scaled to fill it, so the corner handles also set
 its amplitude; polar plots use one scale for both axes, so the curve stays
 round in a non-square frame. The plot can be moved, resized and rotated with the usual
 handles. Selecting the tool from the Shapes menu asks for the expression
@@ -138,12 +139,19 @@ drawn above the drawings and the screen paper, so they stay visible over them.
 The middle mouse button still erases while it is held, also with the Text tool
 selected. Press Enter to place the text or Escape to cancel it. A placed text
 stays editable: drag it to
-move it, drag its square handle to change the font size, and drag its round
+move it, drag a corner handle to change the font size, and drag its round
 handle to rotate it.
 .br
 The pen, font and screen paper settings are remembered in
 .I ~/.config/screenator.ini
 and can be restored to their defaults with the "Reset Settings" menu entry.
+.br
+The "Settings" submenu holds "Save annotations on exit", "Change Font", "Show
+Floating Icon", "Show Settings Indicator" and "Reset Settings". With "Save
+annotations on exit" on (the default), the drawings are saved to
+.I ~/.config/screenator-annotations.png
+when Screenator quits and restored on the next start; the screen paper follows
+its own setting. "Clear Screen" removes the saved drawing.
 .br
 Selecting a tool shows a short hint that describes that tool: its mouse
 buttons, what the mouse wheel changes and how its handles work. Each tool's
@@ -263,8 +271,12 @@ exist.
 .TP
 .I ~/.config/screenator.ini
 Saved menu settings (line colour, thickness, opacity, shape fill, screen
-paper, floating icon size, settings indicator visibility, text font, math
-expression and range, and the selected tool).
+paper, floating icon size, settings indicator visibility, whether annotations
+are saved on exit, text font, math expression and range, and the selected
+tool).
+.TP
+.I ~/.config/screenator-annotations.png
+The drawing layer saved when Screenator quits, restored on the next start.
 .SH NOTES
 Screenator is X11-only. Under Wayland it runs through XWayland.
 .SH AUTHORS

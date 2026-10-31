@@ -527,6 +527,7 @@ void read_keyfile(ScreenatorData *data)
     data->hide_text_hint = FALSE;
     data->show_settings_indicator = TRUE;
     data->show_floating_icon = TRUE;
+    data->save_annotations_on_exit = TRUE;
 
     /*
       read actual settings
@@ -758,6 +759,12 @@ void read_keyfile(ScreenatorData *data)
 	    g_key_file_get_boolean (key_file, "Drawing", "ShowFloatingMenu",
 				    NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing", "SaveAnnotationsOnExit",
+			    NULL))
+	data->save_annotations_on_exit =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "SaveAnnotationsOnExit", NULL);
+
     data->pen_tool = read_pen_tool (key_file);
 
  cleanup:
@@ -851,6 +858,8 @@ void write_keyfile(ScreenatorData *data)
 			    data->show_settings_indicator);
     g_key_file_set_boolean (key_file, "Drawing", "ShowFloatingIcon",
 			    data->show_floating_icon);
+    g_key_file_set_boolean (key_file, "Drawing", "SaveAnnotationsOnExit",
+			    data->save_annotations_on_exit);
     g_free (color);
     g_free (fill);
 

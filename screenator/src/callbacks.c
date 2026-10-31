@@ -2478,8 +2478,8 @@ triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
 /* --- Editable frame shapes ------------------------------------------------
  *
  * The rectangle, ellipse, rounded rectangle, text, math plot and parallel
- * lines share one frame.  A placed shape keeps a square size handle on its
- * bottom-right corner, a round rotation handle above it and, for the rounded
+ * lines share one frame.  A placed shape keeps a square size handle on each
+ * of its four corners, a round rotation handle above it and, for the rounded
  * rectangle and the parallel lines, an extra handle.  Dragging inside the
  * frame moves it.
  */
@@ -2502,12 +2502,33 @@ frame_invalidate (ScreenatorData *data, const ScreenatorFrameShape *shape)
 			      &bounds, 0);
 }
 
+static gboolean
+frame_handle_is_corner (ScreenatorFrameHandle handle)
+{
+  return handle == SCREENATOR_FRAME_HANDLE_SIZE_TL ||
+	 handle == SCREENATOR_FRAME_HANDLE_SIZE_TR ||
+	 handle == SCREENATOR_FRAME_HANDLE_SIZE_BL ||
+	 handle == SCREENATOR_FRAME_HANDLE_SIZE_BR;
+}
+
+/* Signs of the dragged corner in the frame's local coordinates.  The opposite
+ * corner is the fixed one while resizing. */
+static void
+frame_corner_signs (ScreenatorFrameHandle handle,
+		    gdouble *sign_x, gdouble *sign_y)
+{
+  *sign_x = (handle == SCREENATOR_FRAME_HANDLE_SIZE_TR ||
+	     handle == SCREENATOR_FRAME_HANDLE_SIZE_BR) ? 1.0 : -1.0;
+  *sign_y = (handle == SCREENATOR_FRAME_HANDLE_SIZE_BL ||
+	     handle == SCREENATOR_FRAME_HANDLE_SIZE_BR) ? 1.0 : -1.0;
+}
+
 /* Return the frame handle under (x, y), or NONE.  The extra handle is tested
- * first so it wins when it overlaps the size handle. */
+ * first so it wins when it overlaps a corner handle. */
 static ScreenatorFrameHandle
 frame_handle_at (const ScreenatorFrameShape *shape, gint x, gint y)
 {
-  ScreenatorFrameHandle order[3];
+  ScreenatorFrameHandle order[6];
   guint count = 0;
   guint i;
 
@@ -2515,7 +2536,10 @@ frame_handle_at (const ScreenatorFrameShape *shape, gint x, gint y)
       shape->type == SCREENATOR_SHAPE_BARS)
     order[count++] = SCREENATOR_FRAME_HANDLE_EXTRA;
   order[count++] = SCREENATOR_FRAME_HANDLE_ROTATE;
-  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE;
+  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_TL;
+  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_TR;
+  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_BL;
+  order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_BR;
 
   for (i = 0; i < count; i++)
     {
@@ -2566,8 +2590,21 @@ frame_begin_drag (ScreenatorData *data, ScreenatorDeviceData *devdata,
   devdata->frame_press_rotation = shape->frame.rotation;
   devdata->frame_press_font_size = shape->font_size;
 
-  frame_screen_to_local (&shape->frame, x, y, &lx, &ly);
-  devdata->frame_press_distance = sqrt (lx * lx + ly * ly);
+  /* Text is scaled from the distance to the fixed corner, so a corner drag
+   * keeps the opposite corner in place. */
+  if (shape->type == SCREENATOR_SHAPE_TEXT && frame_handle_is_corner (handle))
+    {
+      gdouble sx, sy, fx, fy;
+
+      frame_screen_to_local (&shape->frame, x, y, &lx, &ly);
+      frame_corner_signs (handle, &sx, &sy);
+      fx = -sx * shape->frame.w / 2.0;
+      fy = -sy * shape->frame.h / 2.0;
+      devdata->frame_press_distance =
+	MAX (sqrt ((lx - fx) * (lx - fx) + (ly - fy) * (ly - fy)), 1.0);
+    }
+  else
+    devdata->frame_press_distance = 0.0;
 
   (void) data;
 }
@@ -2635,25 +2672,74 @@ frame_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
       frame->cx = devdata->frame_press_cx + (x - devdata->frame_press_x);
       frame->cy = devdata->frame_press_cy + (y - devdata->frame_press_y);
       break;
-    case SCREENATOR_FRAME_HANDLE_SIZE:
-      frame_screen_to_local (frame, x, y, &lx, &ly);
-      if (shape->type == SCREENATOR_SHAPE_TEXT)
-	{
-	  gdouble dist = sqrt (lx * lx + ly * ly);
+    case SCREENATOR_FRAME_HANDLE_SIZE_TL:
+    case SCREENATOR_FRAME_HANDLE_SIZE_TR:
+    case SCREENATOR_FRAME_HANDLE_SIZE_BL:
+    case SCREENATOR_FRAME_HANDLE_SIZE_BR:
+      {
+	ScreenatorFrame press;
+	gdouble sx, sy, fx, fy;
 
-	  if (devdata->frame_press_distance > 1.0 &&
-	      devdata->frame_press_font_size > 0.0)
-	    shape->font_size =
-	      CLAMP (devdata->frame_press_font_size * dist /
-		     devdata->frame_press_distance, 6.0, 300.0);
+	/* Work in the frame as it was when the drag started, so the opposite
+	 * corner stays fixed. */
+	press.cx = devdata->frame_press_cx;
+	press.cy = devdata->frame_press_cy;
+	press.w = devdata->frame_press_w;
+	press.h = devdata->frame_press_h;
+	press.rotation = devdata->frame_press_rotation;
+	frame_screen_to_local (&press, x, y, &lx, &ly);
 
-	  frame_shape_measure_text (shape);
-	}
-      else
-	{
-	  frame->w = MAX (fabs (lx) * 2.0, FRAME_MIN_SIZE);
-	  frame->h = MAX (fabs (ly) * 2.0, FRAME_MIN_SIZE);
-	}
+	frame_corner_signs (devdata->frame_drag, &sx, &sy);
+	fx = -sx * press.w / 2.0;
+	fy = -sy * press.h / 2.0;
+
+	if (shape->type == SCREENATOR_SHAPE_TEXT)
+	  {
+	    gdouble dist = sqrt ((lx - fx) * (lx - fx) +
+				 (ly - fy) * (ly - fy));
+	    gdouble fixed_x, fixed_y, nfx, nfy;
+	    gdouble c, s;
+
+	    if (devdata->frame_press_distance > 1.0 &&
+		devdata->frame_press_font_size > 0.0)
+	      shape->font_size =
+		CLAMP (devdata->frame_press_font_size * dist /
+		       devdata->frame_press_distance, 6.0, 300.0);
+
+	    frame_shape_measure_text (shape);
+
+	    /* Keep the fixed corner where it was on screen. */
+	    frame_local_to_screen (&press, fx, fy, &fixed_x, &fixed_y);
+	    nfx = -sx * frame->w / 2.0;
+	    nfy = -sy * frame->h / 2.0;
+	    c = cos (frame->rotation);
+	    s = sin (frame->rotation);
+	    frame->cx = fixed_x - (nfx * c - nfy * s);
+	    frame->cy = fixed_y - (nfx * s + nfy * c);
+	  }
+	else
+	  {
+	    gdouble ncx, ncy, c, s;
+
+	    if (sx < 0.0)
+	      lx = MIN (lx, fx - FRAME_MIN_SIZE);
+	    else
+	      lx = MAX (lx, fx + FRAME_MIN_SIZE);
+	    if (sy < 0.0)
+	      ly = MIN (ly, fy - FRAME_MIN_SIZE);
+	    else
+	      ly = MAX (ly, fy + FRAME_MIN_SIZE);
+
+	    frame->w = fabs (fx - lx);
+	    frame->h = fabs (fy - ly);
+	    ncx = (fx + lx) / 2.0;
+	    ncy = (fy + ly) / 2.0;
+	    c = cos (press.rotation);
+	    s = sin (press.rotation);
+	    frame->cx = press.cx + ncx * c - ncy * s;
+	    frame->cy = press.cy + ncx * s + ncy * c;
+	  }
+      }
       break;
     case SCREENATOR_FRAME_HANDLE_ROTATE:
       {
@@ -2766,9 +2852,23 @@ frame_draw_handles (ScreenatorData *data, cairo_t *cr,
 
   star_draw_grip (cr, pos.x, pos.y);
 
-  /* The size handle is square and sits on the bottom-right corner. */
-  frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_SIZE, &pos);
-  frame_draw_square (cr, pos.x, pos.y);
+  /* A square size handle on every corner. */
+  {
+    static const ScreenatorFrameHandle corners[] =
+      {
+	SCREENATOR_FRAME_HANDLE_SIZE_TL,
+	SCREENATOR_FRAME_HANDLE_SIZE_TR,
+	SCREENATOR_FRAME_HANDLE_SIZE_BL,
+	SCREENATOR_FRAME_HANDLE_SIZE_BR
+      };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (corners); i++)
+      {
+	frame_handle_position (shape, corners[i], &pos);
+	frame_draw_square (cr, pos.x, pos.y);
+      }
+  }
 
   /* The extra handle is the roundness of the rounded rectangle or the line
    * count of the parallel lines. */
@@ -4785,6 +4885,22 @@ static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
   schedule_tray_menu_refresh (data);
 }
 
+static void on_icon_toggle_save_annotations (GtkMenuItem *menuitem,
+					      gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  data->save_annotations_on_exit =
+    gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
+
+  /* Do not bring back older drawings after the option has been turned off. */
+  if (!data->save_annotations_on_exit)
+    remove_saved_annotations ();
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
 static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
 					       gpointer user_data)
 {
@@ -5096,12 +5212,27 @@ update_settings_indicator (ScreenatorData *data)
   raise_settings_indicator (data);
 }
 
+/* The indicator is display-only: swallow its input so clicks and scrolling
+ * do not reach the desktop or the application below it. */
+static gboolean
+on_settings_indicator_button (GtkWidget *widget, GdkEventButton *event,
+			      gpointer user_data)
+{
+  return TRUE;
+}
+
+static gboolean
+on_settings_indicator_scroll (GtkWidget *widget, GdkEventScroll *event,
+			      gpointer user_data)
+{
+  return TRUE;
+}
+
 static void
 create_settings_indicator (ScreenatorData *data)
 {
   GdkScreen *screen;
   GdkVisual *visual;
-  cairo_region_t *empty;
 
   data->settings_win = gtk_window_new (GTK_WINDOW_POPUP);
   gtk_window_set_decorated (GTK_WINDOW (data->settings_win), FALSE);
@@ -5126,10 +5257,18 @@ create_settings_indicator (ScreenatorData *data)
 
   gtk_widget_realize (data->settings_win);
 
-  /* The indicator is a display only: let clicks through to the screen below. */
-  empty = cairo_region_create ();
-  gtk_widget_input_shape_combine_region (data->settings_win, empty);
-  cairo_region_destroy (empty);
+  /* The indicator is not interactive, but it must not let clicks reach the
+   * desktop or the application below it.  Keeping the default input shape
+   * (the whole window) and swallowing the events does that. */
+  gtk_widget_add_events (data->settings_win,
+			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+			 GDK_SCROLL_MASK);
+  g_signal_connect (data->settings_win, "button-press-event",
+		    G_CALLBACK (on_settings_indicator_button), data);
+  g_signal_connect (data->settings_win, "button-release-event",
+		    G_CALLBACK (on_settings_indicator_button), data);
+  g_signal_connect (data->settings_win, "scroll-event",
+		    G_CALLBACK (on_settings_indicator_scroll), data);
 
   update_settings_indicator (data);
 }
@@ -5620,19 +5759,145 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_redo), data);
 
-  /* --- text font --- */
+}
+
+/* The settings items, either in a submenu of the floating icon menu or
+ * directly in the tray menu. */
+static void
+append_settings_items (ScreenatorData *data, GtkWidget *shell)
+{
+  GtkWidget *item;
+
+  item = gtk_check_menu_item_new_with_label ("Save annotations on exit");
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->save_annotations_on_exit);
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_toggle_save_annotations), data);
+
+  item = gtk_separator_menu_item_new ();
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+
   item = gtk_image_menu_item_new_with_label ("Change Font...");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("font-settings.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_change_font), data);
+
+  item = gtk_check_menu_item_new_with_label ("Show Floating Icon");
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->show_floating_icon);
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_toggle_floating), data);
+
+  item = gtk_check_menu_item_new_with_label ("Show Settings Indicator");
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->show_settings_indicator);
+  /* The indicator sits next to the icon, so it can only be shown with it. */
+  gtk_widget_set_sensitive (item, data->show_floating_icon);
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_toggle_settings_indicator), data);
+
+  item = gtk_separator_menu_item_new ();
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+
+  item = gtk_image_menu_item_new_with_label ("Reset Settings");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("reset-settings.png")));
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_reset_settings), data);
+}
+
+/* A menu that appears on the right half of the screen opens its submenus to
+ * the left, towards the centre, so they stay fully visible.  The submenu
+ * direction is set when the menu is mapped: at build time the tray menu has no
+ * position yet, which made the first one open towards the screen edge. */
+static void
+set_settings_submenu_direction (GtkWidget *menu, GtkWidget *submenu)
+{
+  GdkWindow *window = gtk_widget_get_window (menu);
+  GdkScreen *screen = gdk_screen_get_default ();
+  GtkTextDirection direction = GTK_TEXT_DIR_LTR;
+  GList *children;
+  gint x = 0, y = 0;
+
+  if (!submenu)
+    return;
+
+  if (window)
+    gdk_window_get_origin (window, &x, &y);
+
+  if (screen)
+    {
+      GdkRectangle geometry;
+      gint monitor = gdk_screen_get_monitor_at_point (screen, x, y);
+
+      gdk_screen_get_monitor_geometry (screen, monitor, &geometry);
+      if (x > geometry.x + geometry.width / 2)
+	direction = GTK_TEXT_DIR_RTL;
+    }
+
+  gtk_widget_set_direction (submenu, direction);
+  for (children = gtk_container_get_children (GTK_CONTAINER (submenu));
+       children; children = children->next)
+    gtk_widget_set_direction (GTK_WIDGET (children->data),
+			      GTK_TEXT_DIR_LTR);
+  g_list_free (children);
+}
+
+/* The submenu is shown just before GTK places it, and the parent menu already
+ * has its final position by then.  Deciding the direction here works for the
+ * first tray menu as well. */
+static void
+on_settings_submenu_show (GtkWidget *submenu, gpointer user_data)
+{
+  set_settings_submenu_direction (GTK_WIDGET (user_data), submenu);
+}
+
+static gboolean
+set_settings_direction_idle (gpointer user_data)
+{
+  GtkWidget *menu = GTK_WIDGET (user_data);
+  GtkWidget *submenu = g_object_get_data (G_OBJECT (menu),
+					  "screenator-settings-submenu");
+
+  set_settings_submenu_direction (menu, submenu);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+on_menu_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  GtkWidget *submenu = g_object_get_data (G_OBJECT (widget),
+					  "screenator-settings-submenu");
+
+  set_settings_submenu_direction (widget, submenu);
+
+  /* Some menus are mapped before their final position is known.  Repeat the
+   * choice once the position has settled, which is still before the user can
+   * open the submenu. */
+  g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, set_settings_direction_idle,
+		   g_object_ref (widget), g_object_unref);
+  return FALSE;
 }
 
 GtkWidget *build_icon_menu (ScreenatorData *data)
 {
   GtkWidget *menu = gtk_menu_new ();
   GtkWidget *item;
+  GtkWidget *submenu;
 
   append_icon_tool_items (data, menu);
 
@@ -5650,29 +5915,32 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_toggle_vis), data);
 
-  item = gtk_check_menu_item_new_with_label ("Show Floating Icon");
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->show_floating_icon);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_floating), data);
+  item = gtk_menu_item_new_with_label ("Settings");
+  submenu = gtk_menu_new ();
+  append_settings_items (data, submenu);
 
-  item = gtk_check_menu_item_new_with_label ("Show Settings Indicator");
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->show_settings_indicator);
-  /* The indicator sits next to the icon, so it can only be shown with it. */
-  gtk_widget_set_sensitive (item, data->show_floating_icon);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_settings_indicator), data);
+  /* The direction is chosen when the menu is mapped, from where it actually
+   * appears on the screen, and the items always keep their normal
+   * left-to-right layout. */
+  {
+    GList *children;
 
-  item = gtk_image_menu_item_new_with_label ("Reset Settings");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("reset-settings.png")));
+    gtk_widget_set_direction (submenu, GTK_TEXT_DIR_LTR);
+    for (children = gtk_container_get_children (GTK_CONTAINER (submenu));
+	 children; children = children->next)
+      gtk_widget_set_direction (GTK_WIDGET (children->data),
+				GTK_TEXT_DIR_LTR);
+    g_list_free (children);
+  }
+
+  g_object_set_data (G_OBJECT (menu), "screenator-settings-submenu",
+		     submenu);
+  g_signal_connect (menu, "map-event", G_CALLBACK (on_menu_map), NULL);
+  g_signal_connect (submenu, "show", G_CALLBACK (on_settings_submenu_show),
+		    menu);
+
+  gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_reset_settings), data);
 
   {
     GtkWidget *sep = gtk_separator_menu_item_new ();
@@ -6461,6 +6729,7 @@ static const MathPreset math_presets[] =
   { "sin(2*pi*x)", "sin(2*pi*theta)" },
   { "unit(x)", "unit(theta)" },
   { "delta(x)", "delta(theta)" },
+  { "rect(x)", "rect(theta)" },
   { "e^(x)", "e^(theta)" },
   { "log(x)", "log(theta)" },
   { "1/x", "1/theta" },
@@ -6530,10 +6799,11 @@ math_dialog_mode_changed (GtkToggleButton *button, gpointer user_data)
 		      polar
 		      ? "Use theta for the angle and pi and e for the "
 			"constants, for example cos(3*theta). Functions: "
-			"sin, cos, tan, sqrt, abs, exp, log, unit, delta."
+			"sin, cos, tan, sqrt, abs, exp, log, unit, delta, "
+			"rect."
 		      : "Use pi and e for the constants, for example "
 			"cos(2*pi*x). Functions: sin, cos, tan, sqrt, abs, "
-			"exp, log, unit, delta.");
+			"exp, log, unit, delta, rect.");
   math_dialog_fill_presets (widgets);
 }
 
