@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 3.0 LANGUAGES C)
+project(screenator VERSION 3.1 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)

@@ -1,4 +1,4 @@
-Screenator 3.0
+Screenator 3.1
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 3.0 (amd64)
-  - Screenator-3.0-x86_64.AppImage
+  - screenator 3.1 (amd64)
+  - Screenator-3.1-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_3.0_amd64.deb
-                          Screenator-3.0-x86_64.AppImage
+                          screenator_3.1_amd64.deb
+                          Screenator-3.1-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -183,7 +183,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 3.0.
+    was changed to 3.1.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
