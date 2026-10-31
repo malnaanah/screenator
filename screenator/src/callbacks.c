@@ -69,19 +69,25 @@ schedule_tray_menu_refresh (ScreenatorData *data)
  * Dialogs and message boxes
  * ------------------------------------------------------------------ */
 
-/* The annotation window is a fullscreen override-redirect popup.  The window
- * manager does not manage it, so it cannot keep a dialog above it: in virtual
- * machines without a compositor a dialog ends up behind the drawings.  Hide
- * the drawings while a dialog is open instead, and show them again when the
- * last dialog closes.  The painting grab is released for the dialog and
- * restored afterwards. */
+/* Dialogs are ordinary windows with the keep-above hint, while the annotation
+ * window is an override-redirect popup that is raised whenever it is shown.
+ * Raise the dialog when it maps so it sits above the drawings and the screen
+ * paper instead of hiding them.  The painting grab is released for the dialog
+ * and restored when the last dialog closes. */
 
 static gboolean
 on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
+  GdkWindow *window = gtk_widget_get_window (widget);
+
   /* Ask for the keyboard focus, so the dialog can be typed into even when no
    * window manager is running to focus it. */
   gtk_window_present (GTK_WINDOW (widget));
+
+  /* The annotation window and the floating icon are raised above the other
+   * windows, so the dialog has to be raised again to stay in front of them. */
+  if (window)
+    gdk_window_raise (window);
 
   return FALSE;
 }
@@ -97,20 +103,15 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
 				"screenator-previous-dialog");
   data->top_dialog = previous;
 
-  /* A dialog opened from another dialog keeps the drawings hidden. */
+  /* A dialog opened from another dialog closes above the outer one. */
   if (previous)
     return;
 
-  /* Show the drawings again, above the windows the dialog covered. */
-  if (data->dialog_hid_annotation && data->win && !data->hidden)
-    {
-      gtk_widget_show (data->win);
-      annotation = gtk_widget_get_window (data->win);
-      if (annotation)
-	gdk_window_raise (annotation);
-      raise_icon_window (data);
-    }
-  data->dialog_hid_annotation = FALSE;
+  /* Put the annotation window back on top, with the icon above it. */
+  annotation = data->win ? gtk_widget_get_window (data->win) : NULL;
+  if (annotation)
+    gdk_window_raise (annotation);
+  raise_icon_window (data);
 
   /* A paper is the active window again after the dialog closes. */
   if (data->paper != SCREENATOR_PAPER_NONE)
@@ -126,18 +127,13 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
 void
 show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
 {
-  /* Hide the drawings for the outermost dialog, so the dialog is never shown
-   * behind them.  An inner dialog finds them hidden already. */
+  /* Release the painting grab for the outermost dialog, so its buttons and
+   * entries can be used.  The drawings stay visible behind it. */
   if (!data->top_dialog)
     {
       data->dialog_released_grab = screenator_any_grabbed (data);
       if (data->dialog_released_grab)
 	release_grab (data, NULL);
-
-      data->dialog_hid_annotation =
-	data->win && !data->hidden && gtk_widget_get_visible (data->win);
-      if (data->dialog_hid_annotation)
-	gtk_widget_hide (data->win);
     }
 
   g_object_set_data (G_OBJECT (dialog), "screenator-previous-dialog",

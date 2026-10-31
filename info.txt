@@ -128,9 +128,9 @@ Features:
     on by default and is disabled while the floating icon is hidden.
   - The same menu is available from the system tray icon.
   - Dialogs and message boxes, such as the Math Function dialog and the tool
-    hints, are shown with the drawings temporarily hidden, so they are never
-    covered by them; the drawings come back when the dialog is closed.  This
-    also works in virtual machines without a compositor.
+    hints, are shown above the drawings and the screen paper, so both stay
+    visible behind them; each dialog is raised as it opens, which also works
+    in virtual machines without a compositor.
   - A Screen Paper submenu turns the screen into paper for drawing and writing.
     None shows the normal desktop, Plain a white page, Ruled a white page with
     blue writing lines and Graph a white page with a grey square grid.  The

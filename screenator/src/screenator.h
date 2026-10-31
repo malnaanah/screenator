@@ -403,7 +403,6 @@ typedef struct
   /* Dialog shown above the drawings, and the state that is restored when the
    * last dialog closes (see show_dialog_above_drawings()). */
   GtkWidget   *top_dialog;
-  gboolean     dialog_hid_annotation; /* annotation window hidden for it */
   gboolean     dialog_released_grab;  /* painting grab released for it */
 
   GdkCursor   *paint_cursor;
