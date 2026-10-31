@@ -11,7 +11,11 @@ need it, and you can keep using your applications while it is visible.
 A small draggable on-screen icon (and a matching tray icon) opens the tool and
 settings menu.
 
-https://github.com/user-attachments/assets/322afbb5-fffa-472c-b192-504a8db3a756
+
+
+https://github.com/user-attachments/assets/ea9c7c4a-db13-43ad-b8ec-a35f422bd0e9
+
+
 
 ## Layout
 
