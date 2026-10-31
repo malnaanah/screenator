@@ -69,25 +69,127 @@ schedule_tray_menu_refresh (ScreenatorData *data)
  * Dialogs and message boxes
  * ------------------------------------------------------------------ */
 
-/* Dialogs are ordinary windows with the keep-above hint, while the annotation
- * window is an override-redirect popup that is raised whenever it is shown.
- * Raise the dialog when it maps so it sits above the drawings and the screen
- * paper instead of hiding them.  The painting grab is released for the dialog
- * and restored when the last dialog closes. */
+/* The annotation window is an override-redirect popup, and the window manager
+ * keeps such windows above the dialogs it manages.  Make the dialogs
+ * override-redirect too, so they live in the same layer as the annotation
+ * window and can be raised above it.  The drawings and the screen paper then
+ * stay visible behind them instead of being hidden.  Nothing centres these
+ * dialogs or gives them the keyboard focus, so that is done here as well. */
+
+static void
+on_dialog_realize (GtkWidget *widget, gpointer user_data)
+{
+  GdkWindow *window = gtk_widget_get_window (widget);
+
+  /* The override-redirect flag can only be set before the window is mapped.
+   * Doing it when GTK realizes the window keeps every dialog, including the
+   * font chooser, on its normal realize path. */
+  if (window)
+    gdk_window_set_override_redirect (window, TRUE);
+}
+
+static void
+make_dialog_popup (GtkWidget *dialog)
+{
+  /* Centring is done when the dialog is mapped, once its content has its
+   * final size. */
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_NONE);
+  g_signal_connect (dialog, "realize", G_CALLBACK (on_dialog_realize), NULL);
+}
+
+static void
+dialog_take_focus (ScreenatorData *data, GtkWidget *dialog)
+{
+#ifdef GDK_WINDOWING_X11
+  GdkWindow *window;
+  GdkWindow *annotation;
+  GdkDisplay *display;
+  Display *xdisplay;
+  Window focus = None;
+  int revert = 0;
+
+  window = gtk_widget_get_window (dialog);
+  if (!window || !GDK_IS_X11_WINDOW (window))
+    return;
+
+  display = gdk_window_get_display (window);
+  xdisplay = GDK_DISPLAY_XDISPLAY (display);
+  annotation = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+  /* Remember what had the focus, unless it was the annotation window (the
+   * screen paper), which is restored on its own when the dialog closes. */
+  if (data->dialog_prev_focus == 0)
+    {
+      XGetInputFocus (xdisplay, &focus, &revert);
+      if (focus != None && focus != PointerRoot &&
+	  (!annotation || focus != GDK_WINDOW_XID (annotation)))
+	data->dialog_prev_focus = focus;
+    }
+
+  gdk_x11_display_error_trap_push (display);
+  XSetInputFocus (xdisplay, GDK_WINDOW_XID (window), RevertToParent,
+		  CurrentTime);
+  XFlush (xdisplay);
+  gdk_x11_display_error_trap_pop_ignored (display);
+#endif
+}
+
+static void
+dialog_restore_focus (ScreenatorData *data)
+{
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      /* The screen paper is the active window again. */
+      paper_take_focus (data);
+      data->dialog_prev_focus = 0;
+      return;
+    }
+
+#ifdef GDK_WINDOWING_X11
+  if (data->dialog_prev_focus)
+    {
+      GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+      if (window && GDK_IS_X11_WINDOW (window))
+	{
+	  GdkDisplay *display = gdk_window_get_display (window);
+	  Display *xdisplay = GDK_DISPLAY_XDISPLAY (display);
+
+	  gdk_x11_display_error_trap_push (display);
+	  XSetInputFocus (xdisplay, data->dialog_prev_focus, RevertToParent,
+			  CurrentTime);
+	  XFlush (xdisplay);
+	  gdk_x11_display_error_trap_pop_ignored (display);
+	}
+    }
+#endif
+  data->dialog_prev_focus = 0;
+}
 
 static gboolean
 on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
+  ScreenatorData *data = (ScreenatorData *) user_data;
   GdkWindow *window = gtk_widget_get_window (widget);
+  GtkRequisition req;
 
-  /* Ask for the keyboard focus, so the dialog can be typed into even when no
-   * window manager is running to focus it. */
   gtk_window_present (GTK_WINDOW (widget));
 
-  /* The annotation window and the floating icon are raised above the other
-   * windows, so the dialog has to be raised again to stay in front of them. */
   if (window)
-    gdk_window_raise (window);
+    {
+      /* No window manager places an override-redirect window: centre it. */
+      gtk_widget_get_preferred_size (widget, NULL, &req);
+      gtk_window_move (GTK_WINDOW (widget),
+		       MAX (0, (gdk_screen_width () - req.width) / 2),
+		       MAX (0, (gdk_screen_height () - req.height) / 2));
+
+      /* The annotation window and the floating icon are raised above the
+       * other windows, so the dialog has to be raised again to stay in front
+       * of them. */
+      gdk_window_raise (window);
+    }
+
+  dialog_take_focus (data, widget);
 
   return FALSE;
 }
@@ -113,9 +215,8 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
     gdk_window_raise (annotation);
   raise_icon_window (data);
 
-  /* A paper is the active window again after the dialog closes. */
-  if (data->paper != SCREENATOR_PAPER_NONE)
-    paper_take_focus (data);
+  /* Give the keyboard back to the paper or to the previous application. */
+  dialog_restore_focus (data);
 
   if (data->dialog_released_grab)
     {
@@ -127,6 +228,10 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
 void
 show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
 {
+  /* The dialog lives in the same layer as the annotation window, so it can be
+   * raised above the drawings and the screen paper. */
+  make_dialog_popup (dialog);
+
   /* Release the painting grab for the outermost dialog, so its buttons and
    * entries can be used.  The drawings stay visible behind it. */
   if (!data->top_dialog)
@@ -2860,6 +2965,11 @@ gboolean on_buttonpress (GtkWidget *win,
   ScreenatorData *data = (ScreenatorData *) user_data;
   gdouble pressure = 1;
 
+  /* A dialog is modal: clicks outside it must not paint on the annotation
+   * window that is visible behind it. */
+  if (data->top_dialog)
+    return TRUE;
+
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
 
@@ -4359,6 +4469,9 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
   gint64 now;
   gboolean down;
   gboolean bucket;
+
+  if (data->top_dialog)
+    return TRUE;
 
   if (!screenator_any_grabbed (data))
     return FALSE;

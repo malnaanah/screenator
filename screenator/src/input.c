@@ -726,6 +726,10 @@ gint snoop_key_press(GtkWidget   *grab_widget,
   ScreenatorData *data = (ScreenatorData *) func_data;
   GdkDevice *dev = gdk_event_get_device((GdkEvent*)event);
 
+  /* The keys belong to the dialog while one is open. */
+  if (data->top_dialog)
+    return FALSE;
+
   if (event->type == GDK_KEY_PRESS &&
       event->hardware_keycode == data->hot_keycode)
     {

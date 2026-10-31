@@ -404,6 +404,7 @@ typedef struct
    * last dialog closes (see show_dialog_above_drawings()). */
   GtkWidget   *top_dialog;
   gboolean     dialog_released_grab;  /* painting grab released for it */
+  gulong       dialog_prev_focus;     /* X focus before the first dialog */
 
   GdkCursor   *paint_cursor;
   GdkCursor   *erase_cursor;
