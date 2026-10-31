@@ -118,14 +118,17 @@ and you can keep using your applications while it is visible.
   such as Arabic extends to the left of the click position. A placed text stays editable: drag it to move it, drag
   a corner handle to change the font size and its round handle to rotate it.
 - The same menu is shown by the system tray icon.
-- A small settings indicator sits to the left of the floating icon. It is a
-  rectangle as tall as the icon, divided into three equal-height pieces that
-  are centred horizontally: the upper piece is the line thickness in the line
-  colour, the middle piece is 24 pixels of the line colour and the lower piece
-  is 24 pixels of the shape fill colour (a black and white checkerboard when
-  shapes are not filled). Each piece is surrounded by a one pixel black
-  outline. "Show Settings Indicator" in the menu turns it off and on; it is on
-  by default and is disabled while the floating icon is hidden.
+- The settings indicator is a ring around the floating icon's circle. The
+  inner white ring is divided into seven equal sectors, one for each line
+  thickness (1, 2, 3, 6, 12, 24 and 48 pixels), each with a one pixel black
+  stroke. Starting at angle 0 and going counter clockwise, the sectors up to
+  and including the selected thickness are filled light orange. The outer six
+  pixel ring has the line colour in its upper half and the shape fill colour
+  in its lower half; when shapes are not filled, the lower half shows twelve black
+  and white radial stripes. Both halves have a one pixel black stroke. Left or
+  right click on the ring opens the same menu as the floating icon. "Show
+  Settings Indicator" in the menu turns it off and on; it is on by default and
+  is disabled while the floating icon is hidden.
 - Dialogs and message boxes, such as the Math Function dialog and the tool
   hints, are shown above the drawings and the screen paper, so both stay
   visible behind them; each dialog is raised as it opens, which also works in
@@ -178,8 +181,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_3.3_amd64.deb`
-- `Screenator-3.3-x86_64.AppImage`
+- `screenator_3.4_amd64.deb`
+- `Screenator-3.4-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

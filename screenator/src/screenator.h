@@ -474,6 +474,8 @@ typedef struct
   GdkDevice   *text_device;
   gint         text_x;
   gint         text_y;
+  gint         text_editor_x;   /* requested editor window position */
+  gint         text_editor_y;
   gboolean     text_pressed;
   gboolean     text_editor_active;
   gboolean     text_editor_positioned; /* the editor window has been placed */

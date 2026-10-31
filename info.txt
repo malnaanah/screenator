@@ -1,4 +1,4 @@
-Screenator 3.3
+Screenator 3.4
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 3.3 (amd64)
-  - Screenator-3.3-x86_64.AppImage
+  - screenator 3.4 (amd64)
+  - Screenator-3.4-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_3.3_amd64.deb
-                          Screenator-3.3-x86_64.AppImage
+                          screenator_3.4_amd64.deb
+                          Screenator-3.4-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -125,14 +125,17 @@ Features:
     the font size and drag its round handle to rotate it.
   - A small draggable floating icon.  Left or right click opens the menu.  The
     icon switches to its active (red) variant while a painting mode is on.
-  - A small settings indicator sits to the left of the floating icon.  It is a
-    rectangle as tall as the icon, divided into three equal-height pieces that
-    are centred horizontally: the upper piece is the line thickness in the line
-    colour, the middle piece is 24 pixels of the line colour and the lower
-    piece is 24 pixels of the shape fill colour (a black and white checkerboard
-    when shapes are not filled).  Each piece is surrounded by a one pixel black
-    outline.  "Show Settings Indicator" in the menu turns it off and on; it is
-    on by default and is disabled while the floating icon is hidden.
+  - The settings indicator is a ring around the floating icon's circle.  The
+    inner white ring is divided into seven equal sectors, one for each line
+    thickness (1, 2, 3, 6, 12, 24 and 48 pixels), each with a one pixel black
+    stroke.  Starting at angle 0 and going counter clockwise, the sectors up
+    to and including the selected thickness are filled light orange.  The outer
+    six pixel ring has the line colour in its upper half and the shape fill
+    colour in its lower half; when shapes are not filled, the lower half shows twelve
+    black and white radial stripes.  Both halves have a one pixel black
+    stroke.  Left or right click on the ring opens the same menu as the
+    floating icon.  "Show Settings Indicator" in the menu turns it off and on;
+    it is on by default and is disabled while the floating icon is hidden.
   - The same menu is available from the system tray icon.
   - Dialogs and message boxes, such as the Math Function dialog and the tool
     hints, are shown above the drawings and the screen paper, so both stay
@@ -195,7 +198,7 @@ Configuration:
 Differences from Gromit-MPX 1.4.2:
   - The application, files, identifiers, configuration paths, desktop entry,
     icons and X11 selection atoms were renamed to Screenator, and the version
-    was changed to 3.3.
+    was changed to 3.4.
   - Unused code was removed: the introduction assistant, the support/donation
     handlers, Toggle Painting-all, Thicker/Thinner lines, the line_thickener
     pressure offset, and their prototypes, keys and configuration entries.
@@ -287,9 +290,10 @@ Differences from Gromit-MPX 1.4.2:
     writing.  The paper is drawn below the annotations and above the other
     windows, stays when the screen is cleared and is saved with the other menu
     settings.
-  - A small settings indicator to the left of the floating icon shows the line
-    colour, thickness and opacity and the shape fill colour.  It is on by
-    default and can be turned off with "Show Settings Indicator".
+  - A settings ring around the floating icon shows the line thickness as
+    light orange sectors, the line colour in its upper half and the shape fill
+    colour in its lower half.  It is on by default and can be turned off with
+    "Show Settings Indicator".
 
 Build:
   cd screenator

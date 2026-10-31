@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="3.4" date="2026-11-01">
+      <description>
+        <p>Redesigns the settings indicator as a ring around the floating icon. The inner white ring is divided into seven sectors, one for each line thickness, and the sectors up to the selected thickness are filled light orange; every sector has a one pixel black stroke. The outer six pixel ring shows the line colour in its upper half and the shape fill colour in its lower half, or twelve black and white radial stripes when shapes are not filled. Left or right clicking the ring opens the same menu as the floating icon. The first text caret is now drawn at the centred editor position from the first frame, so it no longer leaves a static line below the blinking caret.</p>
+      </description>
+    </release>
     <release version="3.3" date="2026-10-31">
       <description>
         <p>Adds shortcuts that work while a screen paper is active: Ctrl+Z and Ctrl+Shift+Z undo and redo, Alt+F4 quits, Ctrl+F shows or hides the floating icon and Ctrl+T shows or hides the drawings. A one-time message explains them when a paper is turned on and can be switched off with "Never show this message again". Ctrl+T and Toggle Visibility now keep the paper visible and hide only the drawings, and the message is only shown when switching from None to a paper. Math plots are scaled to the curve's real minimum and maximum, so positive functions and delta spikes fill the frame and the bottom of the graph sits on the bottom handles. The first text caret no longer appears in the top-left corner before the text editor is placed.</p>

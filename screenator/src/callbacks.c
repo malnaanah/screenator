@@ -673,7 +673,6 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
 {
   GtkAllocation allocation;
   gint layout_x = 0, layout_y = 0;
-  GdkWindow *window;
 
   *x = data->text_x;
   *y = data->text_y;
@@ -684,32 +683,13 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
   gtk_widget_get_allocation (data->text_entry, &allocation);
   gtk_entry_get_layout_offsets (GTK_ENTRY (data->text_entry),
 				&layout_x, &layout_y);
-  window = gtk_widget_get_window (data->text_entry);
-
-  /* Before the editor is placed the entry's window still reports (0, 0),
-   * which would draw the first caret at the top-left corner.  Use the click
-   * position until the window is really on screen. */
-  if (window && data->text_editor_positioned &&
-      gtk_widget_get_mapped (data->text_entry))
+  /* Use the position the editor was asked to take, not the window manager's
+   * current position: the latter lags behind, so the first caret was drawn at
+   * the click and left a static line below the centred one. */
+  if (data->text_editor_positioned)
     {
-      gint root_x = 0, root_y = 0;
-
-      gdk_window_get_root_coords (window,
-				  allocation.x + layout_x,
-				  allocation.y + layout_y,
-				  &root_x, &root_y);
-
-      if (root_x == 0 && root_y == 0 &&
-	  (data->text_x > 1 || data->text_y > 1))
-	{
-	  *x = data->text_x;
-	  *y = data->text_y;
-	}
-      else
-	{
-	  *x = root_x;
-	  *y = root_y;
-	}
+      *x = data->text_editor_x + allocation.x + layout_x;
+      *y = data->text_editor_y + allocation.y + layout_y;
     }
   else
     {
@@ -1022,6 +1002,23 @@ text_editor_line_height (ScreenatorData *data)
   return height;
 }
 
+/* Repaint the area around the click, clearing any caret that was drawn
+ * before the editor reached its final position. */
+static void
+invalidate_text_area (ScreenatorData *data, gint x, gint y)
+{
+  GdkRectangle area;
+
+  if (!data->win || !gtk_widget_get_window (data->win))
+    return;
+
+  area.x = MAX (0, x - 20);
+  area.y = MAX (0, y - 80);
+  area.width = 340;
+  area.height = 180;
+  gdk_window_invalidate_rect (gtk_widget_get_window (data->win), &area, 0);
+}
+
 /* Place the small empty editor at the press position.  The entry keeps a
  * little padding and centres the text vertically, so offset the window by the
  * layout inset instead of putting its corner on the pointer.  The width is
@@ -1055,6 +1052,8 @@ position_text_editor (ScreenatorData *data)
   if (y < 0)
     y = 0;
 
+  data->text_editor_x = x;
+  data->text_editor_y = y;
   gtk_window_move (GTK_WINDOW (data->text_editor), x, y);
   data->text_editor_positioned = TRUE;
 
@@ -1186,6 +1185,7 @@ static void
 close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 {
   GtkWidget *editor = data->text_editor;
+
   GtkWidget *entry = data->text_entry;
   GdkDevice *device = data->text_device;
   gchar *text = NULL;
@@ -1237,6 +1237,7 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 				    &x, &y);
     }
 
+  invalidate_text_area (data, x, y);
   gtk_widget_destroy (editor);
 
   /* The editor area no longer has to stay visible on the annotation window. */
@@ -1351,6 +1352,8 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   data->text_device = device;
   data->text_x = x;
   data->text_y = y;
+  data->text_editor_x = x;
+  data->text_editor_y = y;
   data->text_editor_active = FALSE;
   data->text_editor_positioned = FALSE;
   data->text_editor_sized = FALSE;
@@ -1360,10 +1363,14 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 
   /* The caret is drawn on the annotation window and blinks like a normal
    * text cursor. */
-  data->text_caret_visible = TRUE;
+  /* The caret is shown only after the editor has been positioned, so an
+   * early expose cannot leave a stale non-blinking caret at the click. */
+  data->text_caret_visible = FALSE;
   if (data->text_caret_timeout)
-    g_source_remove (data->text_caret_timeout);
-  data->text_caret_timeout = g_timeout_add (500, text_caret_blink, data);
+    {
+      g_source_remove (data->text_caret_timeout);
+      data->text_caret_timeout = 0;
+    }
 
   editor = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   gtk_window_set_decorated (GTK_WINDOW (editor), FALSE);
@@ -1459,6 +1466,11 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 
   gtk_widget_grab_focus (entry);
   gtk_window_present (GTK_WINDOW (editor));
+
+  invalidate_text_area (data, x, y);
+
+  data->text_caret_visible = TRUE;
+  data->text_caret_timeout = g_timeout_add (500, text_caret_blink, data);
 
   /* Draw the caret right away, before the first blink. */
   {
@@ -4344,6 +4356,39 @@ static GdkPixbuf *load_icon_pixbuf (ScreenatorData *data, gboolean active)
   return pixbuf;
 }
 
+/* Without a compositor the icon window has no alpha channel, so shape it to
+ * the icon's circle.  That lets the settings ring show through the square
+ * corners and keeps clicks outside the circle away from the icon. */
+static void
+update_icon_shape (ScreenatorData *data)
+{
+  cairo_surface_t *surface;
+  cairo_region_t *region;
+  cairo_t *cr;
+  gint size;
+  gdouble radius;
+
+  if (!data->icon_win || data->composited)
+    return;
+
+  size = MAX (1, (gint) data->icon_size);
+  radius = MAX (1.0, size / 2.0 - 1.0);
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, size, size);
+  cr = cairo_create (surface);
+  cairo_arc (cr, size / 2.0, size / 2.0, radius, 0, 2.0 * G_PI);
+  cairo_set_source_rgba (cr, 1, 1, 1, 1);
+  cairo_fill (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (surface);
+
+  region = gdk_cairo_region_create_from_surface (surface);
+  gtk_widget_shape_combine_region (data->icon_win, region);
+  gtk_widget_input_shape_combine_region (data->icon_win, region);
+  cairo_region_destroy (region);
+  cairo_surface_destroy (surface);
+}
+
 void update_icon_image (ScreenatorData *data)
 {
   GdkPixbuf *pixbuf;
@@ -4356,6 +4401,8 @@ void update_icon_image (ScreenatorData *data)
 			     pixbuf ? pixbuf : NULL);
   if (pixbuf)
     g_object_unref (pixbuf);
+
+  update_icon_shape (data);
 }
 
 /* Colours offered by the Line Color menu; the mouse wheel cycles through them
@@ -5104,51 +5151,193 @@ static gboolean on_icon_draw (GtkWidget *widget,
  * indicator.  It is a separate popup window so it stays above the annotation
  * window together with the icon, and it lets clicks through to the screen
  * below. */
-#define SETTINGS_INDICATOR_GAP 6
-#define SETTINGS_INDICATOR_PIECE_WIDTH 24.0
+#define THICKNESS_RING_WIDTH 6.0
+#define OUTER_RING_WIDTH 6.0
+#define THICKNESS_SECTORS 7
 
-/* Region of the three pieces and their outlines, used to clip the window on
- * screens without a compositor so the gaps between the pieces stay
- * transparent instead of showing the window background. */
+static const guint thickness_values[THICKNESS_SECTORS] =
+  { 1, 2, 3, 6, 12, 24, 48 };
+
+static gint
+settings_indicator_size (ScreenatorData *data)
+{
+  return MAX (1, (gint) data->icon_size +
+	      2 * (gint) (THICKNESS_RING_WIDTH + OUTER_RING_WIDTH) + 4);
+}
+
+static gdouble
+settings_indicator_inner_radius (ScreenatorData *data)
+{
+  return MAX (1.0, data->icon_size / 2.0 - 2.0);
+}
+
+/* An annular sector.  ccw selects the direction from a0 to a1: the thickness
+ * sectors run counter clockwise from angle zero. */
+static void
+ring_sector_path (cairo_t *cr, gdouble cx, gdouble cy,
+		  gdouble r_in, gdouble r_out, gdouble a0, gdouble a1,
+		  gboolean ccw)
+{
+  cairo_new_path (cr);
+
+  if (ccw)
+    {
+      cairo_arc_negative (cr, cx, cy, r_out, a0, a1);
+      cairo_arc (cr, cx, cy, r_in, a1, a0);
+    }
+  else
+    {
+      cairo_arc (cr, cx, cy, r_out, a0, a1);
+      cairo_arc_negative (cr, cx, cy, r_in, a1, a0);
+    }
+
+  cairo_close_path (cr);
+}
+
+/* Fill one sector and give it a one pixel outline. */
+static void
+paint_ring_sector (cairo_t *cr, gdouble cx, gdouble cy,
+		   gdouble r_in, gdouble r_out, gdouble a0, gdouble a1,
+		   gboolean ccw, const GdkRGBA *color, gboolean mask)
+{
+  ring_sector_path (cr, cx, cy, r_in, r_out, a0, a1, ccw);
+
+  if (mask)
+    cairo_set_source_rgba (cr, 1, 1, 1, 1);
+  else
+    cairo_set_source_rgba (cr, color->red, color->green, color->blue,
+			   color->alpha ? color->alpha : 1.0);
+  cairo_fill_preserve (cr);
+
+  if (mask)
+    cairo_set_source_rgba (cr, 1, 1, 1, 1);
+  else
+    cairo_set_source_rgba (cr, 0, 0, 0, 1);
+  cairo_set_line_width (cr, 1.0);
+  cairo_stroke (cr);
+}
+
+/* Outline a sector without filling it. */
+static void
+stroke_ring_sector (cairo_t *cr, gdouble cx, gdouble cy,
+		    gdouble r_in, gdouble r_out, gdouble a0, gdouble a1,
+		    gboolean ccw, gboolean mask)
+{
+  ring_sector_path (cr, cx, cy, r_in, r_out, a0, a1, ccw);
+
+  if (mask)
+    cairo_set_source_rgba (cr, 1, 1, 1, 1);
+  else
+    cairo_set_source_rgba (cr, 0, 0, 0, 1);
+  cairo_set_line_width (cr, 1.0);
+  cairo_stroke (cr);
+}
+
+/* How many thickness sectors are yellow for the current line width.  The
+ * width is matched to the closest entry of the Line Thickness menu. */
+static guint
+thickness_sector_count (ScreenatorData *data)
+{
+  guint best = 0;
+  guint best_diff = ABS ((gint) data->pen_width -
+			 (gint) thickness_values[0]);
+  guint i;
+
+  for (i = 1; i < THICKNESS_SECTORS; i++)
+    {
+      guint diff = ABS ((gint) data->pen_width - (gint) thickness_values[i]);
+
+      if (diff < best_diff)
+	{
+	  best = i;
+	  best_diff = diff;
+	}
+    }
+
+  return best + 1;
+}
+
+/* Draw the indicator: a white thickness ring around the icon, made of one
+ * sector per menu thickness and filled with yellow up to the selected one,
+ * and an outer five pixel ring whose upper half is the line colour and whose
+ * lower half is the fill colour (or twelve black and white radial stripes).
+ * With mask TRUE everything is opaque white, so the same geometry can be used
+ * for the window shape and its input region. */
+static void
+draw_settings_indicator (ScreenatorData *data, cairo_t *cr,
+			 gdouble width, gdouble height, gboolean mask)
+{
+  /* Light orange (#FFB347) for the selected thickness sectors. */
+  static const GdkRGBA light_orange = { 1.0, 179.0 / 255.0, 71.0 / 255.0, 1.0 };
+  static const GdkRGBA white = { 1.0, 1.0, 1.0, 1.0 };
+  gdouble cx = width / 2.0;
+  gdouble cy = height / 2.0;
+  gdouble r0 = settings_indicator_inner_radius (data);
+  gdouble r1 = r0 + THICKNESS_RING_WIDTH;
+  gdouble r2 = r1 + OUTER_RING_WIDTH;
+  gdouble step = 2.0 * G_PI / THICKNESS_SECTORS;
+  guint filled = thickness_sector_count (data);
+  gint i;
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgba (cr, 0, 0, 0, 0);
+  cairo_paint (cr);
+  cairo_restore (cr);
+
+  /* Thickness ring: white sectors, yellow up to the selected thickness. */
+  for (i = 0; i < THICKNESS_SECTORS; i++)
+    {
+      gdouble a0 = -i * step;
+      gdouble a1 = -(i + 1) * step;
+
+      paint_ring_sector (cr, cx, cy, r0, r1, a0, a1, TRUE,
+			 (guint) i < filled ? &light_orange : &white, mask);
+    }
+
+  /* Outer ring, upper half: line colour. */
+  paint_ring_sector (cr, cx, cy, r1, r2, G_PI, 2.0 * G_PI, FALSE,
+		     &data->pen_color, mask);
+
+  /* Outer ring, lower half: fill colour or twelve stripes. */
+  if (mask || data->shape_fill_enabled)
+    paint_ring_sector (cr, cx, cy, r1, r2, 0.0, G_PI, FALSE,
+		       mask ? &white : &data->shape_fill_color, mask);
+  else
+    {
+      gdouble stripe = G_PI / 12.0;
+
+      for (i = 0; i < 12; i++)
+	{
+	  ring_sector_path (cr, cx, cy, r1, r2, i * stripe,
+			    (i + 1) * stripe, FALSE);
+	  if ((i & 1) == 0)
+	    cairo_set_source_rgba (cr, 1, 1, 1, 1);
+	  else
+	    cairo_set_source_rgba (cr, 0, 0, 0, 1);
+	  cairo_fill (cr);
+	}
+
+      stroke_ring_sector (cr, cx, cy, r1, r2, 0.0, G_PI, FALSE, FALSE);
+    }
+}
+
+/* The ring geometry as a region, used both for the input shape (only the ring
+ * catches clicks) and for the visual shape on screens without a compositor. */
 static cairo_region_t *
 settings_indicator_region (ScreenatorData *data, gint width, gint height)
 {
+  cairo_surface_t *surface;
+  cairo_t *cr;
   cairo_region_t *region;
-  cairo_rectangle_int_t rect;
-  gdouble body_x = 1.0;
-  gdouble body_y = 1.0;
-  gdouble body_width = MAX (width - 2.0, 1.0);
-  gdouble body_height = MAX (height - 2.0, 1.0);
-  gdouble piece_height = body_height / 3.0;
-  gdouble line_width = MIN ((gdouble) data->pen_width, body_width);
-  gdouble upper_x = body_x + (body_width - line_width) / 2.0;
-  gdouble middle_x =
-    body_x + (body_width - SETTINGS_INDICATOR_PIECE_WIDTH) / 2.0;
 
-  region = cairo_region_create ();
-
-  /* Upper piece and its one pixel outline. */
-  rect.x = (gint) floor (upper_x - 1.0);
-  rect.y = (gint) floor (body_y - 1.0);
-  rect.width = (gint) ceil (upper_x + line_width + 1.0) - rect.x;
-  rect.height = (gint) ceil (body_y + piece_height + 1.0) - rect.y;
-  cairo_region_union_rectangle (region, &rect);
-
-  /* Middle piece and its outline. */
-  rect.x = (gint) floor (middle_x - 1.0);
-  rect.y = (gint) floor (body_y + piece_height - 1.0);
-  rect.width = (gint) ceil (middle_x + SETTINGS_INDICATOR_PIECE_WIDTH + 1.0)
-	       - rect.x;
-  rect.height = (gint) ceil (body_y + 2.0 * piece_height + 1.0) - rect.y;
-  cairo_region_union_rectangle (region, &rect);
-
-  /* Lower piece and its outline. */
-  rect.x = (gint) floor (middle_x - 1.0);
-  rect.y = (gint) floor (body_y + 2.0 * piece_height - 1.0);
-  rect.width = (gint) ceil (middle_x + SETTINGS_INDICATOR_PIECE_WIDTH + 1.0)
-	       - rect.x;
-  rect.height = (gint) ceil (body_y + 3.0 * piece_height + 1.0) - rect.y;
-  cairo_region_union_rectangle (region, &rect);
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, width, height);
+  cr = cairo_create (surface);
+  draw_settings_indicator (data, cr, width, height, TRUE);
+  cairo_destroy (cr);
+  cairo_surface_flush (surface);
+  region = gdk_cairo_region_create_from_surface (surface);
+  cairo_surface_destroy (surface);
 
   return region;
 }
@@ -5156,22 +5345,15 @@ settings_indicator_region (ScreenatorData *data, gint width, gint height)
 static void
 position_settings_indicator (ScreenatorData *data)
 {
-  gint icon_x, icon_y, x, y;
+  gint icon_x, icon_y, size, x, y;
 
   if (!data->settings_win || !data->icon_win)
     return;
 
   gtk_window_get_position (GTK_WINDOW (data->icon_win), &icon_x, &icon_y);
-  /* The window includes the one pixel outline on each side; the body is at
-   * least as wide as the middle and lower pieces. */
-  x = icon_x - SETTINGS_INDICATOR_GAP
-      - MAX ((gint) data->pen_width, (gint) SETTINGS_INDICATOR_PIECE_WIDTH) - 1;
-  y = icon_y - 1;
-
-  if (x < 0)
-    x = 0;
-  if (y < 0)
-    y = 0;
+  size = settings_indicator_size (data);
+  x = icon_x + (gint) data->icon_size / 2 - size / 2;
+  y = icon_y + (gint) data->icon_size / 2 - size / 2;
 
   gtk_window_move (GTK_WINDOW (data->settings_win), x, y);
 }
@@ -5180,99 +5362,10 @@ static gboolean
 on_settings_indicator_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  gdouble width = gtk_widget_get_allocated_width (widget);
-  gdouble height = gtk_widget_get_allocated_height (widget);
-  /* The coloured body is inset by the one pixel outline on each side. */
-  gdouble body_x = 1.0;
-  gdouble body_y = 1.0;
-  gdouble body_width = MAX (width - 2.0, 1.0);
-  gdouble body_height = MAX (height - 2.0, 1.0);
-  gdouble piece_height = body_height / 3.0;
-  gdouble line_width = MIN ((gdouble) data->pen_width, body_width);
-  gdouble middle_x =
-    body_x + (body_width - SETTINGS_INDICATOR_PIECE_WIDTH) / 2.0;
-  /* Without a compositor the window has no alpha channel, so the colours are
-   * drawn opaque instead of pretending an opacity that cannot be shown. */
-  gdouble alpha = data->composited ? CLAMP (data->opacity, 0.0, 1.0) : 1.0;
 
-  cairo_save (cr);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_set_source_rgba (cr, 0, 0, 0, 0);
-  cairo_paint (cr);
-  cairo_restore (cr);
-
-  /* Upper piece: the current line width, in the line colour. */
-  cairo_save (cr);
-  cairo_rectangle (cr, body_x + (body_width - line_width) / 2.0, body_y,
-		   line_width, piece_height);
-  cairo_set_source_rgba (cr, data->pen_color.red, data->pen_color.green,
-			 data->pen_color.blue, alpha);
-  cairo_fill (cr);
-  cairo_restore (cr);
-
-  /* Middle piece: 24 pixels of the line colour. */
-  cairo_save (cr);
-  cairo_rectangle (cr, middle_x, body_y + piece_height,
-		   SETTINGS_INDICATOR_PIECE_WIDTH, piece_height);
-  cairo_set_source_rgba (cr, data->pen_color.red, data->pen_color.green,
-			 data->pen_color.blue, alpha);
-  cairo_fill (cr);
-  cairo_restore (cr);
-
-  /* Lower piece: 24 pixels of the shape fill colour, or a black and white
-   * checkerboard when shapes are not filled. */
-  cairo_save (cr);
-  cairo_rectangle (cr, middle_x, body_y + 2.0 * piece_height,
-		   SETTINGS_INDICATOR_PIECE_WIDTH, piece_height);
-  cairo_clip (cr);
-
-  if (data->shape_fill_enabled)
-    {
-      cairo_set_source_rgba (cr, data->shape_fill_color.red,
-			     data->shape_fill_color.green,
-			     data->shape_fill_color.blue, alpha);
-      cairo_paint (cr);
-    }
-  else
-    {
-      gint i, j;
-
-      /* Six pixels wide and four pixels high checks. */
-      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 1.0);
-      cairo_paint (cr);
-
-      cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 1.0);
-      for (j = 0; j * 4 < piece_height; j++)
-	for (i = 0; i * 6 < SETTINGS_INDICATOR_PIECE_WIDTH; i++)
-	  if (((i + j) & 1) == 0)
-	    {
-	      cairo_rectangle (cr, middle_x + i * 6,
-			       body_y + 2.0 * piece_height + j * 4, 6.0, 4.0);
-	      cairo_fill (cr);
-	    }
-    }
-  cairo_restore (cr);
-
-  /* A one pixel black outline around each piece individually, always opaque.
-   * The stroke lies outside the piece. */
-  cairo_save (cr);
-  cairo_set_source_rgba (cr, 0, 0, 0, 1.0);
-  cairo_set_line_width (cr, 1.0);
-
-  cairo_rectangle (cr, body_x + (body_width - line_width) / 2.0 - 0.5,
-		   body_y - 0.5, line_width + 1.0, piece_height + 1.0);
-  cairo_stroke (cr);
-
-  cairo_rectangle (cr, middle_x - 0.5, body_y + piece_height - 0.5,
-		   SETTINGS_INDICATOR_PIECE_WIDTH + 1.0, piece_height + 1.0);
-  cairo_stroke (cr);
-
-  cairo_rectangle (cr, middle_x - 0.5, body_y + 2.0 * piece_height - 0.5,
-		   SETTINGS_INDICATOR_PIECE_WIDTH + 1.0, piece_height + 1.0);
-  cairo_stroke (cr);
-
-  cairo_restore (cr);
-
+  draw_settings_indicator (data, cr,
+			   gtk_widget_get_allocated_width (widget),
+			   gtk_widget_get_allocated_height (widget), FALSE);
   return FALSE;
 }
 
@@ -5292,7 +5385,8 @@ raise_settings_indicator (ScreenatorData *data)
 void
 update_settings_indicator (ScreenatorData *data)
 {
-  gint width, height;
+  gint size;
+  cairo_region_t *region;
 
   if (!data->settings_win)
     return;
@@ -5304,22 +5398,19 @@ update_settings_indicator (ScreenatorData *data)
       return;
     }
 
-  /* The body is as wide as the widest piece, plus the one pixel outline on
-   * each side. */
-  width = MAX ((gint) data->pen_width, (gint) SETTINGS_INDICATOR_PIECE_WIDTH) + 2;
-  height = MAX (1, (gint) data->icon_size) + 2;
+  size = settings_indicator_size (data);
 
-  gtk_widget_set_size_request (data->settings_win, width, height);
-  gtk_window_resize (GTK_WINDOW (data->settings_win), width, height);
+  gtk_widget_set_size_request (data->settings_win, size, size);
+  gtk_window_resize (GTK_WINDOW (data->settings_win), size, size);
 
+  region = settings_indicator_region (data, size, size);
+
+  /* Only the ring itself catches clicks, so the transparent corners and the
+   * area around the icon stay clickable. */
+  gtk_widget_input_shape_combine_region (data->settings_win, region);
   if (!data->composited)
-    {
-      cairo_region_t *region =
-	settings_indicator_region (data, width, height);
-
-      gtk_widget_shape_combine_region (data->settings_win, region);
-      cairo_region_destroy (region);
-    }
+    gtk_widget_shape_combine_region (data->settings_win, region);
+  cairo_region_destroy (region);
 
   position_settings_indicator (data);
 
@@ -5330,12 +5421,23 @@ update_settings_indicator (ScreenatorData *data)
   raise_settings_indicator (data);
 }
 
-/* The indicator is display-only: swallow its input so clicks and scrolling
- * do not reach the desktop or the application below it. */
+/* Left and right clicks on the ring open the same menu as the floating icon.
+ * Other buttons and scrolling are only swallowed, so they do not reach the
+ * desktop or the application below. */
 static gboolean
 on_settings_indicator_button (GtkWidget *widget, GdkEventButton *event,
 			      gpointer user_data)
 {
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (event->type == GDK_BUTTON_RELEASE &&
+      (event->button == 1 || event->button == 3))
+    {
+      icon_cancel_menu_retry (data);
+      icon_ungrab_pointer (data);
+      popup_icon_menu (data);
+    }
+
   return TRUE;
 }
 
@@ -5455,6 +5557,7 @@ void create_icon_window (ScreenatorData *data)
   data->icon_menu_y = -1;
 
   gtk_widget_show_all (data->icon_win);
+  update_icon_shape (data);
 
   /* place at the top-right corner of the screen (icon is data->icon_size) */
   {
@@ -5469,7 +5572,7 @@ void create_icon_window (ScreenatorData *data)
    * it, otherwise the annotation window takes the clicks for the icon. */
   raise_icon_window (data);
 
-  /* The settings indicator sits to the left of the icon. */
+  /* The settings indicator is a ring around the icon. */
   create_settings_indicator (data);
 
   /* A hidden floating menu stays hidden after a restart. */
