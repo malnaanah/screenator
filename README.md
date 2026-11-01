@@ -13,6 +13,10 @@ settings menu.
 
 
 
+https://github.com/user-attachments/assets/986f2411-aed7-4aba-a2bb-5e0d23b65a8b
+
+
+
 ## Layout
 
 | Path | Contents |
