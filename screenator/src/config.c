@@ -781,6 +781,11 @@ void read_keyfile(ScreenatorData *data)
 	data->hide_paper_hint =
 	    g_key_file_get_boolean (key_file, "Drawing", "HidePaperHint", NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing", "HideStylusHint", NULL))
+	data->hide_stylus_hint =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideStylusHint",
+				    NULL);
+
     if (g_key_file_has_key (key_file, "Drawing", "ShowSettingsIndicator", NULL))
 	data->show_settings_indicator =
 	    g_key_file_get_boolean (key_file, "Drawing",
@@ -898,6 +903,8 @@ void write_keyfile(ScreenatorData *data)
 			    data->hide_text_hint);
     g_key_file_set_boolean (key_file, "Drawing", "HidePaperHint",
 			    data->hide_paper_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HideStylusHint",
+			    data->hide_stylus_hint);
     g_key_file_set_boolean (key_file, "Drawing", "ShowSettingsIndicator",
 			    data->show_settings_indicator);
     g_key_file_set_boolean (key_file, "Drawing", "ShowFloatingIcon",

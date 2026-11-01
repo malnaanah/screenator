@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="5.0" date="2026-11-02">
+      <description>
+        <p>Adds full stylus support. The tip draws like the left mouse button with pressure ignored, the first side button offers Eraser, Color and Thickness modes, a short click of the second side button acts like Escape/right click, and a long press opens the Button 1 Mode menu. A help message appears once when a stylus is detected. Line Thickness now includes 4 px and 5 px, and the settings indicator has nine thickness sectors. Includes the changes since 4.0: the Random Signal tool, Parallel Lines arrowheads, the Arrow tool heads handle, undoable Clear Screen, and Escape finishing or exiting the current tool.</p>
+      </description>
+    </release>
     <release version="4.2" date="2026-11-01">
       <description>
         <p>Adds a heads handle to the Arrow tool: press it to reset the arrowheads to none, then drag in any direction to cycle start, end and both. New arrows still default to the traditional single head at the end. Clearing the screen can now be undone from the Undo menu, and Redo clears it again.</p>

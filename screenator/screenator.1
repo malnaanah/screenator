@@ -19,8 +19,8 @@ thickness, eraser size, opacity, shape fill, text font and floating icon
 size). The same menu is available from the system tray icon.
 .br
 The settings indicator is a ring around the floating icon. The inner white
-ring is divided into seven equal sectors, one for each line thickness (1, 2,
-3, 6, 12, 24 and 48 pixels), each with a one pixel black stroke. Starting at
+ring is divided into nine equal sectors, one for each line thickness (1, 2,
+3, 4, 5, 6, 12, 24 and 48 pixels), each with a one pixel black stroke. Starting at
 angle 0 and going counter clockwise, the sectors up to and including the
 selected thickness are filled magenta. The outer six pixel ring has the
 line colour in its upper half and the shape fill colour in its lower half; when
@@ -216,6 +216,19 @@ shortcuts also undo and redo. While painting mode is active, pressing
 exits the current tool, just like right-clicking outside a shape. The keys are
 only grabbed while painting, so they keep their normal meaning in other
 applications.
+.SH STYLUS
+The stylus tip draws like the left mouse button, using the selected line
+width; pen pressure is ignored so it draws exactly like the mouse. The first
+side button has three modes. Eraser is the default and erases while it is held, even when the
+pen is hovering above the tablet. In Color mode a tap changes the line colour
+(or the fill colour over the Paint Bucket), and holding the button while
+moving the pen up or down gives further colour steps. In Thickness mode the
+same tap or drag steps through the line thicknesses. A short click of the
+second side button acts like Escape/right click, finishing the shape being
+edited and keeping the tool active, or leaving painting mode when no shape is
+being edited. A long press opens the stylus menu with the "Button 1 Mode"
+section (Eraser, Color, Thickness). A short help message appears once when a
+stylus is detected; its "Never show this message again" option is remembered.
 .SH OPTIONS (STARTUP)
 A short summary of the available command line arguments for starting Screenator;
 see below for the options to control an already running Screenator process:

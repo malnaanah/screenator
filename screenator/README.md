@@ -23,7 +23,7 @@ and you can keep using your applications while it is visible.
 - Marker draws a translucent yellow highlighter stroke at 50% opacity with a
   fixed 32 px width. It has its own settings and switching to it does not
   change the line colour, thickness or opacity used by the other tools.
-- Line Thickness offers 1, 2, 3, 6, 12, 24 and 48 pixels; the menu marks the
+- Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
 - While painting mode is active, the mouse wheel steps through the line colours
   (including the custom colour); with the Paint Bucket tool it steps through
@@ -135,8 +135,8 @@ and you can keep using your applications while it is visible.
   a corner handle to change the font size and its round handle to rotate it.
 - The same menu is shown by the system tray icon.
 - The settings indicator is a ring around the floating icon's circle. The
-  inner white ring is divided into seven equal sectors, one for each line
-  thickness (1, 2, 3, 6, 12, 24 and 48 pixels), each with a one pixel black
+  inner white ring is divided into nine equal sectors, one for each line
+  thickness (1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels), each with a one pixel black
   stroke. Starting at angle 0 and going counter clockwise, the sectors up to
   and including the selected thickness are filled magenta. The outer six
   pixel ring has the line colour in its upper half and the shape fill colour
@@ -180,6 +180,19 @@ and you can keep using your applications while it is visible.
   is active, `Ctrl+Z` also undoes and `Ctrl+Shift+Z` redoes, even with Caps
   Lock or Num Lock on, and `Esc` exits the current tool like a right click
   outside a shape.
+- Stylus: the tip draws like the left mouse button, using the selected line
+  width; pen pressure is ignored so it behaves exactly like the mouse. The
+  first side button has three modes, chosen from the stylus menu. **Eraser** (the default) erases
+  while held, even when the pen is hovering above the tablet. In **Color** mode
+  a tap changes the line colour (or the fill colour over the Paint Bucket), and
+  holding the button while moving the pen up or down gives further colour
+  steps. In **Thickness** mode the same tap/drag steps through the line
+  thicknesses. The second side button acts like Escape/right click on a short
+  click, finishing the shape being edited and keeping the tool active, or
+  leaving painting mode when no shape is being edited. A long press opens the
+  stylus menu with the **Button 1 Mode** section (Eraser, Color, Thickness).
+  A short help message appears once when a stylus is detected; its "Never show
+  this message again" option is remembered.
 
 ## Build
 
@@ -199,8 +212,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_4.2_amd64.deb`
-- `Screenator-4.2-x86_64.AppImage`
+- `screenator_5.0_amd64.deb`
+- `Screenator-5.0-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

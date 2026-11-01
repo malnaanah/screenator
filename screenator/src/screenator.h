@@ -106,6 +106,15 @@ typedef enum
   SCREENATOR_PAPER_GRAPH
 } ScreenatorPaperType;
 
+/* What the first stylus side button does.  The second side button opens the
+ * stylus menu. */
+typedef enum
+{
+  SCREENATOR_STYLUS_ERASER = 0,
+  SCREENATOR_STYLUS_COLOR,
+  SCREENATOR_STYLUS_THICKNESS
+} ScreenatorStylusMode;
+
 /* One entry for every tool hint, so "Never show this message again" applies to
  * that tool only.  The order matches the names in config.c. */
 typedef enum
@@ -395,6 +404,15 @@ typedef struct
   gdouble               frame_press_distance;
   guint                 frame_seed;
 
+  /* State of the current stylus side-button action.  The tip is button 1, the
+   * first side button is button 2 (eraser or scroll) and the second side
+   * button is button 3 (opens the stylus menu). */
+  gboolean             stylus_eraser_active;
+  gboolean             stylus_menu_button_down;
+  gboolean             stylus_scroll_active;
+  gboolean             stylus_scroll_moved;
+  gint                 stylus_scroll_last_y;
+
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
   gboolean         smooth_active;
@@ -408,6 +426,15 @@ typedef struct
 typedef struct
 {
   GtkWidget   *win;
+  GtkWidget   *stylus_menu;
+  ScreenatorStylusMode stylus_mode;
+  gboolean     hide_stylus_hint;
+  gboolean     stylus_hint_shown;
+  guint        stylus_hint_id;
+  guint        stylus_hold_id;
+  ScreenatorDeviceData *stylus_hold_devdata;
+  gint         stylus_hold_x;
+  gint         stylus_hold_y;
   AppIndicator *trayicon;
 
   /* Movable on-screen icon window */
@@ -590,6 +617,7 @@ void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);
 void parse_print_help (gpointer key, gpointer value, gpointer user_data);
 
 void select_tool (ScreenatorData *data, GdkDevice *device, GdkDevice *slave_device, guint state);
+void schedule_stylus_hint (ScreenatorData *data);
 gboolean screenator_exit_tool (ScreenatorData *data);
 
 void apply_pen_settings (ScreenatorData *data);

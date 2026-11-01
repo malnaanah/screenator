@@ -287,6 +287,13 @@ static void icon_cancel_menu_retry (ScreenatorData *data);
 static gboolean on_icon_grab_broken (GtkWidget *widget,
 				     GdkEventGrabBroken *event,
 				     gpointer user_data);
+static gboolean event_source_is_stylus (const GdkEvent *event);
+static void apply_scroll_step (ScreenatorData *data, gboolean down,
+			       gboolean colors_only);
+static void apply_stylus_step (ScreenatorData *data, gboolean down);
+static void show_stylus_menu (ScreenatorData *data,
+			      ScreenatorDeviceData *devdata,
+			      gint x, gint y);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -3394,6 +3401,187 @@ screenator_exit_tool (ScreenatorData *data)
   return handled;
 }
 
+/* TRUE when the event comes from a pen or the eraser end of a pen rather
+ * than a mouse or touchpad. */
+static gboolean
+event_source_is_stylus (const GdkEvent *event)
+{
+  GdkDevice *source = gdk_event_get_source_device (event);
+  GdkInputSource input_source;
+
+  if (!source)
+    return FALSE;
+
+  input_source = gdk_device_get_source (source);
+  return input_source == GDK_SOURCE_PEN ||
+	 input_source == GDK_SOURCE_ERASER;
+}
+
+typedef struct
+{
+  ScreenatorData       *data;
+  ScreenatorDeviceData *devdata;
+  gboolean              was_grabbed;
+} StylusMenu;
+
+static void
+stylus_menu_eraser (GtkMenuItem *item, gpointer user_data)
+{
+  ((StylusMenu *) user_data)->data->stylus_mode =
+    SCREENATOR_STYLUS_ERASER;
+}
+
+static void
+stylus_menu_color (GtkMenuItem *item, gpointer user_data)
+{
+  ((StylusMenu *) user_data)->data->stylus_mode =
+    SCREENATOR_STYLUS_COLOR;
+}
+
+static void
+stylus_menu_thickness (GtkMenuItem *item, gpointer user_data)
+{
+  ((StylusMenu *) user_data)->data->stylus_mode =
+    SCREENATOR_STYLUS_THICKNESS;
+}
+
+/* A bold, non-selectable heading for a section of the stylus menu. */
+static GtkWidget *
+stylus_menu_heading (const gchar *text)
+{
+  GtkWidget *item = gtk_menu_item_new_with_label (text);
+  GtkWidget *label = gtk_bin_get_child (GTK_BIN (item));
+  gchar *markup = g_markup_printf_escaped ("<b>%s</b>", text);
+
+  if (label)
+    gtk_label_set_markup (GTK_LABEL (label), markup);
+  g_free (markup);
+  gtk_widget_set_sensitive (item, FALSE);
+  return item;
+}
+
+static void
+stylus_menu_done (GtkMenuShell *menu, gpointer user_data)
+{
+  StylusMenu *ctx = user_data;
+
+  if (ctx->data->stylus_menu == GTK_WIDGET (menu))
+    ctx->data->stylus_menu = NULL;
+
+  if (ctx->devdata)
+    ctx->devdata->stylus_menu_button_down = FALSE;
+
+  /* The menu only selects a Button 1 Mode, so painting always resumes. */
+  if (ctx->was_grabbed)
+    acquire_grab (ctx->data, NULL);
+
+  g_free (ctx);
+}
+
+/* Show the stylus side-button menu at the pen position.  The painting grab is
+ * released while the menu is open so the menu can take the pointer and
+ * keyboard, and it is taken back when the menu closes. */
+static void
+show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  gint x, gint y)
+{
+  StylusMenu *ctx;
+  GtkWidget *menu, *mode_heading, *eraser, *color, *thickness;
+  GdkWindow *root;
+  GdkRectangle rect;
+  gboolean was_grabbed;
+
+  if (data->stylus_menu)
+    return;
+
+  /* A side-button action may still be in progress when the menu opens. */
+  devdata->stylus_eraser_active = FALSE;
+  devdata->stylus_menu_button_down = FALSE;
+  devdata->stylus_scroll_active = FALSE;
+  devdata->stylus_scroll_moved = FALSE;
+
+  was_grabbed = screenator_any_grabbed (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  ctx = g_new0 (StylusMenu, 1);
+  ctx->data = data;
+  ctx->devdata = devdata;
+  ctx->was_grabbed = was_grabbed;
+
+  menu = gtk_menu_new ();
+  mode_heading = stylus_menu_heading ("Button 1 Mode");
+  eraser = gtk_radio_menu_item_new_with_label (NULL, "Eraser");
+  color = gtk_radio_menu_item_new_with_label_from_widget (
+    GTK_RADIO_MENU_ITEM (eraser), "Color");
+  thickness = gtk_radio_menu_item_new_with_label_from_widget (
+    GTK_RADIO_MENU_ITEM (eraser), "Thickness");
+
+  if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (thickness), TRUE);
+  else if (data->stylus_mode == SCREENATOR_STYLUS_COLOR)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
+  else
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (eraser), TRUE);
+
+  g_signal_connect (eraser, "activate",
+		    G_CALLBACK (stylus_menu_eraser), ctx);
+  g_signal_connect (color, "activate",
+		    G_CALLBACK (stylus_menu_color), ctx);
+  g_signal_connect (thickness, "activate",
+		    G_CALLBACK (stylus_menu_thickness), ctx);
+
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), mode_heading);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), eraser);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), color);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), thickness);
+  gtk_widget_show_all (menu);
+
+  data->stylus_menu = menu;
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (stylus_menu_done), ctx);
+
+  root = gdk_screen_get_root_window (gdk_screen_get_default ());
+  rect.x = x;
+  rect.y = y;
+  rect.width = 1;
+  rect.height = 1;
+  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
+			  GDK_GRAVITY_NORTH_WEST,
+			  GDK_GRAVITY_NORTH_WEST, NULL);
+
+  /* GTK's menu popup can silently fail when another application holds the
+   * keyboard grab.  Recover instead of leaving painting mode released. */
+  if (!gtk_widget_get_visible (menu))
+    {
+      data->stylus_menu = NULL;
+      g_signal_handlers_disconnect_by_data (menu, ctx);
+      gtk_widget_destroy (menu);
+      if (was_grabbed)
+	acquire_grab (data, NULL);
+      g_free (ctx);
+    }
+}
+
+/* A long press on the second side button opens the menu; a short click on the
+ * release performs Escape instead. */
+#define STYLUS_MENU_HOLD_MS 500
+
+static gboolean
+stylus_menu_hold_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  ScreenatorDeviceData *devdata = data->stylus_hold_devdata;
+
+  data->stylus_hold_id = 0;
+  data->stylus_hold_devdata = NULL;
+
+  if (devdata)
+    show_stylus_menu (data, devdata, data->stylus_hold_x, data->stylus_hold_y);
+
+  return G_SOURCE_REMOVE;
+}
+
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
@@ -3424,6 +3612,42 @@ gboolean on_buttonpress (GtkWidget *win,
 
   if (!devdata->is_grabbed)
     return FALSE;
+
+  /* Stylus side buttons.  The tip is button 1 and keeps its normal drawing
+   * behaviour.  The first side button (button 2) is the configured eraser or
+   * scroll action.  A short click of the second side button (button 3) acts
+   * like Escape; holding it opens the Button 1 Mode menu. */
+  if (event_source_is_stylus ((GdkEvent *) ev))
+    {
+      if (ev->button == 3)
+	{
+	  devdata->stylus_menu_button_down = TRUE;
+
+	  if (data->stylus_hold_id)
+	    g_source_remove (data->stylus_hold_id);
+
+	  data->stylus_hold_devdata = devdata;
+	  data->stylus_hold_x = ev->x_root;
+	  data->stylus_hold_y = ev->y_root;
+	  data->stylus_hold_id = g_timeout_add (STYLUS_MENU_HOLD_MS,
+						stylus_menu_hold_timeout,
+						data);
+	  return TRUE;
+	}
+
+      if (ev->button == 2 &&
+	  (data->stylus_mode == SCREENATOR_STYLUS_COLOR ||
+	   data->stylus_mode == SCREENATOR_STYLUS_THICKNESS))
+	{
+	  devdata->stylus_scroll_active = TRUE;
+	  devdata->stylus_scroll_moved = FALSE;
+	  devdata->stylus_scroll_last_y = ev->y;
+	  return TRUE;
+	}
+
+      if (ev->button == 2)
+	devdata->stylus_eraser_active = TRUE;
+    }
 
   /* Right-click finishes an unfinished shape that is being edited; otherwise
    * it exits painting mode and returns to normal.  Escape does the same. */
@@ -3808,6 +4032,14 @@ gboolean on_buttonpress (GtkWidget *win,
   snap_undo_state (data);
 
   gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE, &pressure);
+
+  /* The stylus draws with the selected line width, exactly like the mouse.
+   * Pressure is ignored so 1, 2 and 3 px stay visibly different; the side
+   * button eraser also uses the full eraser width while hovering. */
+  if (devdata->stylus_eraser_active ||
+      event_source_is_stylus ((GdkEvent *) ev))
+    pressure = 1.0;
+
   data->maxwidth = (CLAMP (pressure, 0, 1) *
 		    (double) (devdata->cur_context->width -
 			      devdata->cur_context->minwidth) +
@@ -3836,9 +4068,37 @@ gboolean on_motion (GtkWidget *win,
   gdouble pressure = 1;
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
+  gboolean stylus = event_source_is_stylus ((GdkEvent *) ev);
 
   if (!devdata->is_grabbed)
     return FALSE;
+
+  /* The second side button is the Escape/menu button; moving the pen while it
+   * is held must not draw a line. */
+  if (devdata->stylus_menu_button_down)
+    {
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
+      return TRUE;
+    }
+
+  /* Stylus Scroll mode: holding the first side button and moving the pen up
+   * or down steps through colours like the mouse wheel. */
+  if (devdata->stylus_scroll_active)
+    {
+      if (ABS (ev->y - devdata->stylus_scroll_last_y) >= 22)
+	{
+	  apply_stylus_step (data, ev->y > devdata->stylus_scroll_last_y);
+	  devdata->stylus_scroll_moved = TRUE;
+	  devdata->stylus_scroll_last_y = ev->y;
+	}
+
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
+      return TRUE;
+    }
 
   if(data->debug)
       g_printerr("DEBUG: Device '%s': motion to (x,y)=(%.2f : %.2f)\n", gdk_device_get_name(ev->device), ev->x, ev->y);
@@ -3995,12 +4255,15 @@ gboolean on_motion (GtkWidget *win,
 
           gdk_device_get_axis (ev->device, coords[i]->axes,
                                GDK_AXIS_PRESSURE, &pressure);
-          if (pressure > 0)
+          if (pressure > 0 || devdata->stylus_eraser_active)
             {
-	      data->maxwidth = (CLAMP (pressure, 0, 1) *
-				(double) (devdata->cur_context->width -
-					  devdata->cur_context->minwidth) +
-				devdata->cur_context->minwidth);
+	      if (stylus || devdata->stylus_eraser_active)
+		data->maxwidth = devdata->cur_context->width;
+	      else
+		data->maxwidth = (CLAMP (pressure, 0, 1) *
+				  (double) (devdata->cur_context->width -
+					    devdata->cur_context->minwidth) +
+				  devdata->cur_context->minwidth);
 
               gdk_device_get_axis(ev->device, coords[i]->axes,
                                   GDK_AXIS_X, &x);
@@ -4022,12 +4285,15 @@ gboolean on_motion (GtkWidget *win,
   /* always paint to the current event coordinate. */
   gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE, &pressure);
 
-  if (pressure > 0)
+  if (pressure > 0 || devdata->stylus_eraser_active)
     {
-      data->maxwidth = (CLAMP (pressure, 0, 1) *
-			(double) (devdata->cur_context->width -
-				  devdata->cur_context->minwidth) +
-			devdata->cur_context->minwidth);
+      if (stylus || devdata->stylus_eraser_active)
+	data->maxwidth = devdata->cur_context->width;
+      else
+	data->maxwidth = (CLAMP (pressure, 0, 1) *
+			  (double) (devdata->cur_context->width -
+				    devdata->cur_context->minwidth) +
+			  devdata->cur_context->minwidth);
 
       if(devdata->motion_time > 0)
 	{
@@ -4066,12 +4332,44 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
+  /* The second stylus side button: a short click performs Escape, while a
+   * long press has opened the Button 1 Mode menu and consumes its own
+   * release. */
+  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 3)
+    {
+      devdata->stylus_menu_button_down = FALSE;
+
+      if (data->stylus_hold_id)
+	{
+	  g_source_remove (data->stylus_hold_id);
+	  data->stylus_hold_id = 0;
+	  data->stylus_hold_devdata = NULL;
+	  screenator_exit_tool (data);
+	}
+      return TRUE;
+    }
+
   if ((ev->x != devdata->lastx) ||
       (ev->y != devdata->lasty))
     on_motion(win, (GdkEventMotion *) ev, user_data);
 
   if (!devdata->is_grabbed)
     return FALSE;
+
+  if (event_source_is_stylus ((GdkEvent *) ev) &&
+      ev->button == 2 && devdata->stylus_scroll_active)
+    {
+      /* A tap without movement is one wheel notch. */
+      if (!devdata->stylus_scroll_moved)
+	apply_stylus_step (data, TRUE);
+
+      devdata->stylus_scroll_active = FALSE;
+      devdata->stylus_scroll_moved = FALSE;
+      return TRUE;
+    }
+
+  if (ev->button == 2 && devdata->stylus_eraser_active)
+    devdata->stylus_eraser_active = FALSE;
 
   /* Open the inline text editor at the position where the button was
    * pressed, not where it happened to be released.  Releasing a text handle
@@ -4396,6 +4694,11 @@ void on_device_added (GdkDeviceManager *device_manager,
 		      gpointer          user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  GdkInputSource source = gdk_device_get_source (device);
+
+  /* A pen plugged in while Screenator runs gets the stylus help message. */
+  if (source == GDK_SOURCE_PEN || source == GDK_SOURCE_ERASER)
+    schedule_stylus_hint (data);
 
   if(!gdk_device_get_device_type(device) == GDK_DEVICE_TYPE_MASTER
      || gdk_device_get_n_axes(device) < 2)
@@ -5151,6 +5454,70 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
     apply_shape_fill (data, fill_colors[current].name);
 }
 
+/* Apply one wheel notch to the setting that belongs to the active tool: the
+ * eraser size for the eraser, the shape fill colour over the Paint Bucket and
+ * the line colour for every other tool.  Shared by the mouse wheel and the
+ * stylus Scroll mode. */
+static void
+apply_scroll_step (ScreenatorData *data, gboolean down, gboolean colors_only)
+{
+  gboolean bucket = data->forced_context &&
+		    data->forced_context->type == SCREENATOR_SHAPE &&
+		    data->shape_type == SCREENATOR_SHAPE_BUCKET;
+
+  if (!colors_only &&
+      ((data->forced_context &&
+	data->forced_context->type == SCREENATOR_ERASER) ||
+       data->pen_tool == 3))
+    cycle_eraser_size (data, down);
+  else if (bucket)
+    cycle_shape_fill_color (data, down);
+  else
+    cycle_line_color (data, down);
+}
+
+/* Step through the Line Thickness entries, wrapping at both ends. */
+static void
+cycle_line_thickness (ScreenatorData *data, gboolean down)
+{
+  static const guint widths[] = { 1, 2, 3, 4, 5, 6, 12, 24, 48 };
+  guint current = 0;
+  guint best = G_MAXUINT;
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (widths); i++)
+    {
+      guint diff = ABS ((gint) data->pen_width - (gint) widths[i]);
+
+      if (diff < best)
+	{
+	  best = diff;
+	  current = i;
+	}
+    }
+
+  if (down)
+    current = (current + 1) % G_N_ELEMENTS (widths);
+  else
+    current = (current + G_N_ELEMENTS (widths) - 1) %
+	      G_N_ELEMENTS (widths);
+
+  data->pen_width = widths[current];
+  apply_pen_settings (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* One step of the stylus first-side-button action: colours in Color mode and
+ * line thickness in Thickness mode. */
+static void
+apply_stylus_step (ScreenatorData *data, gboolean down)
+{
+  if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
+    cycle_line_thickness (data, down);
+  else
+    apply_scroll_step (data, down, TRUE);
+}
+
 /* The mouse wheel changes the line colour while a tool is active; over the
  * Paint Bucket it changes the shape fill colour instead.  The change is the
  * same as picking the colour from the menu: it is applied to the pen, saved
@@ -5163,7 +5530,6 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
   static gint64 last_step_time = 0;
   gint64 now;
   gboolean down;
-  gboolean bucket;
 
   if (data->top_dialog)
     return TRUE;
@@ -5198,21 +5564,7 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  /* The wheel changes the setting that belongs to the active tool: the eraser
-   * size for the eraser, the shape fill colour over the Paint Bucket and the
-   * line colour for every other tool. */
-  bucket = data->forced_context &&
-	   data->forced_context->type == SCREENATOR_SHAPE &&
-	   data->shape_type == SCREENATOR_SHAPE_BUCKET;
-
-  if ((data->forced_context &&
-       data->forced_context->type == SCREENATOR_ERASER) ||
-      data->pen_tool == 3)
-    cycle_eraser_size (data, down);
-  else if (bucket)
-    cycle_shape_fill_color (data, down);
-  else
-    cycle_line_color (data, down);
+  apply_scroll_step (data, down, FALSE);
 
   return TRUE;
 }
@@ -5665,10 +6017,10 @@ static gboolean on_icon_draw (GtkWidget *widget,
  * below. */
 #define THICKNESS_RING_WIDTH 6.0
 #define OUTER_RING_WIDTH 6.0
-#define THICKNESS_SECTORS 7
+#define THICKNESS_SECTORS 9
 
 static const guint thickness_values[THICKNESS_SECTORS] =
-  { 1, 2, 3, 6, 12, 24, 48 };
+  { 1, 2, 3, 4, 5, 6, 12, 24, 48 };
 
 static gint
 settings_indicator_size (ScreenatorData *data)
@@ -6184,9 +6536,10 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint widths[] = { 1, 2, 3, 6, 12, 24, 48 };
-    static const gchar * const labels[] = { "1 px", "2 px", "3 px", "6 px",
-					    "12 px", "24 px", "48 px" };
+    static const guint widths[] = { 1, 2, 3, 4, 5, 6, 12, 24, 48 };
+    static const gchar * const labels[] = { "1 px", "2 px", "3 px", "4 px",
+					    "5 px", "6 px", "12 px", "24 px",
+					    "48 px" };
     GtkWidget *items[G_N_ELEMENTS (widths)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -7419,6 +7772,121 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
 
   if (was_grabbed)
     acquire_grab (data, NULL);
+}
+
+/* TRUE when at least one pen/eraser slave device is connected. */
+static gboolean
+stylus_is_present (ScreenatorData *data)
+{
+  GdkDeviceManager *manager = gdk_display_get_device_manager (data->display);
+  GList *devices, *d;
+  gboolean found = FALSE;
+
+  if (!manager)
+    return FALSE;
+
+  devices = gdk_device_manager_list_devices (manager, GDK_DEVICE_TYPE_SLAVE);
+  for (d = devices; d; d = d->next)
+    {
+      GdkInputSource source = gdk_device_get_source (d->data);
+
+      if (source == GDK_SOURCE_PEN || source == GDK_SOURCE_ERASER)
+	{
+	  found = TRUE;
+	  break;
+	}
+    }
+  g_list_free (devices);
+
+  return found;
+}
+
+/* One-time (per run) help for the stylus. */
+static gboolean
+show_stylus_hint_idle (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  GtkWidget *dialog, *content, *box, *label, *check;
+  gboolean was_grabbed;
+
+  data->stylus_hint_id = 0;
+
+  if (data->hide_stylus_hint || data->stylus_hint_shown ||
+      !stylus_is_present (data))
+    return G_SOURCE_REMOVE;
+
+  data->stylus_hint_shown = TRUE;
+
+  /* A modal dialog cannot be used while the pointer is grabbed. */
+  was_grabbed = screenator_any_grabbed (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  dialog = gtk_dialog_new_with_buttons ("Stylus", NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"OK", GTK_RESPONSE_OK,
+					NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  label = gtk_label_new (NULL);
+  gtk_label_set_markup (GTK_LABEL (label),
+			"<b>Stylus detected</b>\n\n"
+			"The tip draws like the left mouse button. Pen "
+			"pressure is ignored and the selected line thickness "
+			"is used.\n\n"
+			"The first side button is set from the stylus menu: "
+			"Eraser, Color or Thickness.\n\n"
+			"Short click the second side button to act like a "
+			"right click (Escape): it finishes the shape being "
+			"edited or leaves painting mode.\n\n"
+			"Long press the second side button to open the "
+			"Button 1 Mode menu.");
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  check = gtk_check_button_new_with_label ("Never show this message again");
+  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
+
+  gtk_widget_show_all (dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+
+  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)))
+    {
+      data->hide_stylus_hint = TRUE;
+      write_keyfile (data);
+    }
+
+  gtk_widget_destroy (dialog);
+
+  if (was_grabbed)
+    acquire_grab (data, NULL);
+
+  return G_SOURCE_REMOVE;
+}
+
+/* Called after the device list is rebuilt, so both a stylus present at startup
+ * and one plugged in while Screenator runs get the help message. */
+void
+schedule_stylus_hint (ScreenatorData *data)
+{
+  if (data->hide_stylus_hint || data->stylus_hint_shown ||
+      data->stylus_hint_id)
+    return;
+
+  data->stylus_hint_id = g_idle_add (show_stylus_hint_idle, data);
 }
 
 void on_icon_pen (GtkMenuItem *menuitem,

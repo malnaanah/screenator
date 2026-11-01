@@ -360,6 +360,9 @@ void setup_input_devices (ScreenatorData *data)
     }
 
   g_printerr ("Now %d enabled devices.\n", g_hash_table_size(data->devdatatable));
+
+  /* If a stylus is connected, offer its help message once per run. */
+  schedule_stylus_hint (data);
 }
 
 void shutdown_input_devices(ScreenatorData *data)

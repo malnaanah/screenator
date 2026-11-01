@@ -45,8 +45,8 @@ cd screenator
 
 The script produces both packages in `../build/`:
 
-- `screenator_4.2_amd64.deb` — install with `sudo apt install ./screenator_4.2_amd64.deb`
-- `Screenator-4.2-x86_64.AppImage` — make executable and run
+- `screenator_5.0_amd64.deb` — install with `sudo apt install ./screenator_5.0_amd64.deb`
+- `Screenator-5.0-x86_64.AppImage` — make executable and run
 
 ## Configuration
 
