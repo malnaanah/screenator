@@ -25,12 +25,14 @@ and you can keep using your applications while it is visible.
   change the line colour, thickness or opacity used by the other tools.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
-- While painting mode is active, the mouse wheel steps through the line colours
-  (including the custom colour); with the Paint Bucket tool it steps through
-  the shape fill colours (also including the custom colour) and with the
-  Eraser it steps through the eraser sizes instead. The change is the same
-  as picking it from the menu, so it is kept when another tool is selected and
-  is shown in the settings indicator and the menus.
+- While painting mode is active, the mouse wheel changes the setting selected
+  in the Scroll Mode menu: **Color** steps the line colours (including the
+  custom colour), or the shape fill colours over the Paint Bucket; **Thickness**
+  steps through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels. Long-press the right
+  mouse button to choose Color or Thickness; a short right click finishes the
+  current shape or exits painting like Escape. The change is the same as
+  picking it from the menu, so it is kept when another tool is selected and is
+  shown in the settings indicator and the menus.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the

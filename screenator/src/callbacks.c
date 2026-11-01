@@ -294,6 +294,9 @@ static void apply_stylus_step (ScreenatorData *data, gboolean down);
 static void show_stylus_menu (ScreenatorData *data,
 			      ScreenatorDeviceData *devdata,
 			      gint x, gint y);
+static void show_wheel_menu (ScreenatorData *data,
+			     ScreenatorDeviceData *devdata,
+			     gint x, gint y);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -3469,7 +3472,7 @@ stylus_menu_done (GtkMenuShell *menu, gpointer user_data)
     ctx->data->stylus_menu = NULL;
 
   if (ctx->devdata)
-    ctx->devdata->stylus_menu_button_down = FALSE;
+    ctx->devdata->menu_button_down = FALSE;
 
   /* The menu only selects a Button 1 Mode, so painting always resumes. */
   if (ctx->was_grabbed)
@@ -3496,7 +3499,7 @@ show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
 
   /* A side-button action may still be in progress when the menu opens. */
   devdata->stylus_eraser_active = FALSE;
-  devdata->stylus_menu_button_down = FALSE;
+  devdata->menu_button_down = FALSE;
   devdata->stylus_scroll_active = FALSE;
   devdata->stylus_scroll_moved = FALSE;
 
@@ -3563,21 +3566,135 @@ show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
     }
 }
 
+typedef struct
+{
+  ScreenatorData       *data;
+  ScreenatorDeviceData *devdata;
+  gboolean              was_grabbed;
+} WheelMenu;
+
+static void
+wheel_menu_color (GtkMenuItem *item, gpointer user_data)
+{
+  ((WheelMenu *) user_data)->data->wheel_mode = SCREENATOR_WHEEL_COLOR;
+}
+
+static void
+wheel_menu_thickness (GtkMenuItem *item, gpointer user_data)
+{
+  ((WheelMenu *) user_data)->data->wheel_mode =
+    SCREENATOR_WHEEL_THICKNESS;
+}
+
+static void
+wheel_menu_done (GtkMenuShell *menu, gpointer user_data)
+{
+  WheelMenu *ctx = user_data;
+
+  if (ctx->data->wheel_menu == GTK_WIDGET (menu))
+    ctx->data->wheel_menu = NULL;
+
+  if (ctx->devdata)
+    ctx->devdata->menu_button_down = FALSE;
+
+  if (ctx->was_grabbed)
+    acquire_grab (ctx->data, NULL);
+
+  g_free (ctx);
+}
+
+/* Long right-click menu for the mouse: what the wheel changes. */
+static void
+show_wheel_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		 gint x, gint y)
+{
+  WheelMenu *ctx;
+  GtkWidget *menu, *heading, *color, *thickness;
+  GdkWindow *root;
+  GdkRectangle rect;
+  gboolean was_grabbed;
+
+  if (data->wheel_menu)
+    return;
+
+  devdata->menu_button_down = FALSE;
+
+  was_grabbed = screenator_any_grabbed (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  ctx = g_new0 (WheelMenu, 1);
+  ctx->data = data;
+  ctx->devdata = devdata;
+  ctx->was_grabbed = was_grabbed;
+
+  menu = gtk_menu_new ();
+  heading = stylus_menu_heading ("Scroll Mode");
+  color = gtk_radio_menu_item_new_with_label (NULL, "Color");
+  thickness = gtk_radio_menu_item_new_with_label_from_widget (
+    GTK_RADIO_MENU_ITEM (color), "Thickness");
+
+  if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (thickness), TRUE);
+  else
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
+
+  g_signal_connect (color, "activate",
+		    G_CALLBACK (wheel_menu_color), ctx);
+  g_signal_connect (thickness, "activate",
+		    G_CALLBACK (wheel_menu_thickness), ctx);
+
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), color);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), thickness);
+  gtk_widget_show_all (menu);
+
+  data->wheel_menu = menu;
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (wheel_menu_done), ctx);
+
+  root = gdk_screen_get_root_window (gdk_screen_get_default ());
+  rect.x = x;
+  rect.y = y;
+  rect.width = 1;
+  rect.height = 1;
+  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
+			  GDK_GRAVITY_NORTH_WEST,
+			  GDK_GRAVITY_NORTH_WEST, NULL);
+
+  if (!gtk_widget_get_visible (menu))
+    {
+      data->wheel_menu = NULL;
+      g_signal_handlers_disconnect_by_data (menu, ctx);
+      gtk_widget_destroy (menu);
+      if (was_grabbed)
+	acquire_grab (data, NULL);
+      g_free (ctx);
+    }
+}
+
 /* A long press on the second side button opens the menu; a short click on the
  * release performs Escape instead. */
-#define STYLUS_MENU_HOLD_MS 500
+#define MENU_HOLD_MS 500
 
 static gboolean
-stylus_menu_hold_timeout (gpointer user_data)
+menu_hold_timeout (gpointer user_data)
 {
   ScreenatorData *data = user_data;
-  ScreenatorDeviceData *devdata = data->stylus_hold_devdata;
+  ScreenatorDeviceData *devdata = data->menu_hold_devdata;
 
-  data->stylus_hold_id = 0;
-  data->stylus_hold_devdata = NULL;
+  data->menu_hold_id = 0;
+  data->menu_hold_devdata = NULL;
 
   if (devdata)
-    show_stylus_menu (data, devdata, data->stylus_hold_x, data->stylus_hold_y);
+    {
+      if (data->menu_hold_is_stylus)
+	show_stylus_menu (data, devdata,
+			  data->menu_hold_x, data->menu_hold_y);
+      else
+	show_wheel_menu (data, devdata,
+			 data->menu_hold_x, data->menu_hold_y);
+    }
 
   return G_SOURCE_REMOVE;
 }
@@ -3613,28 +3730,32 @@ gboolean on_buttonpress (GtkWidget *win,
   if (!devdata->is_grabbed)
     return FALSE;
 
-  /* Stylus side buttons.  The tip is button 1 and keeps its normal drawing
-   * behaviour.  The first side button (button 2) is the configured eraser or
-   * scroll action.  A short click of the second side button (button 3) acts
-   * like Escape; holding it opens the Button 1 Mode menu. */
+  /* The right button is a dual-action button: a short click acts like Escape
+   * / right click and a long press opens the mouse wheel menu.  On a stylus
+   * the same applies to the second side button (button 3), which opens the
+   * Button 1 Mode menu instead. */
+  if (ev->button == 3)
+    {
+      devdata->menu_button_down = TRUE;
+
+      if (data->menu_hold_id)
+	g_source_remove (data->menu_hold_id);
+
+      data->menu_hold_devdata = devdata;
+      data->menu_hold_is_stylus =
+	event_source_is_stylus ((GdkEvent *) ev);
+      data->menu_hold_x = ev->x_root;
+      data->menu_hold_y = ev->y_root;
+      data->menu_hold_id = g_timeout_add (MENU_HOLD_MS,
+					  menu_hold_timeout,
+					  data);
+      return TRUE;
+    }
+
+  /* The stylus first side button (button 2) is the configured Eraser, Color
+   * or Thickness action. */
   if (event_source_is_stylus ((GdkEvent *) ev))
     {
-      if (ev->button == 3)
-	{
-	  devdata->stylus_menu_button_down = TRUE;
-
-	  if (data->stylus_hold_id)
-	    g_source_remove (data->stylus_hold_id);
-
-	  data->stylus_hold_devdata = devdata;
-	  data->stylus_hold_x = ev->x_root;
-	  data->stylus_hold_y = ev->y_root;
-	  data->stylus_hold_id = g_timeout_add (STYLUS_MENU_HOLD_MS,
-						stylus_menu_hold_timeout,
-						data);
-	  return TRUE;
-	}
-
       if (ev->button == 2 &&
 	  (data->stylus_mode == SCREENATOR_STYLUS_COLOR ||
 	   data->stylus_mode == SCREENATOR_STYLUS_THICKNESS))
@@ -3647,14 +3768,6 @@ gboolean on_buttonpress (GtkWidget *win,
 
       if (ev->button == 2)
 	devdata->stylus_eraser_active = TRUE;
-    }
-
-  /* Right-click finishes an unfinished shape that is being edited; otherwise
-   * it exits painting mode and returns to normal.  Escape does the same. */
-  if (ev->button == 3)
-    {
-      screenator_exit_tool (data);
-      return TRUE;
     }
 
   /* Do not drop unprocessed motion events.  Compressed events make fast
@@ -4075,7 +4188,8 @@ gboolean on_motion (GtkWidget *win,
 
   /* The second side button is the Escape/menu button; moving the pen while it
    * is held must not draw a line. */
-  if (devdata->stylus_menu_button_down)
+  if (devdata->menu_button_down ||
+      (ev->state & GDK_BUTTON3_MASK) != 0)
     {
       devdata->lastx = ev->x;
       devdata->lasty = ev->y;
@@ -4332,18 +4446,17 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
-  /* The second stylus side button: a short click performs Escape, while a
-   * long press has opened the Button 1 Mode menu and consumes its own
-   * release. */
-  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 3)
+  /* Right button: a short click performs Escape; a long press has opened the
+   * mode menu and consumes its own release. */
+  if (ev->button == 3)
     {
-      devdata->stylus_menu_button_down = FALSE;
+      devdata->menu_button_down = FALSE;
 
-      if (data->stylus_hold_id)
+      if (data->menu_hold_id)
 	{
-	  g_source_remove (data->stylus_hold_id);
-	  data->stylus_hold_id = 0;
-	  data->stylus_hold_devdata = NULL;
+	  g_source_remove (data->menu_hold_id);
+	  data->menu_hold_id = 0;
+	  data->menu_hold_devdata = NULL;
 	  screenator_exit_tool (data);
 	}
       return TRUE;
@@ -5564,7 +5677,10 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  apply_scroll_step (data, down, FALSE);
+  if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
+    cycle_line_thickness (data, down);
+  else
+    apply_scroll_step (data, down, TRUE);
 
   return TRUE;
 }
@@ -7654,8 +7770,10 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
       gchar *full_message =
 	g_strconcat (tool_hint_names[hint], ": ", message,
 		     "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
-		     "mode to undo and redo.  Press Escape to finish a "
-		     "shape or exit the tool.", NULL);
+		     "mode to undo and redo.  Press Escape or short "
+		     "right click to finish a shape or exit the tool.  "
+		     "Long right click opens the Scroll Mode menu "
+		     "(Color or Thickness).", NULL);
 
       label = gtk_label_new (full_message);
       g_free (full_message);

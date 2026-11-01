@@ -115,6 +115,13 @@ typedef enum
   SCREENATOR_STYLUS_THICKNESS
 } ScreenatorStylusMode;
 
+/* What the mouse wheel changes, chosen from the long right-click menu. */
+typedef enum
+{
+  SCREENATOR_WHEEL_COLOR = 0,
+  SCREENATOR_WHEEL_THICKNESS
+} ScreenatorWheelMode;
+
 /* One entry for every tool hint, so "Never show this message again" applies to
  * that tool only.  The order matches the names in config.c. */
 typedef enum
@@ -408,7 +415,7 @@ typedef struct
    * first side button is button 2 (eraser or scroll) and the second side
    * button is button 3 (opens the stylus menu). */
   gboolean             stylus_eraser_active;
-  gboolean             stylus_menu_button_down;
+  gboolean             menu_button_down;
   gboolean             stylus_scroll_active;
   gboolean             stylus_scroll_moved;
   gint                 stylus_scroll_last_y;
@@ -427,14 +434,17 @@ typedef struct
 {
   GtkWidget   *win;
   GtkWidget   *stylus_menu;
+  GtkWidget   *wheel_menu;
   ScreenatorStylusMode stylus_mode;
+  ScreenatorWheelMode  wheel_mode;
   gboolean     hide_stylus_hint;
   gboolean     stylus_hint_shown;
   guint        stylus_hint_id;
-  guint        stylus_hold_id;
-  ScreenatorDeviceData *stylus_hold_devdata;
-  gint         stylus_hold_x;
-  gint         stylus_hold_y;
+  guint        menu_hold_id;
+  ScreenatorDeviceData *menu_hold_devdata;
+  gboolean     menu_hold_is_stylus;
+  gint         menu_hold_x;
+  gint         menu_hold_y;
   AppIndicator *trayicon;
 
   /* Movable on-screen icon window */
