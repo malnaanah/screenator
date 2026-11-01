@@ -170,6 +170,8 @@ void on_icon_math (GtkMenuItem *menuitem,
 
 void on_icon_bars (GtkMenuItem *menuitem,
 		   gpointer     user_data);
+void on_icon_random (GtkMenuItem *menuitem,
+		     gpointer     user_data);
 
 void on_icon_text (GtkMenuItem *menuitem,
 		   gpointer     user_data);

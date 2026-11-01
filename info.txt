@@ -1,4 +1,4 @@
-Screenator 4.0
+Screenator 4.1
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 4.0 (amd64)
-  - Screenator-4.0-x86_64.AppImage
+  - screenator 4.1 (amd64)
+  - Screenator-4.1-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_4.0_amd64.deb
-                          Screenator-4.0-x86_64.AppImage
+                          screenator_4.1_amd64.deb
+                          Screenator-4.1-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -95,7 +95,17 @@ Features:
     Parallel Lines draws between 2 and 40 evenly spaced vertical lines with the
     current line thickness.  The square handle outside the left edge sets their
     number: pressing it resets the shape to two lines and moving away adds
-    more.  The lines can be moved, resized and rotated with the usual handles.
+    more.  The square handle outside the right edge changes the arrowheads on
+    the lines: pressing it resets to none and moving away adds them in the
+    order top, bottom and both; the handle shows the current mode.  The lines
+    can be moved, resized and rotated with the usual handles.
+    Random Signal draws a random waveform.  A single click places a
+    default-size signal centred on the click; dragging out a frame sets its
+    size.  The square handle outside the left edge resets the smoothness to 1
+    (sharpest); dragging it away in any direction raises it up to 16
+    (smoothest).  The default is 5.  Clicking the signal without dragging
+    generates a new signal with a new seed.  The frame can be moved, resized
+    and rotated with the usual handles.
     Paint Bucket fills the closed area under the click with the Shapes Fill
     Color; an area that reaches the screen edge is treated as not closed and is
     left unchanged.  With None selected the bucket erases the enclosed fill
@@ -183,7 +193,8 @@ Features:
   - Undo/redo, clear screen, show/hide drawing and show/hide floating icon.
   - Hotkeys: F9 toggles painting, SHIFT-F9 clears, CTRL-F9 toggles visibility,
     ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.  While painting mode is
-    active, Ctrl+Z also undoes and Ctrl+Shift+Z redoes.
+    active, Ctrl+Z also undoes and Ctrl+Shift+Z redoes, and Esc exits the
+    current tool like a right click outside a shape.
   - Multi-pointer support inherited from Gromit-MPX.
 
 Configuration:
@@ -266,9 +277,12 @@ Differences from Gromit-MPX 1.4.2:
     The plot is scaled to fill the frame (polar plots keep the curve round in a
     non-square frame), and an editable plot follows a new expression
     immediately.  The Parallel Lines tool draws 2 to 40 evenly spaced vertical
-    lines with the current line thickness, and a square handle outside the left
-    edge sets their number.  Both tools use the usual move, size and rotation
-    handles.
+    lines with the current line thickness, a square handle outside the left
+    edge sets their number, and dragging a square handle outside the right edge
+    changes the arrowheads on the lines (none, top, bottom or both).  Both
+    tools use the usual move, size and rotation handles.  A Random Signal tool
+    draws a random waveform; its left handle sets the smoothness from 1
+    (sharpest) to 10 (smoothest), and clicking the signal rolls a new one.
     Ellipses, rounded rectangles, polygons and triangles can optionally be
     filled with a shape fill colour, which is saved with the other menu
     settings.

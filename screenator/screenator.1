@@ -130,7 +130,17 @@ breaks the curve instead.
 The Parallel Lines tool draws between 2 and 40 evenly spaced vertical lines
 with the current line thickness. The square handle outside the left edge sets
 their number: pressing it resets the shape to two lines and moving away adds
-more. The lines can be moved, resized and rotated with the usual handles.
+more. The square handle outside the right edge changes the arrowheads on the
+lines: pressing it resets to none and moving away adds them in the order top,
+bottom and both; the handle shows the current mode. The lines can be moved,
+resized and rotated with the usual handles.
+.br
+The Random Signal tool draws a random waveform. A single click places a
+default-size signal centred on the click; dragging out a frame sets its size.
+The square handle outside the left edge resets the smoothness to 1 (sharpest);
+dragging it away in any direction raises it up to 16 (smoothest). The default
+is 5. Clicking the signal without dragging generates a new signal with a new
+seed. The frame can be moved, resized and rotated with the usual handles.
 .br
 The Paint Bucket fills the closed area under the click with the Shapes Fill
 Color. The area must be enclosed by drawn strokes and must not reach the screen
@@ -199,8 +209,11 @@ While painting mode is active, the usual
 .B Ctrl+Z
 and
 .B Ctrl+Shift+Z
-shortcuts also undo and redo. The keys are only grabbed while painting, so
-they keep their normal meaning in other applications.
+shortcuts also undo and redo. While painting mode is active, pressing
+.B Esc
+exits the current tool, just like right-clicking outside a shape. The keys are
+only grabbed while painting, so they keep their normal meaning in other
+applications.
 .SH OPTIONS (STARTUP)
 A short summary of the available command line arguments for starting Screenator;
 see below for the options to control an already running Screenator process:

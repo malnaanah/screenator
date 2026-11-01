@@ -62,6 +62,9 @@ static gboolean get_are_some_grabbed(ScreenatorData *data)
     return some_grabbed;
 }
 
+static guint paper_shortcut_keycode (guint keyval);
+static void grab_escape_shortcut (ScreenatorData *data, gboolean grab);
+
 static void remove_hotkeys_from_compositor(ScreenatorData *data) {
     char *xdg_current_desktop = getenv("XDG_CURRENT_DESKTOP");
     if (xdg_current_desktop && strcmp(xdg_current_desktop, "GNOME") == 0) {
@@ -510,6 +513,77 @@ paper_shortcut_keycode (guint keyval)
   return keycode;
 }
 
+/* Escape exits the active drawing tool.  Like Ctrl+Z it is grabbed through
+ * XInput2 while a painting device is grabbed, so it reaches Screenator even
+ * when the keyboard focus belongs to the application below the overlay.  It is
+ * released again as soon as painting stops, so it keeps its normal meaning
+ * everywhere else. */
+static void
+grab_escape_shortcut (ScreenatorData *data, gboolean grab)
+{
+  GList *devices, *d;
+  guint keycode = data->escape_keycode;
+
+  if (!GDK_IS_X11_DISPLAY (data->display))
+    return;
+
+  /* Already grabbed; acquire_grab() can be called again by a tool switch. */
+  if (grab && keycode)
+    return;
+
+  if (grab)
+    {
+      keycode = paper_shortcut_keycode (GDK_KEY_Escape);
+      if (!keycode)
+	return;
+      data->escape_keycode = keycode;
+    }
+  else if (!keycode)
+    return;
+
+  devices = gdk_device_manager_list_devices (
+      gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
+
+  for (d = devices; d; d = d->next)
+    {
+      XIEventMask mask;
+      unsigned char bits[4] = { 0, 0, 0, 0 };
+      /* XIAnyModifier, like the drawing hotkey: a bare Escape then works
+       * with Caps Lock, Num Lock or any other modifier held. */
+      XIGrabModifiers modifiers[] = { { XIAnyModifier, 0 } };
+      gint nmods = 1;
+
+      if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
+	continue;
+
+      mask.mask = bits;
+      mask.mask_len = sizeof (bits);
+      XISetMask (bits, XI_KeyPress);
+      XISetMask (bits, XI_KeyRelease);
+
+      gdk_x11_display_error_trap_push (data->display);
+
+      if (grab)
+	XIGrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+		       gdk_x11_device_get_id (d->data), keycode,
+		       GDK_WINDOW_XID (data->root),
+		       GrabModeAsync, GrabModeAsync, True,
+		       &mask, nmods, modifiers);
+      else
+	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
+			 gdk_x11_device_get_id (d->data), keycode,
+			 GDK_WINDOW_XID (data->root), nmods, modifiers);
+
+      XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
+      gdk_x11_display_error_trap_pop_ignored (data->display);
+    }
+
+  g_list_free (devices);
+
+  if (!grab)
+    data->escape_keycode = 0;
+}
+
 static void
 grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
 		gboolean grab)
@@ -650,6 +724,7 @@ void release_grab (ScreenatorData *data,
 
       indicate_active(data, FALSE);
       grab_undo_shortcut (data, FALSE);
+      grab_escape_shortcut (data, FALSE);
 
       /* The screen paper keeps the annotation window visible. */
       if (!data->painted && data->paper == SCREENATOR_PAPER_NONE)
@@ -677,6 +752,7 @@ void release_grab (ScreenatorData *data,
 	{
 	  indicate_active(data, FALSE);
 	  grab_undo_shortcut (data, FALSE);
+	  grab_escape_shortcut (data, FALSE);
 	}
     }
 
@@ -753,6 +829,7 @@ void acquire_grab (ScreenatorData *data,
 
       indicate_active(data, TRUE);
       grab_undo_shortcut (data, TRUE);
+      grab_escape_shortcut (data, TRUE);
 
       return;
     }
@@ -788,6 +865,7 @@ void acquire_grab (ScreenatorData *data,
 
       indicate_active(data, TRUE);
       grab_undo_shortcut (data, TRUE);
+      grab_escape_shortcut (data, TRUE);
 
     }
 
@@ -833,6 +911,17 @@ gint snoop_key_press(GtkWidget   *grab_widget,
   /* The keys belong to the dialog while one is open. */
   if (data->top_dialog)
     return FALSE;
+
+  /* Escape exits the current tool exactly like a right click on the canvas:
+   * an unfinished shape is finished (or dropped for a spline) and painting
+   * mode stops.  The inline text editor handles its own Escape, which
+   * cancels the text instead of committing it. */
+  if (event->type == GDK_KEY_PRESS &&
+      ((data->escape_keycode &&
+	event->hardware_keycode == data->escape_keycode) ||
+       event->keyval == GDK_KEY_Escape) &&
+      !data->text_editor_active)
+    return screenator_exit_tool (data);
 
   /* Shortcuts that work while the screen paper has the keyboard focus. */
   if (event->type == GDK_KEY_PRESS &&

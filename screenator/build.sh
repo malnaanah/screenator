@@ -14,8 +14,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_4.0_amd64.deb"
-APPIMAGE="$BUILD/Screenator-4.0-x86_64.AppImage"
+DEB="$BUILD/screenator_4.1_amd64.deb"
+APPIMAGE="$BUILD/Screenator-4.1-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -129,8 +129,8 @@ install -m 0644 "$SRC"/data/screenator.svg \
 install -m 0644 "$SRC"/data/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 for icon in pen arrow text free-line spline polygon triangle bucket math bars \
-            ellipse rounded-rectangle marker eraser redo undo trash \
-            reset-settings hide font-settings shapes paper; do
+            random-signal ellipse rounded-rectangle marker eraser redo undo \
+            trash reset-settings hide font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
 done
 gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
@@ -142,7 +142,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 4.0
+Version: 4.1
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -234,15 +234,15 @@ install -m 0644 "$SRC"/data/screenator.appdata.xml \
 install -m 0644 "$SRC"/data/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
 for icon in pen arrow text free-line spline polygon triangle bucket math bars \
-            ellipse rounded-rectangle marker eraser redo undo trash \
-            reset-settings hide font-settings shapes paper; do
+            random-signal ellipse rounded-rectangle marker eraser redo undo \
+            trash reset-settings hide font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
 done
 
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=4.0
+export LINUXDEPLOY_OUTPUT_VERSION=4.1
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

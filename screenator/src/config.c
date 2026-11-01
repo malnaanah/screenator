@@ -492,7 +492,8 @@ read_pen_tool (GKeyFile *key_file)
 static const gchar * const hint_names[] =
 {
   "pen", "marker", "eraser", "text", "line", "arrow", "spline", "polygon",
-  "triangle", "ellipse", "rounded-rectangle", "math", "bars", "bucket"
+  "triangle", "ellipse", "rounded-rectangle", "math", "bars", "bucket",
+  "random"
 };
 
 void read_keyfile(ScreenatorData *data)

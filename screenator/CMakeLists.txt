@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 4.0 LANGUAGES C)
+project(screenator VERSION 4.1 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
@@ -78,6 +78,7 @@ install(FILES
     data/bucket.png
     data/math.png
     data/bars.png
+    data/random-signal.png
     data/ellipse.png
     data/rounded-rectangle.png
     data/marker.png

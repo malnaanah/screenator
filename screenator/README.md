@@ -13,7 +13,8 @@ and you can keep using your applications while it is visible.
 
 - A small draggable floating icon. Left or right click opens the menu with:
   Pen, Text, Eraser, Shapes (Marker, Line, Spline, Polygon, Triangle, Arrow,
-  Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel Lines),
+  Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel Lines,
+  Random Signal),
   Line Thickness, Line Color, Shapes Fill Color, Screen Paper, Eraser Size,
   Opacity, Floating Icon Size, Undo, Redo, Clear Screen, Toggle Visibility,
   Settings (Save Annotations on Exit, Change Font, Show Floating Icon, Show
@@ -99,8 +100,17 @@ and you can keep using your applications while it is visible.
   curve instead.
 - Parallel Lines draws between 2 and 40 evenly spaced vertical lines with the
   current line thickness. The square handle outside the left edge sets their
-  number: pressing it resets to two lines and moving away adds more. The lines
-  can be moved, resized and rotated with the usual handles.
+  number: pressing it resets to two lines and moving away adds more. The square
+  handle outside the right edge changes the arrowheads on the lines: pressing
+  it resets to none, and moving away adds them in the order top, bottom and
+  both; the handle shows the current mode. The lines can be moved, resized and
+  rotated with the usual handles.
+- Random Signal draws a random waveform. A single click places a default-size
+  signal centred on the click; dragging out a frame sets its size. The square
+  handle outside the left edge resets the smoothness to 1 (sharpest); dragging
+  it away in any direction raises it up to 16 (smoothest). The default is 5.
+  Clicking the signal without dragging generates a new signal with a new seed.
+  The frame can be moved, resized and rotated with the usual handles.
 - Paint Bucket fills the closed area under the click with the current Shapes
   Fill Color. The area must be enclosed by drawn strokes and must not reach the
   screen edge; otherwise nothing is filled, so clicking outside a shape cannot
@@ -166,7 +176,8 @@ and you can keep using your applications while it is visible.
 - Hotkeys: `F9` toggle painting, `SHIFT-F9` clear, `CTRL-F9` toggle
   visibility, `ALT-F9` quit, `F8` undo, `SHIFT-F8` redo. While painting mode
   is active, `Ctrl+Z` also undoes and `Ctrl+Shift+Z` redoes, even with Caps
-  Lock or Num Lock on.
+  Lock or Num Lock on, and `Esc` exits the current tool like a right click
+  outside a shape.
 
 ## Build
 
@@ -186,8 +197,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_4.0_amd64.deb`
-- `Screenator-4.0-x86_64.AppImage`
+- `screenator_4.1_amd64.deb`
+- `Screenator-4.1-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

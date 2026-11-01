@@ -281,6 +281,10 @@ void apply_pen_settings (ScreenatorData *data)
       data->forced_context = data->default_shape;
       data->shape_type = SCREENATOR_SHAPE_BARS;
       break;
+    case 18:
+      data->forced_context = data->default_shape;
+      data->shape_type = SCREENATOR_SHAPE_RANDOM;
+      break;
     default:
       data->forced_context = NULL;
       break;
@@ -1903,8 +1907,13 @@ frame_handle_position (const ScreenatorFrameShape *shape,
 	    CLAMP (shape->extra, 0.0, MIN (frame->w, frame->h) / 2.0);
 	  ly = -frame->h / 2.0;
 	}
-      else if (shape->type == SCREENATOR_SHAPE_BARS)
+      else if (shape->type == SCREENATOR_SHAPE_BARS ||
+	       shape->type == SCREENATOR_SHAPE_RANDOM)
 	lx = -(frame->w / 2.0 + FRAME_HANDLE_OFFSET);
+      break;
+    case SCREENATOR_FRAME_HANDLE_ARROWS:
+      if (shape->type == SCREENATOR_SHAPE_BARS)
+	lx = frame->w / 2.0 + FRAME_HANDLE_OFFSET;
       break;
     default:
       break;
@@ -2889,23 +2898,239 @@ frame_draw_bars (ScreenatorData *data, cairo_t *cr,
 {
   GdkRGBA color = data->pen_color;
   gint count = CLAMP (shape->count, 1, 40);
+  gint line_width = MAX (1, (gint) data->pen_width);
   gint i;
+  gboolean top;
+  gboolean bottom;
+  gboolean heads = FALSE;
+  gdouble half = 0.0;
+  gdouble len = 0.0;
 
   if (shape->frame.w < 1.0 || shape->frame.h < 1.0)
     return;
 
+  top = shape->arrows == SCREENATOR_BARS_ARROWS_TOP ||
+	shape->arrows == SCREENATOR_BARS_ARROWS_BOTH;
+  bottom = shape->arrows == SCREENATOR_BARS_ARROWS_BOTTOM ||
+	   shape->arrows == SCREENATOR_BARS_ARROWS_BOTH;
+
+  if (shape->arrows != SCREENATOR_BARS_ARROWS_NONE)
+    {
+      gdouble w = MAX (1, line_width) * 0.5 + ARROW_HEAD_EXTRA_WIDTH;
+      gdouble spacing = shape->frame.w / count;
+
+      /* Long and narrow, so the heads read as sharp arrows rather than
+       * short triangles, but keep the head short enough on long lines.  The
+       * base is still clamped to the line spacing. */
+      half = MIN (1.5 * w, spacing * 0.42);
+      len = MIN (6.0 * w, shape->frame.h * 0.28);
+      len = MIN (len, half * 4.0);
+      heads = half >= 1.0 && len >= 2.0;
+    }
+
   color.alpha = data->opacity;
   gdk_cairo_set_source_rgba (cr, &color);
-  cairo_set_line_width (cr, MAX (1, (gint) data->pen_width));
+  cairo_set_line_width (cr, line_width);
   cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
 
   for (i = 0; i < count; i++)
     {
       gdouble lx = -shape->frame.w / 2.0 +
 	(i + 0.5) * shape->frame.w / count;
+      gdouble y0 = -shape->frame.h / 2.0;
+      gdouble y1 = shape->frame.h / 2.0;
 
-      cairo_move_to (cr, lx, -shape->frame.h / 2.0);
-      cairo_line_to (cr, lx, shape->frame.h / 2.0);
+      /* Stop the shaft at the base of an arrowhead, so the head is the end
+       * of the line instead of the line running through its point. */
+      if (heads && top)
+	y0 += len;
+      if (heads && bottom)
+	y1 -= len;
+
+      if (y1 - y0 < 1.0)
+	{
+	  y0 = -shape->frame.h / 2.0;
+	  y1 = shape->frame.h / 2.0;
+	}
+
+      cairo_move_to (cr, lx, y0);
+      cairo_line_to (cr, lx, y1);
+    }
+
+  cairo_stroke (cr);
+
+  /* Optional arrowheads at the top and/or bottom end of every line.  They
+   * point outwards and are clamped so neighbouring heads do not overlap when
+   * the lines are close together. */
+  if (heads)
+    {
+      for (i = 0; i < count; i++)
+	{
+	  gdouble lx = -shape->frame.w / 2.0 +
+	    (i + 0.5) * shape->frame.w / count;
+
+	  if (top)
+	    {
+	      cairo_move_to (cr, lx, -shape->frame.h / 2.0);
+	      cairo_line_to (cr, lx - half,
+			     -shape->frame.h / 2.0 + len);
+	      cairo_line_to (cr, lx + half,
+			     -shape->frame.h / 2.0 + len);
+	      cairo_close_path (cr);
+	    }
+
+	  if (bottom)
+	    {
+	      cairo_move_to (cr, lx, shape->frame.h / 2.0);
+	      cairo_line_to (cr, lx - half,
+			     shape->frame.h / 2.0 - len);
+	      cairo_line_to (cr, lx + half,
+			     shape->frame.h / 2.0 - len);
+	      cairo_close_path (cr);
+	    }
+	}
+
+      cairo_fill (cr);
+    }
+}
+
+/* Random Signal: a deterministic random waveform inside the frame.  The
+ * generation seed is stored with the shape, so moving, resizing or rotating it
+ * does not change the signal.  Smoothness 1 is raw noise (the sharpest) and 10
+ * is a wide Gaussian filter with a smooth cubic curve (the smoothest). */
+#define RANDOM_SIGNAL_SAMPLES 192
+#define RANDOM_SIGNAL_PAD 56
+#define RANDOM_SIGNAL_TOTAL (RANDOM_SIGNAL_SAMPLES + 2 * RANDOM_SIGNAL_PAD)
+
+/* Peak height of the signal as a fraction of the frame half-height.  Keeping
+ * it below 1 leaves the curve closer to its mean instead of spanning the whole
+ * frame. */
+#define RANDOM_SIGNAL_AMPLITUDE 0.60
+
+static guint32
+random_signal_next (guint32 *state)
+{
+  guint32 x = *state;
+
+  x ^= x << 13;
+  x ^= x >> 17;
+  x ^= x << 5;
+  *state = x;
+  return x;
+}
+
+static void
+frame_draw_random (ScreenatorData *data, cairo_t *cr,
+		   const ScreenatorFrameShape *shape)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+  gint smooth = CLAMP ((gint) round (shape->extra), 1, 16);
+  gdouble sigma = (smooth - 1) * 1.2;
+  gint radius = (gint) ceil (3.0 * sigma);
+  guint32 state = shape->seed ? shape->seed : 1u;
+  gdouble noise[RANDOM_SIGNAL_TOTAL];
+  gdouble values[RANDOM_SIGNAL_SAMPLES];
+  gdouble xs[RANDOM_SIGNAL_SAMPLES];
+  gdouble ys[RANDOM_SIGNAL_SAMPLES];
+  gdouble mean = 0.0;
+  gdouble peak = 0.0;
+  gdouble half_h;
+  gint i, j;
+
+  if (shape->frame.w < 4.0 || shape->frame.h < 4.0)
+    return;
+
+  /* Extra samples on both sides keep the Gaussian filter free of edge
+   * effects.  The middle RANDOM_SIGNAL_SAMPLES are the signal. */
+  for (i = 0; i < RANDOM_SIGNAL_TOTAL; i++)
+    noise[i] = (random_signal_next (&state) /
+		(gdouble) G_MAXUINT32) * 2.0 - 1.0;
+
+  if (radius > 0)
+    {
+      gdouble weights[2 * RANDOM_SIGNAL_PAD + 1];
+      gdouble sumw = 0.0;
+
+      for (j = -radius; j <= radius; j++)
+	{
+	  gdouble w = exp (-0.5 * (j / sigma) * (j / sigma));
+
+	  weights[j + radius] = w;
+	  sumw += w;
+	}
+
+      for (i = 0; i < RANDOM_SIGNAL_SAMPLES; i++)
+	{
+	  gdouble sum = 0.0;
+	  gint center = i + RANDOM_SIGNAL_PAD;
+
+	  for (j = -radius; j <= radius; j++)
+	    sum += noise[center + j] * weights[j + radius];
+
+	  values[i] = sum / sumw;
+	}
+    }
+  else
+    {
+      for (i = 0; i < RANDOM_SIGNAL_SAMPLES; i++)
+	values[i] = noise[i + RANDOM_SIGNAL_PAD];
+    }
+
+  /* Centre the curve on its mean and scale its largest deviation to a
+   * fraction of the frame, so it varies less around the centre. */
+  for (i = 0; i < RANDOM_SIGNAL_SAMPLES; i++)
+    mean += values[i];
+  mean /= RANDOM_SIGNAL_SAMPLES;
+
+  for (i = 0; i < RANDOM_SIGNAL_SAMPLES; i++)
+    peak = MAX (peak, fabs (values[i] - mean));
+
+  half_h = shape->frame.h / 2.0 - line_width / 2.0;
+
+  for (i = 0; i < RANDOM_SIGNAL_SAMPLES; i++)
+    {
+      gdouble value = peak > 1e-9
+	? (values[i] - mean) / peak * RANDOM_SIGNAL_AMPLITUDE
+	: 0.0;
+
+      xs[i] = -shape->frame.w / 2.0 +
+	(i / (gdouble) (RANDOM_SIGNAL_SAMPLES - 1)) * shape->frame.w;
+      ys[i] = -value * half_h;
+    }
+
+  color.alpha = data->opacity;
+  gdk_cairo_set_source_rgba (cr, &color);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+
+  if (smooth > 1)
+    {
+      /* Catmull-Rom through the samples: the curve is smooth between them
+       * and has no straight-segment corners. */
+      cairo_move_to (cr, xs[0], ys[0]);
+
+      for (i = 1; i < RANDOM_SIGNAL_SAMPLES; i++)
+	{
+	  gint i0 = MAX (i - 2, 0);
+	  gint i1 = i - 1;
+	  gint i2 = i;
+	  gint i3 = MIN (i + 1, RANDOM_SIGNAL_SAMPLES - 1);
+	  gdouble c1x = xs[i1] + (xs[i2] - xs[i0]) / 6.0;
+	  gdouble c1y = ys[i1] + (ys[i2] - ys[i0]) / 6.0;
+	  gdouble c2x = xs[i2] - (xs[i3] - xs[i1]) / 6.0;
+	  gdouble c2y = ys[i2] - (ys[i3] - ys[i1]) / 6.0;
+
+	  cairo_curve_to (cr, c1x, c1y, c2x, c2y, xs[i2], ys[i2]);
+	}
+    }
+  else
+    {
+      cairo_move_to (cr, xs[0], ys[0]);
+
+      for (i = 1; i < RANDOM_SIGNAL_SAMPLES; i++)
+	cairo_line_to (cr, xs[i], ys[i]);
     }
 
   cairo_stroke (cr);
@@ -2967,6 +3192,10 @@ draw_frame_shape (ScreenatorData *data, cairo_t *cr,
       return;
     case SCREENATOR_SHAPE_BARS:
       frame_draw_bars (data, cr, shape);
+      cairo_restore (cr);
+      return;
+    case SCREENATOR_SHAPE_RANDOM:
+      frame_draw_random (data, cr, shape);
       cairo_restore (cr);
       return;
     case SCREENATOR_SHAPE_TEXT:
@@ -3869,6 +4098,7 @@ void main_do_event (GdkEventAny *event,
       event->window == data->root &&
       (keycode == data->hot_keycode || keycode == data->undo_keycode ||
        keycode == data->undo_ctrl_keycode ||
+       keycode == data->escape_keycode ||
        keycode == data->paper_z_keycode ||
        keycode == data->paper_f_keycode ||
        keycode == data->paper_t_keycode ||

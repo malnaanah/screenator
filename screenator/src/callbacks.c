@@ -396,14 +396,17 @@ gboolean on_expose (GtkWidget *widget,
       else if (devdata->shape_active)
 	{
 	  if (data->shape_type == SCREENATOR_SHAPE_MATH ||
-	      data->shape_type == SCREENATOR_SHAPE_BARS)
+	      data->shape_type == SCREENATOR_SHAPE_BARS ||
+	      data->shape_type == SCREENATOR_SHAPE_RANDOM)
 	    {
-	      /* The math plot and the parallel lines have no plain outline,
-	       * so preview the frame with its real contents. */
+	      /* The math plot, parallel lines and random signal have no plain
+	       * outline, so preview the frame with its real contents. */
 	      ScreenatorFrameShape preview;
 
 	      memset (&preview, 0, sizeof (preview));
 	      preview.type = data->shape_type;
+	      preview.extra = 5.0;
+	      preview.seed = devdata->frame_seed;
 	      preview.polar = data->math_polar;
 	      preview.expression = data->math_polar
 		? data->math_polar_expression : data->math_expression;
@@ -2565,6 +2568,11 @@ triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
 
 #define FRAME_GRIP_RADIUS 11
 
+/* A single click with the Random Signal tool creates this default-sized
+ * signal centred on the click; dragging still gives an arbitrary frame. */
+#define RANDOM_SIGNAL_DEFAULT_W 360
+#define RANDOM_SIGNAL_DEFAULT_H 180
+
 /* Repaint the area covered by the frame and its handles. */
 static void
 frame_invalidate (ScreenatorData *data, const ScreenatorFrameShape *shape)
@@ -2607,13 +2615,18 @@ frame_corner_signs (ScreenatorFrameHandle handle,
 static ScreenatorFrameHandle
 frame_handle_at (const ScreenatorFrameShape *shape, gint x, gint y)
 {
-  ScreenatorFrameHandle order[6];
+  ScreenatorFrameHandle order[8];
   guint count = 0;
   guint i;
 
   if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
-      shape->type == SCREENATOR_SHAPE_BARS)
+      shape->type == SCREENATOR_SHAPE_RANDOM)
     order[count++] = SCREENATOR_FRAME_HANDLE_EXTRA;
+  else if (shape->type == SCREENATOR_SHAPE_BARS)
+    {
+      order[count++] = SCREENATOR_FRAME_HANDLE_EXTRA;
+      order[count++] = SCREENATOR_FRAME_HANDLE_ARROWS;
+    }
   order[count++] = SCREENATOR_FRAME_HANDLE_ROTATE;
   order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_TL;
   order[count++] = SCREENATOR_FRAME_HANDLE_SIZE_TR;
@@ -2708,6 +2721,12 @@ frame_begin_from_drag (ScreenatorData *data, ScreenatorDeviceData *devdata,
   shape->frame.rotation = 0.0;
   shape->extra = MIN (w, h) / 4.0;
   shape->count = 5;
+  shape->arrows = SCREENATOR_BARS_ARROWS_NONE;
+  if (type == SCREENATOR_SHAPE_RANDOM)
+    {
+      shape->extra = 5.0;
+      shape->seed = devdata->frame_seed ? devdata->frame_seed : 1u;
+    }
   shape->polar = data->math_polar;
   if (shape->polar)
     {
@@ -2849,6 +2868,27 @@ frame_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
 
 	  shape->count = CLAMP (2 + (gint) (moved / 12.0), 2, 40);
 	}
+      else if (shape->type == SCREENATOR_SHAPE_RANDOM)
+	{
+	  /* Like the parallel-lines count handle: dragging in any direction
+	   * away from the handle raises the smoothness. */
+	  gdouble px = x - devdata->frame_press_x;
+	  gdouble py = y - devdata->frame_press_y;
+	  gdouble moved = sqrt (px * px + py * py);
+
+	  shape->extra = CLAMP (1.0 + moved / 10.0, 1.0, 16.0);
+	}
+      break;
+    case SCREENATOR_FRAME_HANDLE_ARROWS:
+      if (shape->type == SCREENATOR_SHAPE_BARS)
+	{
+	  gdouble px = x - devdata->frame_press_x;
+	  gdouble py = y - devdata->frame_press_y;
+	  gdouble moved = sqrt (px * px + py * py);
+	  gint mode = ((gint) (moved / 18.0)) % 4;
+
+	  shape->arrows = (ScreenatorBarsArrows) mode;
+	}
       break;
     default:
       break;
@@ -2903,6 +2943,52 @@ frame_draw_label (cairo_t *cr, gint x, gint y, gint value)
 
   cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.95);
   cairo_fill (cr);
+}
+
+/* A small arrow icon inside the parallel-lines arrow handle, showing the
+ * current mode: a dash for none, an up arrow, a down arrow or both. */
+static void
+frame_draw_bars_arrow_icon (cairo_t *cr, gint x, gint y,
+			    ScreenatorBarsArrows arrows)
+{
+  gboolean top = arrows == SCREENATOR_BARS_ARROWS_TOP ||
+		 arrows == SCREENATOR_BARS_ARROWS_BOTH;
+  gboolean bottom = arrows == SCREENATOR_BARS_ARROWS_BOTTOM ||
+		    arrows == SCREENATOR_BARS_ARROWS_BOTH;
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.9);
+  cairo_set_line_width (cr, 1.2);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+
+  if (arrows == SCREENATOR_BARS_ARROWS_NONE)
+    {
+      cairo_move_to (cr, x - 3.0, y);
+      cairo_line_to (cr, x + 3.0, y);
+      cairo_stroke (cr);
+      return;
+    }
+
+  cairo_move_to (cr, x, y - 4.0);
+  cairo_line_to (cr, x, y + 4.0);
+  cairo_stroke (cr);
+
+  if (top)
+    {
+      cairo_move_to (cr, x, y - 5.5);
+      cairo_line_to (cr, x - 2.5, y - 2.0);
+      cairo_line_to (cr, x + 2.5, y - 2.0);
+      cairo_close_path (cr);
+      cairo_fill (cr);
+    }
+
+  if (bottom)
+    {
+      cairo_move_to (cr, x, y + 5.5);
+      cairo_line_to (cr, x - 2.5, y + 2.0);
+      cairo_line_to (cr, x + 2.5, y + 2.0);
+      cairo_close_path (cr);
+      cairo_fill (cr);
+    }
 }
 
 /* Draw the handles of an editable frame shape. */
@@ -2961,6 +3047,17 @@ frame_draw_handles (ScreenatorData *data, cairo_t *cr,
       frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_EXTRA, &pos);
       frame_draw_square (cr, pos.x, pos.y);
       frame_draw_label (cr, pos.x, pos.y, CLAMP (shape->count, 1, 40));
+
+      frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_ARROWS, &pos);
+      frame_draw_square (cr, pos.x, pos.y);
+      frame_draw_bars_arrow_icon (cr, pos.x, pos.y, shape->arrows);
+    }
+  else if (shape->type == SCREENATOR_SHAPE_RANDOM)
+    {
+      frame_handle_position (shape, SCREENATOR_FRAME_HANDLE_EXTRA, &pos);
+      frame_draw_square (cr, pos.x, pos.y);
+      frame_draw_label (cr, pos.x, pos.y,
+			CLAMP ((gint) round (shape->extra), 1, 16));
     }
 }
 
@@ -3137,6 +3234,69 @@ line_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
   line_invalidate (data, line);
 }
 
+/* Finish what the active tool is doing and/or leave painting mode.  This is
+ * the action of a right click on the canvas, shared by the mouse and by the
+ * Escape key so both behave the same. */
+gboolean
+screenator_exit_tool (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+  gboolean handled = FALSE;
+
+  if (!data->devdatatable)
+    return FALSE;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->frame_active)
+	{
+	  frame_finish (data, devdata);
+	  handled = TRUE;
+	}
+      else if (devdata->line_active)
+	{
+	  line_finish (data, devdata);
+	  handled = TRUE;
+	}
+      else if (devdata->cur_context &&
+	       devdata->cur_context->type == SCREENATOR_SHAPE &&
+	       data->shape_type == SCREENATOR_SHAPE_SPLINE &&
+	       devdata->shape_active)
+	{
+	  spline_finish (data, devdata);
+	  handled = TRUE;
+	}
+      else if (devdata->cur_context &&
+	       devdata->cur_context->type == SCREENATOR_SHAPE &&
+	       data->shape_type == SCREENATOR_SHAPE_STAR &&
+	       devdata->star_active)
+	{
+	  star_finish (data, devdata);
+	  handled = TRUE;
+	}
+      else if (devdata->cur_context &&
+	       devdata->cur_context->type == SCREENATOR_SHAPE &&
+	       data->shape_type == SCREENATOR_SHAPE_TRIANGLE &&
+	       devdata->triangle_active)
+	{
+	  triangle_finish (data, devdata);
+	  handled = TRUE;
+	}
+    }
+
+  if (!handled && screenator_any_grabbed (data))
+    {
+      release_grab (data, NULL);
+      handled = TRUE;
+    }
+
+  return handled;
+}
+
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
@@ -3168,50 +3328,11 @@ gboolean on_buttonpress (GtkWidget *win,
   if (!devdata->is_grabbed)
     return FALSE;
 
-  /* Right-click finishes a spline or a star that is being edited.  Otherwise
-   * it exits painting mode and returns to normal. */
+  /* Right-click finishes an unfinished shape that is being edited; otherwise
+   * it exits painting mode and returns to normal.  Escape does the same. */
   if (ev->button == 3)
     {
-      if (devdata->frame_active)
-	{
-	  frame_finish (data, devdata);
-	  return TRUE;
-	}
-
-      if (devdata->line_active)
-	{
-	  line_finish (data, devdata);
-	  return TRUE;
-	}
-
-      if (devdata->cur_context &&
-	  devdata->cur_context->type == SCREENATOR_SHAPE &&
-	  data->shape_type == SCREENATOR_SHAPE_SPLINE &&
-	  devdata->shape_active)
-	{
-	  spline_finish (data, devdata);
-	  return TRUE;
-	}
-
-      if (devdata->cur_context &&
-	  devdata->cur_context->type == SCREENATOR_SHAPE &&
-	  data->shape_type == SCREENATOR_SHAPE_STAR &&
-	  devdata->star_active)
-	{
-	  star_finish (data, devdata);
-	  return TRUE;
-	}
-
-      if (devdata->cur_context &&
-	  devdata->cur_context->type == SCREENATOR_SHAPE &&
-	  data->shape_type == SCREENATOR_SHAPE_TRIANGLE &&
-	  devdata->triangle_active)
-	{
-	  triangle_finish (data, devdata);
-	  return TRUE;
-	}
-
-      release_grab (data, NULL);
+      screenator_exit_tool (data);
       return TRUE;
     }
 
@@ -3501,7 +3622,8 @@ gboolean on_buttonpress (GtkWidget *win,
 	  if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
 	      data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
 	      data->shape_type == SCREENATOR_SHAPE_MATH ||
-	      data->shape_type == SCREENATOR_SHAPE_BARS)
+	      data->shape_type == SCREENATOR_SHAPE_BARS ||
+	      data->shape_type == SCREENATOR_SHAPE_RANDOM)
 	    {
 	      ScreenatorFrameHandle handle;
 
@@ -3520,12 +3642,26 @@ gboolean on_buttonpress (GtkWidget *win,
 		    {
 		      frame_begin_drag (data, devdata, handle, ev->x, ev->y);
 
-		      /* The line-count handle starts at two lines; moving
-		       * the pointer away adds more. */
+		      /* The line-count handle starts at two lines and the
+		       * arrow handle at no arrows; moving the pointer away
+		       * adds more. */
 		      if (handle == SCREENATOR_FRAME_HANDLE_EXTRA &&
 			  devdata->frame_shape.type == SCREENATOR_SHAPE_BARS)
 			{
 			  devdata->frame_shape.count = 2;
+			  frame_invalidate (data, &devdata->frame_shape);
+			}
+		      else if (handle == SCREENATOR_FRAME_HANDLE_ARROWS &&
+			       devdata->frame_shape.type == SCREENATOR_SHAPE_BARS)
+			{
+			  devdata->frame_shape.arrows =
+			    SCREENATOR_BARS_ARROWS_NONE;
+			  frame_invalidate (data, &devdata->frame_shape);
+			}
+		      else if (handle == SCREENATOR_FRAME_HANDLE_EXTRA &&
+			       devdata->frame_shape.type == SCREENATOR_SHAPE_RANDOM)
+			{
+			  devdata->frame_shape.extra = 1.0;
 			  frame_invalidate (data, &devdata->frame_shape);
 			}
 		      return TRUE;
@@ -3548,6 +3684,8 @@ gboolean on_buttonpress (GtkWidget *win,
 	      devdata->shape_active = TRUE;
 	      devdata->shape_x0 = devdata->shape_x1 = ev->x;
 	      devdata->shape_y0 = devdata->shape_y1 = ev->y;
+	      if (data->shape_type == SCREENATOR_SHAPE_RANDOM)
+		devdata->frame_seed = (guint) g_random_int () | 1u;
 	      return TRUE;
 	    }
 
@@ -3655,7 +3793,8 @@ gboolean on_motion (GtkWidget *win,
       if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
 	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
 	  data->shape_type == SCREENATOR_SHAPE_MATH ||
-	  data->shape_type == SCREENATOR_SHAPE_BARS)
+	  data->shape_type == SCREENATOR_SHAPE_BARS ||
+	  data->shape_type == SCREENATOR_SHAPE_RANDOM)
 	{
 	  if (devdata->frame_active &&
 	      devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
@@ -3926,8 +4065,30 @@ gboolean on_buttonrelease (GtkWidget *win,
       if (data->shape_type == SCREENATOR_SHAPE_ELLIPSE ||
 	  data->shape_type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE ||
 	  data->shape_type == SCREENATOR_SHAPE_MATH ||
-	  data->shape_type == SCREENATOR_SHAPE_BARS)
+	  data->shape_type == SCREENATOR_SHAPE_BARS ||
+	  data->shape_type == SCREENATOR_SHAPE_RANDOM)
 	{
+	  /* A click inside a random signal (no drag) rolls a new one. */
+	  if (data->shape_type == SCREENATOR_SHAPE_RANDOM &&
+	      devdata->frame_shape.type == SCREENATOR_SHAPE_RANDOM &&
+	      devdata->frame_drag == SCREENATOR_FRAME_HANDLE_MOVE)
+	    {
+	      gint dx = ABS (ev->x - devdata->frame_press_x);
+	      gint dy = ABS (ev->y - devdata->frame_press_y);
+
+	      devdata->frame_drag = SCREENATOR_FRAME_HANDLE_NONE;
+
+	      if (dx < 3 && dy < 3)
+		{
+		  devdata->frame_shape.frame.cx = devdata->frame_press_cx;
+		  devdata->frame_shape.frame.cy = devdata->frame_press_cy;
+		  devdata->frame_shape.seed = (guint) g_random_int () | 1u;
+		  frame_invalidate (data, &devdata->frame_shape);
+		}
+
+	      return TRUE;
+	    }
+
 	  /* Releasing a handle ends the drag; the shape stays editable until
 	   * it is committed. */
 	  if (devdata->frame_drag != SCREENATOR_FRAME_HANDLE_NONE)
@@ -3944,11 +4105,23 @@ gboolean on_buttonrelease (GtkWidget *win,
 	      devdata->shape_active = FALSE;
 
 	      /* The dragged-out rectangle becomes the editable frame, so
-	       * the handles can still move, resize and rotate it. */
+	       * the handles can still move, resize and rotate it.  A plain
+	       * click with the Random Signal tool creates a default-size
+	       * signal centred on the click. */
 	      if (dx > 0 || dy > 0)
 		frame_begin_from_drag (data, devdata, data->shape_type,
 				       devdata->shape_x0, devdata->shape_y0,
 				       devdata->shape_x1, devdata->shape_y1);
+	      else if (data->shape_type == SCREENATOR_SHAPE_RANDOM)
+		frame_begin_from_drag (data, devdata, data->shape_type,
+				       devdata->shape_x0 -
+				       RANDOM_SIGNAL_DEFAULT_W / 2,
+				       devdata->shape_y0 -
+				       RANDOM_SIGNAL_DEFAULT_H / 2,
+				       devdata->shape_x0 +
+				       RANDOM_SIGNAL_DEFAULT_W / 2,
+				       devdata->shape_y0 +
+				       RANDOM_SIGNAL_DEFAULT_H / 2);
 
 	      return TRUE;
 	    }
@@ -5881,7 +6054,8 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
 	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) },
 	{ "Math Function",      "math.png",               G_CALLBACK (on_icon_math) },
-	{ "Parallel Lines",     "bars.png",               G_CALLBACK (on_icon_bars) }
+	{ "Parallel Lines",     "bars.png",               G_CALLBACK (on_icon_bars) },
+	{ "Random Signal",      "random-signal.png",      G_CALLBACK (on_icon_random) }
       };
     guint i;
 
@@ -6891,6 +7065,7 @@ shape_type_has_snapping (ScreenatorShapeType type)
     {
     case SCREENATOR_SHAPE_SPLINE:
     case SCREENATOR_SHAPE_BUCKET:
+    case SCREENATOR_SHAPE_RANDOM:
       return FALSE;
     default:
       return TRUE;
@@ -6903,7 +7078,7 @@ static const gchar * const tool_hint_names[SCREENATOR_HINT_COUNT] =
   "Pen tool", "Marker tool", "Eraser tool", "Text tool", "Line tool",
   "Arrow tool", "Spline tool", "Polygon tool", "Triangle tool",
   "Ellipse tool", "Rounded Rectangle tool", "Math Function tool",
-  "Parallel Lines tool", "Paint Bucket tool"
+  "Parallel Lines tool", "Paint Bucket tool", "Random Signal tool"
 };
 
 /* One message for every tool, in ScreenatorToolHint order. */
@@ -6953,10 +7128,17 @@ static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
   /* SCREENATOR_HINT_BARS */
   "Drag to draw the parallel lines, middle click to erase, scroll to change "
   "the line colour; drag its handles to resize, change the line count and "
-  "rotate it, and right click to finish it.",
+  "rotate it, drag the right handle to change the arrows (none, top, bottom "
+  "or both), and right click to finish it.",
   /* SCREENATOR_HINT_BUCKET */
   "Left click to fill the enclosed area, middle click to erase, scroll to "
-  "change the fill colour, and right click to exit the tool."
+  "change the fill colour, and right click to exit the tool.",
+  /* SCREENATOR_HINT_RANDOM */
+  "Click to place a random signal (or drag to size it), middle click to "
+  "erase, scroll to change the line colour; the left handle resets the "
+  "smoothness to 1 (sharp) and dragging it away in any direction raises it "
+  "to 16 (smooth), and clicking the signal makes a new one.  Right click "
+  "finishes it."
 };
 
 /* Show the tool hints.  The tool hint appears when its tool is selected; the
@@ -7013,7 +7195,8 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
       gchar *full_message =
 	g_strconcat (tool_hint_names[hint], ": ", message,
 		     "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
-		     "mode to undo and redo.", NULL);
+		     "mode to undo and redo.  Press Escape to finish a "
+		     "shape or exit the tool.", NULL);
 
       label = gtk_label_new (full_message);
       g_free (full_message);
@@ -7592,6 +7775,8 @@ shape_tool_hint (ScreenatorShapeType shape)
       return SCREENATOR_HINT_MATH;
     case SCREENATOR_SHAPE_BARS:
       return SCREENATOR_HINT_BARS;
+    case SCREENATOR_SHAPE_RANDOM:
+      return SCREENATOR_HINT_RANDOM;
     case SCREENATOR_SHAPE_BUCKET:
       return SCREENATOR_HINT_BUCKET;
     default:
@@ -7697,6 +7882,13 @@ void on_icon_bars (GtkMenuItem *menuitem,
 {
   select_shape_tool ((ScreenatorData *) user_data, 17,
 		     SCREENATOR_SHAPE_BARS);
+}
+
+void on_icon_random (GtkMenuItem *menuitem,
+		     gpointer     user_data)
+{
+  select_shape_tool ((ScreenatorData *) user_data, 18,
+		     SCREENATOR_SHAPE_RANDOM);
 }
 
 void on_icon_text (GtkMenuItem *menuitem,

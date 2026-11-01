@@ -90,6 +90,7 @@ typedef enum
   SCREENATOR_SHAPE_TRIANGLE,
   SCREENATOR_SHAPE_MATH,
   SCREENATOR_SHAPE_BARS,
+  SCREENATOR_SHAPE_RANDOM,
   /* Not a menu tool: the type of a text frame that is being edited. */
   SCREENATOR_SHAPE_TEXT
 } ScreenatorShapeType;
@@ -123,6 +124,7 @@ typedef enum
   SCREENATOR_HINT_MATH,
   SCREENATOR_HINT_BARS,
   SCREENATOR_HINT_BUCKET,
+  SCREENATOR_HINT_RANDOM,
   SCREENATOR_HINT_COUNT
 } ScreenatorToolHint;
 
@@ -247,8 +249,19 @@ typedef enum
   SCREENATOR_FRAME_HANDLE_SIZE_BL,
   SCREENATOR_FRAME_HANDLE_SIZE_BR,
   SCREENATOR_FRAME_HANDLE_ROTATE,   /* round handle above the frame */
-  SCREENATOR_FRAME_HANDLE_EXTRA     /* roundness or line count */
+  SCREENATOR_FRAME_HANDLE_EXTRA,    /* roundness or line count */
+  SCREENATOR_FRAME_HANDLE_ARROWS    /* parallel lines: arrowheads */
 } ScreenatorFrameHandle;
+
+/* Arrowheads on the parallel-lines tool.  The order is the order in which the
+ * handle cycles them. */
+typedef enum
+{
+  SCREENATOR_BARS_ARROWS_NONE = 0,
+  SCREENATOR_BARS_ARROWS_TOP,
+  SCREENATOR_BARS_ARROWS_BOTTOM,
+  SCREENATOR_BARS_ARROWS_BOTH
+} ScreenatorBarsArrows;
 
 /* Functions the Math tool can plot are entered as a text expression, e.g.
  * "cos(2*pi*x)", so the frame stores the expression and the x range. */
@@ -263,6 +276,8 @@ typedef struct
   ScreenatorFrame        frame;
   gdouble                extra;
   gint                   count;
+  ScreenatorBarsArrows   arrows;
+  guint                  seed;         /* Random Signal: generation seed */
   gchar                 *expression;   /* Math tool: y = f(x) or r = f(theta) */
   gdouble                xmin;         /* x range, or theta range in polar mode */
   gdouble                xmax;
@@ -362,6 +377,7 @@ typedef struct
   gdouble               frame_press_rotation;
   gdouble               frame_press_font_size;
   gdouble               frame_press_distance;
+  guint                 frame_seed;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
@@ -430,6 +446,7 @@ typedef struct
   /* Hardware keycode of "z", grabbed for Ctrl+Z / Ctrl+Shift+Z while painting
    * mode is active; 0 when the shortcut is not grabbed. */
   guint        undo_ctrl_keycode;
+  guint        escape_keycode;
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
@@ -557,6 +574,7 @@ void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);
 void parse_print_help (gpointer key, gpointer value, gpointer user_data);
 
 void select_tool (ScreenatorData *data, GdkDevice *device, GdkDevice *slave_device, guint state);
+gboolean screenator_exit_tool (ScreenatorData *data);
 
 void apply_pen_settings (ScreenatorData *data);
 void set_pen_opacity (ScreenatorData *data, gdouble opacity);
