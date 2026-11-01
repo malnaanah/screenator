@@ -184,17 +184,16 @@ and you can keep using your applications while it is visible.
   outside a shape.
 - Stylus: the tip draws like the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
-  first side button has three modes, chosen from the stylus menu. **Eraser** (the default) erases
-  while held, even when the pen is hovering above the tablet. In **Color** mode
-  a tap changes the line colour (or the fill colour over the Paint Bucket), and
-  holding the button while moving the pen up or down gives further colour
-  steps. In **Thickness** mode the same tap/drag steps through the line
-  thicknesses. The second side button acts like Escape/right click on a short
-  click, finishing the shape being edited and keeping the tool active, or
-  leaving painting mode when no shape is being edited. A long press opens the
-  stylus menu with the **Button 1 Mode** section (Eraser, Color, Thickness).
-  A short help message appears once when a stylus is detected; its "Never show
-  this message again" option is remembered.
+  first side button has two short-press settings, chosen in the stylus menu:
+  **Color** steps the line colour (or the fill colour over the Paint Bucket)
+  and **Thickness** steps through the line thicknesses. A long press of the
+  first side button activates the eraser while it is held, even when the pen
+  is hovering above the tablet. The second side button acts like Escape/right
+  click on a short click, finishing the shape being edited and keeping the tool
+  active, or leaving painting mode when no shape is being edited. A long press
+  opens the **Button 1 Mode** menu with Color and Thickness. A short help
+  message appears once when a stylus is detected; its "Never show this message
+  again" option is remembered.
 
 ## Build
 

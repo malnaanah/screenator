@@ -3428,13 +3428,6 @@ typedef struct
 } StylusMenu;
 
 static void
-stylus_menu_eraser (GtkMenuItem *item, gpointer user_data)
-{
-  ((StylusMenu *) user_data)->data->stylus_mode =
-    SCREENATOR_STYLUS_ERASER;
-}
-
-static void
 stylus_menu_color (GtkMenuItem *item, gpointer user_data)
 {
   ((StylusMenu *) user_data)->data->stylus_mode =
@@ -3489,7 +3482,7 @@ show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
 		  gint x, gint y)
 {
   StylusMenu *ctx;
-  GtkWidget *menu, *mode_heading, *eraser, *color, *thickness;
+  GtkWidget *menu, *mode_heading, *color, *thickness;
   GdkWindow *root;
   GdkRectangle rect;
   gboolean was_grabbed;
@@ -3500,8 +3493,14 @@ show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
   /* A side-button action may still be in progress when the menu opens. */
   devdata->stylus_eraser_active = FALSE;
   devdata->menu_button_down = FALSE;
-  devdata->stylus_scroll_active = FALSE;
-  devdata->stylus_scroll_moved = FALSE;
+  devdata->stylus_side_button_down = FALSE;
+
+  if (data->stylus_eraser_hold_id)
+    {
+      g_source_remove (data->stylus_eraser_hold_id);
+      data->stylus_eraser_hold_id = 0;
+      data->stylus_eraser_hold_devdata = NULL;
+    }
 
   was_grabbed = screenator_any_grabbed (data);
   if (was_grabbed)
@@ -3514,28 +3513,21 @@ show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
 
   menu = gtk_menu_new ();
   mode_heading = stylus_menu_heading ("Button 1 Mode");
-  eraser = gtk_radio_menu_item_new_with_label (NULL, "Eraser");
-  color = gtk_radio_menu_item_new_with_label_from_widget (
-    GTK_RADIO_MENU_ITEM (eraser), "Color");
+  color = gtk_radio_menu_item_new_with_label (NULL, "Color");
   thickness = gtk_radio_menu_item_new_with_label_from_widget (
-    GTK_RADIO_MENU_ITEM (eraser), "Thickness");
+    GTK_RADIO_MENU_ITEM (color), "Thickness");
 
   if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
     gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (thickness), TRUE);
-  else if (data->stylus_mode == SCREENATOR_STYLUS_COLOR)
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
   else
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (eraser), TRUE);
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
 
-  g_signal_connect (eraser, "activate",
-		    G_CALLBACK (stylus_menu_eraser), ctx);
   g_signal_connect (color, "activate",
 		    G_CALLBACK (stylus_menu_color), ctx);
   g_signal_connect (thickness, "activate",
 		    G_CALLBACK (stylus_menu_thickness), ctx);
 
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), mode_heading);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), eraser);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), color);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), thickness);
   gtk_widget_show_all (menu);
@@ -3699,6 +3691,41 @@ menu_hold_timeout (gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+/* A long press of the first side button temporarily activates the eraser,
+ * even while the pen hovers above the tablet. */
+#define STYLUS_ERASER_HOLD_MS 500
+
+static gboolean
+stylus_eraser_hold_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  ScreenatorDeviceData *devdata = data->stylus_eraser_hold_devdata;
+
+  data->stylus_eraser_hold_id = 0;
+  data->stylus_eraser_hold_devdata = NULL;
+
+  if (!devdata || !devdata->is_grabbed ||
+      !devdata->stylus_side_button_down)
+    return G_SOURCE_REMOVE;
+
+  devdata->stylus_eraser_active = TRUE;
+
+  if (devdata->cur_context != data->default_eraser)
+    {
+      devdata->saved_context = devdata->cur_context;
+      devdata->cur_context = data->default_eraser;
+    }
+
+  set_device_cursor (data, devdata->device, data->default_eraser);
+
+  data->maxwidth = data->default_eraser->width;
+  stroke_begin (data, devdata->device);
+  draw_line (data, devdata->device, devdata->lastx, devdata->lasty,
+	     devdata->lastx, devdata->lasty);
+
+  return G_SOURCE_REMOVE;
+}
+
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
@@ -3752,22 +3779,23 @@ gboolean on_buttonpress (GtkWidget *win,
       return TRUE;
     }
 
-  /* The stylus first side button (button 2) is the configured Eraser, Color
-   * or Thickness action. */
-  if (event_source_is_stylus ((GdkEvent *) ev))
+  /* The stylus first side button (button 2): a short press steps through
+   * colors or thicknesses, a long press activates the eraser. */
+  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2)
     {
-      if (ev->button == 2 &&
-	  (data->stylus_mode == SCREENATOR_STYLUS_COLOR ||
-	   data->stylus_mode == SCREENATOR_STYLUS_THICKNESS))
-	{
-	  devdata->stylus_scroll_active = TRUE;
-	  devdata->stylus_scroll_moved = FALSE;
-	  devdata->stylus_scroll_last_y = ev->y;
-	  return TRUE;
-	}
+      devdata->stylus_side_button_down = TRUE;
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
 
-      if (ev->button == 2)
-	devdata->stylus_eraser_active = TRUE;
+      if (data->stylus_eraser_hold_id)
+	g_source_remove (data->stylus_eraser_hold_id);
+
+      data->stylus_eraser_hold_devdata = devdata;
+      data->stylus_eraser_hold_id =
+	g_timeout_add (STYLUS_ERASER_HOLD_MS,
+		       stylus_eraser_hold_timeout, data);
+      return TRUE;
     }
 
   /* Do not drop unprocessed motion events.  Compressed events make fast
@@ -3778,8 +3806,11 @@ gboolean on_buttonpress (GtkWidget *win,
   ev->state |= 1 << (ev->button + 7);
 
 
-  if (ev->state != devdata->state ||
-      devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev))
+  /* A long press of the stylus first side button keeps the eraser active even
+   * though the button is held; do not let the tool lookup replace it. */
+  if (!devdata->stylus_eraser_active &&
+      (ev->state != devdata->state ||
+       devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev)))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
 
   /* The Text tool writes on screen instead of painting a stroke.  Remember
@@ -4197,17 +4228,10 @@ gboolean on_motion (GtkWidget *win,
       return TRUE;
     }
 
-  /* Stylus Scroll mode: holding the first side button and moving the pen up
-   * or down steps through colours like the mouse wheel. */
-  if (devdata->stylus_scroll_active)
+  /* While the first side button is waiting for its long press, keep the
+   * pointer position fresh but do not draw. */
+  if (devdata->stylus_side_button_down && !devdata->stylus_eraser_active)
     {
-      if (ABS (ev->y - devdata->stylus_scroll_last_y) >= 22)
-	{
-	  apply_stylus_step (data, ev->y > devdata->stylus_scroll_last_y);
-	  devdata->stylus_scroll_moved = TRUE;
-	  devdata->stylus_scroll_last_y = ev->y;
-	}
-
       devdata->lastx = ev->x;
       devdata->lasty = ev->y;
       devdata->motion_time = ev->time;
@@ -4217,8 +4241,10 @@ gboolean on_motion (GtkWidget *win,
   if(data->debug)
       g_printerr("DEBUG: Device '%s': motion to (x,y)=(%.2f : %.2f)\n", gdk_device_get_name(ev->device), ev->x, ev->y);
 
-  if (ev->state != devdata->state ||
-      devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev))
+  /* Keep the eraser selected for as long as the first side button is held. */
+  if (!devdata->stylus_eraser_active &&
+      (ev->state != devdata->state ||
+       devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev)))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
 
   /* Moving the pointer with the Text tool selected does not draw, but the
@@ -4462,6 +4488,18 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
+  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
+      data->stylus_eraser_hold_id)
+    {
+      /* Short press: step through the selected colours or thicknesses. */
+      g_source_remove (data->stylus_eraser_hold_id);
+      data->stylus_eraser_hold_id = 0;
+      data->stylus_eraser_hold_devdata = NULL;
+      devdata->stylus_side_button_down = FALSE;
+      apply_stylus_step (data, TRUE);
+      return TRUE;
+    }
+
   if ((ev->x != devdata->lastx) ||
       (ev->y != devdata->lasty))
     on_motion(win, (GdkEventMotion *) ev, user_data);
@@ -4469,17 +4507,8 @@ gboolean on_buttonrelease (GtkWidget *win,
   if (!devdata->is_grabbed)
     return FALSE;
 
-  if (event_source_is_stylus ((GdkEvent *) ev) &&
-      ev->button == 2 && devdata->stylus_scroll_active)
-    {
-      /* A tap without movement is one wheel notch. */
-      if (!devdata->stylus_scroll_moved)
-	apply_stylus_step (data, TRUE);
-
-      devdata->stylus_scroll_active = FALSE;
-      devdata->stylus_scroll_moved = FALSE;
-      return TRUE;
-    }
+  if (ev->button == 2)
+    devdata->stylus_side_button_down = FALSE;
 
   if (ev->button == 2 && devdata->stylus_eraser_active)
     devdata->stylus_eraser_active = FALSE;
@@ -7963,13 +7992,14 @@ show_stylus_hint_idle (gpointer user_data)
 			"The tip draws like the left mouse button. Pen "
 			"pressure is ignored and the selected line thickness "
 			"is used.\n\n"
-			"The first side button is set from the stylus menu: "
-			"Eraser, Color or Thickness.\n\n"
+			"The first side button: a short press steps through "
+			"the selected Color or Thickness; a long press erases "
+			"while it is held.\n\n"
 			"Short click the second side button to act like a "
 			"right click (Escape): it finishes the shape being "
 			"edited or leaves painting mode.\n\n"
 			"Long press the second side button to open the "
-			"Button 1 Mode menu.");
+			"Button 1 Mode menu (Color or Thickness).");
   gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
   gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);

@@ -110,8 +110,7 @@ typedef enum
  * stylus menu. */
 typedef enum
 {
-  SCREENATOR_STYLUS_ERASER = 0,
-  SCREENATOR_STYLUS_COLOR,
+  SCREENATOR_STYLUS_COLOR = 0,
   SCREENATOR_STYLUS_THICKNESS
 } ScreenatorStylusMode;
 
@@ -415,10 +414,8 @@ typedef struct
    * first side button is button 2 (eraser or scroll) and the second side
    * button is button 3 (opens the stylus menu). */
   gboolean             stylus_eraser_active;
+  gboolean             stylus_side_button_down;
   gboolean             menu_button_down;
-  gboolean             stylus_scroll_active;
-  gboolean             stylus_scroll_moved;
-  gint                 stylus_scroll_last_y;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
@@ -445,6 +442,8 @@ typedef struct
   gboolean     menu_hold_is_stylus;
   gint         menu_hold_x;
   gint         menu_hold_y;
+  guint        stylus_eraser_hold_id;
+  ScreenatorDeviceData *stylus_eraser_hold_devdata;
   AppIndicator *trayicon;
 
   /* Movable on-screen icon window */
