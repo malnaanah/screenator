@@ -1,4 +1,4 @@
-Screenator 4.1
+Screenator 4.2
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 4.1 (amd64)
-  - Screenator-4.1-x86_64.AppImage
+  - screenator 4.2 (amd64)
+  - Screenator-4.2-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_4.1_amd64.deb
-                          Screenator-4.1-x86_64.AppImage
+                          screenator_4.2_amd64.deb
+                          Screenator-4.2-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -35,12 +35,13 @@ Features:
     Lines tools.  Shapes are drawn by dragging; the Line and Arrow follow the
     drag direction, which snaps to 0, 30, 45, 60, 90 and so on while Ctrl is
     held, and follows the pointer without it.
-    The Arrow adds a triangular arrowhead at the end point.  The head grows
-    with the line thickness and stays easy to see even with a thin line.  A
-    placed line or arrow stays
-    editable: each end point has a round handle, and dragging the line itself
-    moves the whole shape; clicking outside, double-clicking or right-clicking
-    commits it.  Spline is placed click by click: each click adds a node, the
+    The Arrow adds a triangular arrowhead at the end point by default.  The
+    head grows with the line thickness and stays easy to see even with a thin
+    line.  A square handle offset from the middle of the line changes the
+    heads: pressing it resets to none and dragging away cycles start, end and
+    both.  A placed line or arrow stays editable: each end point has a round
+    handle, and dragging the line itself moves the whole shape; clicking
+    outside, double-clicking or right-clicking commits it.  Spline is placed click by click: each click adds a node, the
     nodes are joined by a smooth Bezier curve, and dragging a node moves it.
     Every node has two round Bezier handles: dragging one mirrors the other so
     the curve stays smooth, and holding Ctrl while dragging moves only that

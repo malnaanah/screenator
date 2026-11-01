@@ -374,9 +374,7 @@ gboolean on_expose (GtkWidget *widget,
 	}
       else if (devdata->line_active)
 	{
-	  draw_shape (data, cr, devdata->line.type,
-		      devdata->line.x0, devdata->line.y0,
-		      devdata->line.x1, devdata->line.y1);
+	  draw_line_shape (data, cr, &devdata->line);
 	  line_draw_handles (data, cr, &devdata->line);
 	}
       else if (devdata->frame_active)
@@ -3081,7 +3079,75 @@ line_invalidate (ScreenatorData *data, const ScreenatorLine *line)
 			      &bounds, 0);
 }
 
-/* Draw the round grip on each end point. */
+/* Position of the arrow-heads handle: halfway along the line, offset to one
+ * side so it never covers the shaft. */
+static void
+line_heads_handle_position (const ScreenatorLine *line, GdkPoint *pos)
+{
+  gdouble dx = line->x1 - line->x0;
+  gdouble dy = line->y1 - line->y0;
+  gdouble length = hypot (dx, dy);
+  gdouble mx = (line->x0 + line->x1) / 2.0;
+  gdouble my = (line->y0 + line->y1) / 2.0;
+
+  if (length < 1.0)
+    {
+      pos->x = (gint) round (mx);
+      pos->y = (gint) round (my - LINE_HEADS_HANDLE_OFFSET);
+      return;
+    }
+
+  pos->x = (gint) round (mx - dy / length * LINE_HEADS_HANDLE_OFFSET);
+  pos->y = (gint) round (my + dx / length * LINE_HEADS_HANDLE_OFFSET);
+}
+
+/* A small horizontal icon in the heads handle: a dash for none, a left arrow
+ * for start, a right arrow for end, or both. */
+static void
+line_draw_heads_icon (cairo_t *cr, gint x, gint y,
+		      ScreenatorArrowHeads heads)
+{
+  gboolean start = heads == SCREENATOR_ARROW_HEADS_START ||
+		   heads == SCREENATOR_ARROW_HEADS_BOTH;
+  gboolean end = heads == SCREENATOR_ARROW_HEADS_END ||
+		 heads == SCREENATOR_ARROW_HEADS_BOTH;
+
+  cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.9);
+  cairo_set_line_width (cr, 1.2);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+
+  if (heads == SCREENATOR_ARROW_HEADS_NONE)
+    {
+      cairo_move_to (cr, x - 3.0, y);
+      cairo_line_to (cr, x + 3.0, y);
+      cairo_stroke (cr);
+      return;
+    }
+
+  cairo_move_to (cr, x - 4.0, y);
+  cairo_line_to (cr, x + 4.0, y);
+  cairo_stroke (cr);
+
+  if (start)
+    {
+      cairo_move_to (cr, x - 5.5, y);
+      cairo_line_to (cr, x - 2.0, y - 2.5);
+      cairo_line_to (cr, x - 2.0, y + 2.5);
+      cairo_close_path (cr);
+      cairo_fill (cr);
+    }
+
+  if (end)
+    {
+      cairo_move_to (cr, x + 5.5, y);
+      cairo_line_to (cr, x + 2.0, y - 2.5);
+      cairo_line_to (cr, x + 2.0, y + 2.5);
+      cairo_close_path (cr);
+      cairo_fill (cr);
+    }
+}
+
+/* Draw the round grip on each end point and, for an arrow, the heads handle. */
 static void
 line_draw_handles (ScreenatorData *data, cairo_t *cr,
 		   const ScreenatorLine *line)
@@ -3090,6 +3156,15 @@ line_draw_handles (ScreenatorData *data, cairo_t *cr,
 
   star_draw_grip (cr, line->x0, line->y0);
   star_draw_grip (cr, line->x1, line->y1);
+
+  if (line->type == SCREENATOR_SHAPE_ARROW)
+    {
+      GdkPoint pos;
+
+      line_heads_handle_position (line, &pos);
+      frame_draw_square (cr, pos.x, pos.y);
+      line_draw_heads_icon (cr, pos.x, pos.y, line->heads);
+    }
 }
 
 /* The end handle under (x, y), if any.  The line itself is tested later, so
@@ -3098,6 +3173,17 @@ static ScreenatorLineHandle
 line_handle_at (const ScreenatorLine *line, gint x, gint y)
 {
   gint dx, dy;
+
+  if (line->type == SCREENATOR_SHAPE_ARROW)
+    {
+      GdkPoint pos;
+
+      line_heads_handle_position (line, &pos);
+      dx = pos.x - x;
+      dy = pos.y - y;
+      if (dx * dx + dy * dy <= LINE_GRIP_RADIUS * LINE_GRIP_RADIUS)
+	return SCREENATOR_LINE_HANDLE_HEADS;
+    }
 
   dx = x - line->x0;
   dy = y - line->y0;
@@ -3147,6 +3233,8 @@ line_begin (ScreenatorDeviceData *devdata, ScreenatorShapeType type,
   devdata->line.y0 = y;
   devdata->line.x1 = x;
   devdata->line.y1 = y;
+  devdata->line.heads = type == SCREENATOR_SHAPE_ARROW
+    ? SCREENATOR_ARROW_HEADS_END : SCREENATOR_ARROW_HEADS_NONE;
   devdata->line_drag = SCREENATOR_LINE_HANDLE_END;
   devdata->line_press_x = x;
   devdata->line_press_y = y;
@@ -3220,6 +3308,15 @@ line_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
       break;
     case SCREENATOR_LINE_HANDLE_END:
       line_place_endpoint (line, FALSE, x, y, snap);
+      break;
+    case SCREENATOR_LINE_HANDLE_HEADS:
+      {
+	gdouble px = x - devdata->line_press_x;
+	gdouble py = y - devdata->line_press_y;
+	gdouble moved = hypot (px, py);
+
+	line->heads = (ScreenatorArrowHeads) (((gint) (moved / 18.0)) % 4);
+      }
       break;
     case SCREENATOR_LINE_HANDLE_MOVE:
       line->x0 = devdata->line_press_x0 + (x - devdata->line_press_x);
@@ -3595,6 +3692,13 @@ gboolean on_buttonpress (GtkWidget *win,
 		  if (handle != SCREENATOR_LINE_HANDLE_NONE)
 		    {
 		      line_begin_drag (devdata, handle, ev->x, ev->y);
+
+		      if (handle == SCREENATOR_LINE_HANDLE_HEADS)
+			{
+			  devdata->line.heads =
+			    SCREENATOR_ARROW_HEADS_NONE;
+			  line_invalidate (data, &devdata->line);
+			}
 		      return TRUE;
 		    }
 
@@ -7101,7 +7205,9 @@ static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
   "colour; hold Ctrl to snap the angle, and right click to finish it.",
   /* SCREENATOR_HINT_ARROW */
   "Drag to draw an arrow, middle click to erase, scroll to change the line "
-  "colour; hold Ctrl to snap the angle, and right click to finish it.",
+  "colour; hold Ctrl to snap the angle, drag the square handle to change the "
+  "heads (none, start, end or both; end is the default), and right click to "
+  "finish it.",
   /* SCREENATOR_HINT_SPLINE */
   "Left click to add a node, middle click to erase, scroll to change the line "
   "colour; double-click or right click to finish the curve.",

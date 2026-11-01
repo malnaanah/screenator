@@ -799,6 +799,11 @@ void remove_saved_annotations (void)
 
 void clear_screen (ScreenatorData *data)
 {
+  /* Clearing is undoable: save the drawings before they are erased.  An
+   * already empty canvas does not need an undo step. */
+  if (surface_has_annotations (data->backbuffer))
+    snap_undo_state (data);
+
   cairo_t *cr = cairo_create(data->backbuffer);
   cairo_set_source_rgba(cr, 0, 0, 0, 0);
   cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
@@ -1088,6 +1093,10 @@ void undo_drawing (ScreenatorData *data)
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
 
+  /* Undoing a Clear Screen brings the drawings back; undoing something on an
+   * empty canvas leaves it empty. */
+  data->painted = surface_has_annotations (data->backbuffer) ? 1 : 0;
+
   GdkRectangle rect = {0, 0, data->width, data->height};
   gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
 
@@ -1111,7 +1120,9 @@ void redo_drawing (ScreenatorData *data)
   data->undo_head++;
   if(data->undo_head >= SCREENATOR_MAX_UNDO)
     data->undo_head -= SCREENATOR_MAX_UNDO;
-  
+
+  data->painted = surface_has_annotations (data->backbuffer) ? 1 : 0;
+
   GdkRectangle rect = {0, 0, data->width, data->height};
   gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
 
@@ -1472,54 +1483,118 @@ shape_has_arrow (ScreenatorShapeType type)
 #define ARROW_HEAD_HALF_WIDTH 2.3
 #define ARROW_HEAD_EXTRA_WIDTH 2.0
 
-/* Draw an arrow as one filled polygon that contains both the shaft and the
- * head.  The head is a plain triangle: the shaft joins the middle of its base,
- * with no notch.  Building it as a single path keeps translucent strokes at
- * one opacity, avoids a seam between shaft and head, and leaves the tip as a
- * plain sharp corner instead of the round cap a stroked line would show. */
+/* Draw an arrow as one filled polygon that contains the shaft and the
+ * requested heads.  The head is a plain triangle: the shaft joins the middle
+ * of its base, with no notch.  Building it as a single path keeps translucent
+ * strokes at one opacity, avoids seams between shaft and heads, and leaves the
+ * tips as sharp corners. */
 static void
-shape_draw_arrow (cairo_t *cr, gint line_width,
-		  gint x0, gint y0, gint x1, gint y1,
-		  const GdkRGBA *color)
+shape_draw_arrow_heads (cairo_t *cr, gint line_width,
+			gint x0, gint y0, gint x1, gint y1,
+			ScreenatorArrowHeads heads,
+			const GdkRGBA *color)
 {
-  gdouble direction = atan2 (y1 - y0, x1 - x0);
-  gdouble w = MAX (1, line_width) * 0.5 + ARROW_HEAD_EXTRA_WIDTH;
-  gdouble half = line_width / 2.0;
-  gdouble ca = cos (direction);
-  gdouble sa = sin (direction);
-  gdouble length = hypot (x1 - x0, y1 - y0);
-  gdouble base_x = x1 - ARROW_HEAD_LENGTH * w * ca;
-  gdouble base_y = y1 - ARROW_HEAD_LENGTH * w * sa;
-  gdouble barb = ARROW_HEAD_HALF_WIDTH * w;
-  gdouble start_x = x0;
-  gdouble start_y = y0;
+  gdouble dx = x1 - x0;
+  gdouble dy = y1 - y0;
+  gdouble length = hypot (dx, dy);
+  gdouble ca, sa, px, py;
+  gdouble w, head_len, barb, half;
+  gdouble base0, base1;
+  gboolean start_head, end_head;
 
-  /* A very short drag still has to give a clean head: clamp the shaft to the
-   * base of the triangle so the polygon does not turn inside out. */
-  if (length <= ARROW_HEAD_LENGTH * w)
+  if (length < 1.0)
+    return;
+
+  if (heads == SCREENATOR_ARROW_HEADS_NONE)
     {
-      start_x = base_x;
-      start_y = base_y;
+      gdk_cairo_set_source_rgba (cr, color);
+      cairo_set_line_width (cr, MAX (1, line_width));
+      cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+      cairo_move_to (cr, x0, y0);
+      cairo_line_to (cr, x1, y1);
+      cairo_stroke (cr);
+      return;
     }
 
-  /* The unit vector along the arrow is (ca, sa); the one across it is
-   * (sa, -ca). */
+  start_head = heads == SCREENATOR_ARROW_HEADS_START ||
+	       heads == SCREENATOR_ARROW_HEADS_BOTH;
+  end_head = heads == SCREENATOR_ARROW_HEADS_END ||
+	     heads == SCREENATOR_ARROW_HEADS_BOTH;
+
+  ca = dx / length;
+  sa = dy / length;
+  /* Unit perpendicular to the arrow: (sa, -ca). */
+  px = sa;
+  py = -ca;
+
+  w = MAX (1, line_width) * 0.5 + ARROW_HEAD_EXTRA_WIDTH;
+  head_len = ARROW_HEAD_LENGTH * w;
+  barb = ARROW_HEAD_HALF_WIDTH * w;
+  half = line_width / 2.0;
+
+  /* Keep the heads from crossing each other on a short arrow. */
+  if (start_head && end_head)
+    head_len = MIN (head_len, length * 0.45);
+  else
+    head_len = MIN (head_len, length * 0.9);
+
+  base0 = start_head ? head_len : 0.0;
+  base1 = length - (end_head ? head_len : 0.0);
+
   cairo_save (cr);
   cairo_new_path (cr);
-  cairo_move_to (cr, start_x + half * sa, start_y - half * ca);
-  cairo_line_to (cr, base_x + half * sa, base_y - half * ca);
-  cairo_line_to (cr, base_x + barb * sa, base_y - barb * ca);
-  cairo_line_to (cr, x1, y1);
-  cairo_line_to (cr, base_x - barb * sa, base_y + barb * ca);
-  cairo_line_to (cr, base_x - half * sa, base_y + half * ca);
-  cairo_line_to (cr, start_x - half * sa, start_y + half * ca);
-  cairo_close_path (cr);
+
+  /* Start side: either a head tip or a flat tail. */
+  if (start_head)
+    {
+      cairo_move_to (cr, x0, y0);
+      cairo_line_to (cr, x0 + base0 * ca + barb * px,
+		     y0 + base0 * sa + barb * py);
+      cairo_line_to (cr, x0 + base0 * ca + half * px,
+		     y0 + base0 * sa + half * py);
+    }
+  else
+    cairo_move_to (cr, x0 + half * px, y0 + half * py);
+
+  /* Shaft, one side. */
+  cairo_line_to (cr, x0 + base1 * ca + half * px,
+		 y0 + base1 * sa + half * py);
+
+  /* End side: either a head tip or a flat tail. */
+  if (end_head)
+    {
+      cairo_line_to (cr, x0 + base1 * ca + barb * px,
+		     y0 + base1 * sa + barb * py);
+      cairo_line_to (cr, x1, y1);
+      cairo_line_to (cr, x0 + base1 * ca - barb * px,
+		     y0 + base1 * sa - barb * py);
+    }
+  else
+    cairo_line_to (cr, x1 + half * px, y1 + half * py);
+
+  cairo_line_to (cr, x0 + base1 * ca - half * px,
+		 y0 + base1 * sa - half * py);
+
+  /* Shaft, other side, back to the start. */
+  cairo_line_to (cr, x0 + base0 * ca - half * px,
+		 y0 + base0 * sa - half * py);
+
+  if (start_head)
+    {
+      cairo_line_to (cr, x0 + base0 * ca - barb * px,
+		     y0 + base0 * sa - barb * py);
+      cairo_close_path (cr);
+    }
+  else
+    {
+      cairo_line_to (cr, x0 - half * px, y0 - half * py);
+      cairo_close_path (cr);
+    }
 
   gdk_cairo_set_source_rgba (cr, color);
   cairo_fill (cr);
   cairo_restore (cr);
 }
-
 
 /* Draw a shape with the current pen width, colour and opacity on the given
  * cairo context.  Used both for the live preview and for committing the
@@ -1545,7 +1620,8 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 
       if (shape_has_arrow (type))
 	{
-	  shape_draw_arrow (cr, line_width, x0, y0, x1, y1, &color);
+	  shape_draw_arrow_heads (cr, line_width, x0, y0, x1, y1,
+				  SCREENATOR_ARROW_HEADS_END, &color);
 	  return;
 	}
 
@@ -1597,6 +1673,24 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 
 /* Bounding box of a shape, padded for the stroke width and, for arrows, for
  * the head at the end point. */
+/* Draw an editable line or arrow with its selected heads. */
+void
+draw_line_shape (ScreenatorData *data, cairo_t *cr,
+		 const ScreenatorLine *line)
+{
+  GdkRGBA color = data->pen_color;
+  gint line_width = MAX (1, (gint) data->pen_width);
+
+  color.alpha = data->opacity;
+
+  if (line->type == SCREENATOR_SHAPE_ARROW)
+    shape_draw_arrow_heads (cr, line_width, line->x0, line->y0,
+			    line->x1, line->y1, line->heads, &color);
+  else
+    draw_shape (data, cr, SCREENATOR_SHAPE_LINE,
+		line->x0, line->y0, line->x1, line->y1);
+}
+
 void
 shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 		  gint x0, gint y0, gint x1, gint y1,
@@ -1616,7 +1710,8 @@ void
 line_get_bounds (ScreenatorData *data, const ScreenatorLine *line,
 		 GdkRectangle *bounds)
 {
-  gint pad = (gint) data->pen_width * 6 + 16;
+  gint pad = MAX ((gint) data->pen_width * 6 + 16,
+		  (gint) LINE_HEADS_HANDLE_OFFSET + 20);
 
   shape_get_bounds (data, line->type, line->x0, line->y0,
 		    line->x1, line->y1, bounds);
@@ -1652,9 +1747,7 @@ line_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
 
       snap_undo_state (data);
       cr = cairo_create (data->backbuffer);
-      draw_shape (data, cr, devdata->line.type,
-		  devdata->line.x0, devdata->line.y0,
-		  devdata->line.x1, devdata->line.y1);
+      draw_line_shape (data, cr, &devdata->line);
       cairo_destroy (cr);
 
       data->modified = 1;

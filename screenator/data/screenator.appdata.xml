@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="4.2" date="2026-11-01">
+      <description>
+        <p>Adds a heads handle to the Arrow tool: press it to reset the arrowheads to none, then drag in any direction to cycle start, end and both. New arrows still default to the traditional single head at the end. Clearing the screen can now be undone from the Undo menu, and Redo clears it again.</p>
+      </description>
+    </release>
     <release version="4.1" date="2026-11-01">
       <description>
         <p>Adds a Random Signal tool to the Shapes submenu. A click places a default-size signal and dragging sizes it; a handle outside the left edge sets the smoothness from 1 (sharpest) to 16 (smoothest), and clicking the signal rolls a new one. The waveform is centred on its mean, uses 60% of the frame height, and is smoothed with a Gaussian filter and a smooth cubic curve. The Parallel Lines tool now has a handle outside the right edge for arrowheads on the top, bottom or both ends, with sharp heads placed at the line tips. While painting, Escape finishes the current shape or exits the tool, the same as a right click.</p>

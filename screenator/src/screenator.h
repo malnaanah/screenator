@@ -203,8 +203,19 @@ typedef enum
   SCREENATOR_TRIANGLE_HANDLE_CENTRE
 } ScreenatorTriangleHandle;
 
+/* Arrowheads of the arrow tool.  The order matches the cycle of its handle;
+ * END is the default so an arrow keeps its traditional look. */
+typedef enum
+{
+  SCREENATOR_ARROW_HEADS_NONE = 0,
+  SCREENATOR_ARROW_HEADS_START,
+  SCREENATOR_ARROW_HEADS_END,
+  SCREENATOR_ARROW_HEADS_BOTH
+} ScreenatorArrowHeads;
+
 /* The line and arrow tools stay editable after the drag: each end point has
- * its own round handle, and pressing the line itself moves both ends. */
+ * its own round handle, pressing the line itself moves both ends, and an arrow
+ * has a square handle that changes its arrowheads. */
 typedef struct
 {
   ScreenatorShapeType type;   /* SCREENATOR_SHAPE_LINE or ..._ARROW */
@@ -212,7 +223,11 @@ typedef struct
   gint                y0;
   gint                x1;
   gint                y1;
+  ScreenatorArrowHeads heads;
 } ScreenatorLine;
+
+/* Distance of the arrow-heads handle from the middle of the line. */
+#define LINE_HEADS_HANDLE_OFFSET 28.0
 
 /* Handles of the line and arrow tools.  NONE is zero so a freshly allocated
  * device data starts with no drag in progress. */
@@ -221,6 +236,7 @@ typedef enum
   SCREENATOR_LINE_HANDLE_NONE = 0,
   SCREENATOR_LINE_HANDLE_START,
   SCREENATOR_LINE_HANDLE_END,
+  SCREENATOR_LINE_HANDLE_HEADS,
   SCREENATOR_LINE_HANDLE_MOVE
 } ScreenatorLineHandle;
 
@@ -598,6 +614,8 @@ void shape_get_bounds (ScreenatorData *data, ScreenatorShapeType type,
 void line_get_bounds (ScreenatorData *data, const ScreenatorLine *line,
 		      GdkRectangle *bounds);
 void line_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
+void draw_line_shape (ScreenatorData *data, cairo_t *cr,
+		      const ScreenatorLine *line);
 void line_finish_all (ScreenatorData *data);
 void draw_spline (ScreenatorData *data, cairo_t *cr, GArray *nodes);
 void spline_get_bounds (ScreenatorData *data, GArray *nodes,

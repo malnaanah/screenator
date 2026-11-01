@@ -34,9 +34,11 @@ and you can keep using your applications while it is visible.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the
-  direction follows the pointer. The Arrow adds a head at the end point. A
-  placed line or arrow stays editable: each end point has a round handle, and
-  dragging the line itself moves the whole shape. Clicking outside,
+  direction follows the pointer. The Arrow adds a head at the end point by
+  default; its square handle, offset from the middle of the line, changes the
+  heads: pressing it resets to none and dragging away cycles start, end and
+  both. A placed line or arrow stays editable: each end point has a round
+  handle, and dragging the line itself moves the whole shape. Clicking outside,
   double-clicking or right-clicking commits it. The ellipse, rounded rectangle,
   polygon and triangle can optionally be filled using the Shapes Fill Color
   submenu; the default is no fill and green is its first colour. Line Color
@@ -197,8 +199,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_4.1_amd64.deb`
-- `Screenator-4.1-x86_64.AppImage`
+- `screenator_4.2_amd64.deb`
+- `Screenator-4.2-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

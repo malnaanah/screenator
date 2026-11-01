@@ -47,10 +47,12 @@ Lines tools.
 Shapes are drawn by dragging from the start point to the end point. The line
 and the arrow follow the drag direction, which snaps to 0, 30, 45, 60, 90 and
 so on while Ctrl is held; without it the direction follows the pointer. The
-arrow adds a triangular head at the end point that stays easy to see even with
-a thin line. A placed line or arrow stays editable:
-each end point has a round handle, and dragging the line itself moves the whole
-shape; clicking outside, double-clicking or right-clicking commits it.
+arrow adds a triangular head at the end point by default and stays easy to see
+even with a thin line. A square handle offset from the middle of the line
+changes the heads: pressing it resets to none and dragging away cycles start,
+end and both. A placed line or arrow stays editable: each end point has a
+round handle, and dragging the line itself moves the whole shape; clicking
+outside, double-clicking or right-clicking commits it.
 Ellipses, rounded rectangles, polygons and triangles can be filled using the
 "Shapes Fill Color" submenu; the default is no fill and green is its first
 colour. Both the line colour and the shape fill colour have a "Custom..."
