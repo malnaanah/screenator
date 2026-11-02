@@ -161,13 +161,13 @@ Features:
     floating icon and its menu stay above it), takes the mouse and keyboard so
     clicks and typing do not reach the desktop or the applications below, stays
     when Clear Screen is selected and is remembered across restarts.  While a
-    paper is active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Alt+F4 quits,
-    Ctrl+F shows or hides the floating icon and Ctrl+T shows or hides the
-    drawings.
+    paper is active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the
+    paper, Ctrl+F shows or hides the floating icon, Ctrl+T shows or hides the
+    drawings and Alt+F4 quits.
   - A single, colourful Hints dialog appears when Screenator starts.  It
-    summarises the common mouse and stylus controls plus the Drawing Mode and
-    Screen Paper shortcuts in one place instead of repeating them for every
-    tool, and it emphasises that a long right click, or a long press of the
+    summarises the common mouse and stylus controls plus Shape Editing tips and
+    the Drawing Mode and Screen Paper shortcuts in one place instead of
+    repeating them for every tool, and it emphasises that a long right click, or a long press of the
     stylus second side button, opens the Scroll Mode menu to choose Color or
     Thickness for scrolling.  It has a
     "Never show hints again" option which is remembered across restarts.

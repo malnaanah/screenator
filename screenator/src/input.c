@@ -643,9 +643,9 @@ grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
   g_list_free (devices);
 }
 
-/* Grab the paper shortcuts so Ctrl+F, Ctrl+T and Alt+F4 work even after
- * Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and the
- * painting grab), so it is not grabbed twice.  The hardware keycodes are
+/* Grab the paper shortcuts so Ctrl+F, Ctrl+T, Ctrl+Q and Alt+F4 work even
+ * after Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and
+ * the painting grab), so it is not grabbed twice.  The hardware keycodes are
  * resolved once and also used by the snooper, so the shortcuts keep working
  * with a non-Latin keyboard layout. */
 void
@@ -653,6 +653,8 @@ update_paper_shortcuts (ScreenatorData *data, gboolean grab)
 {
   if (!data->paper_z_keycode)
     data->paper_z_keycode = paper_shortcut_keycode (GDK_KEY_z);
+  if (!data->paper_q_keycode)
+    data->paper_q_keycode = paper_shortcut_keycode (GDK_KEY_q);
   if (!data->paper_f_keycode)
     data->paper_f_keycode = paper_shortcut_keycode (GDK_KEY_f);
   if (!data->paper_t_keycode)
@@ -662,6 +664,7 @@ update_paper_shortcuts (ScreenatorData *data, gboolean grab)
 
   grab_paper_key (data, data->paper_f_keycode, ControlMask, grab);
   grab_paper_key (data, data->paper_t_keycode, ControlMask, grab);
+  grab_paper_key (data, data->paper_q_keycode, ControlMask, grab);
   grab_paper_key (data, data->paper_f4_keycode, Mod1Mask, grab);
 }
 
@@ -965,6 +968,14 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  if (data->text_editor_active)
 	    return FALSE;
 	  toggle_drawings_visibility (data);
+	  return TRUE;
+	}
+
+      if (ctrl && !alt && !shift && key == data->paper_q_keycode)
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  screenator_exit_screen_paper (data);
 	  return TRUE;
 	}
     }

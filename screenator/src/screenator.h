@@ -561,6 +561,7 @@ typedef struct
   gboolean     hide_drawings;  /* paper stays visible, annotations do not */
   GtkWidget   *about_dialog;
   guint        paper_z_keycode;
+  guint        paper_q_keycode;
   guint        paper_f_keycode;
   guint        paper_t_keycode;
   guint        paper_f4_keycode;
@@ -589,6 +590,7 @@ void show_window (ScreenatorData *data);
 void draw_screen_paper (ScreenatorData *data, cairo_t *cr);
 void paper_take_focus (ScreenatorData *data);
 void paper_restore_focus (ScreenatorData *data);
+void screenator_exit_screen_paper (ScreenatorData *data);
 void update_window_shape (ScreenatorData *data);
 void text_preview_add_shape (ScreenatorData *data, cairo_region_t *region);
 void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);

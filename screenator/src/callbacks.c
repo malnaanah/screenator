@@ -5877,6 +5877,14 @@ static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
   set_screen_paper (data, paper);
 }
 
+/* Leave the screen paper from the Ctrl+Q shortcut. */
+void
+screenator_exit_screen_paper (ScreenatorData *data)
+{
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    set_screen_paper (data, SCREENATOR_PAPER_NONE);
+}
+
 static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
@@ -7643,7 +7651,7 @@ hints_bullet (const gchar *color, const gchar *markup)
   gtk_label_set_markup (GTK_LABEL (label), full);
   g_free (full);
   gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_max_width_chars (GTK_LABEL (label), 60);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 48);
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   return label;
 }
@@ -7653,7 +7661,8 @@ hints_bullet (const gchar *color, const gchar *markup)
 static void
 show_hints_dialog (ScreenatorData *data)
 {
-  GtkWidget *dialog, *content, *box, *label, *check;
+  GtkWidget *dialog, *content, *box, *columns, *left, *right;
+  GtkWidget *separator, *label, *check;
   gboolean was_grabbed;
   gboolean changed = FALSE;
 
@@ -7697,69 +7706,92 @@ show_hints_dialog (ScreenatorData *data)
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
 
-  /* Mouse. */
-  gtk_box_pack_start (GTK_BOX (box),
+  /* Two columns keep the dialog wide and short instead of very tall. */
+  columns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 22);
+  gtk_box_pack_start (GTK_BOX (box), columns, TRUE, TRUE, 4);
+
+  left = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+  gtk_box_pack_start (GTK_BOX (columns), left, TRUE, TRUE, 0);
+
+  separator = gtk_separator_new (GTK_ORIENTATION_VERTICAL);
+  gtk_box_pack_start (GTK_BOX (columns), separator, FALSE, TRUE, 0);
+
+  right = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+  gtk_box_pack_start (GTK_BOX (columns), right, TRUE, TRUE, 0);
+
+  /* Left column: mouse and stylus. */
+  gtk_box_pack_start (GTK_BOX (left),
 		      hints_heading ("#c0392b", "Mouse"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
     "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
     "opens the Scroll Mode menu and chooses what the <b>mouse wheel</b> "
     "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
     "Left click and drag to draw with the selected tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
     "Middle click and drag to erase."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
     "With the Eraser tool, the wheel changes the eraser size."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
     "Short right click finishes the shape or exits the tool."),
     FALSE, FALSE, 0);
 
-  /* Stylus. */
-  gtk_box_pack_start (GTK_BOX (box),
+  gtk_box_pack_start (GTK_BOX (left),
 		      hints_heading ("#8e44ad", "Stylus"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
     "1</span> activates the eraser while it is held, even while "
     "hovering."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
     "2</span> opens the Scroll Mode menu and chooses what scrolling "
     "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "The tip draws like the left mouse button; pressure is ignored."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "Short press side button 1: step through the selected "
     "<b>Color</b> or <b>Thickness</b>, or the eraser size with the "
     "Eraser tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "Short click side button 2: finish the shape or exit the tool. With "
     "the Eraser tool, a long press does not open the menu."),
     FALSE, FALSE, 0);
 
-  /* Drawing mode shortcuts. */
-  gtk_box_pack_start (GTK_BOX (box),
+  /* Right column: shape editing and shortcuts. */
+  gtk_box_pack_start (GTK_BOX (right),
+		      hints_heading ("#2980b9", "Shape Editing"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+    "Hold <b>Ctrl</b> while rotating a shape to snap to 0, 30, 45, 60, "
+    "90 degrees, and so on."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+    "Spline: hold <b>Ctrl</b> while dragging a handle to move each control "
+    "point separately."), FALSE, FALSE, 0);
+
+  gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#16a085", "Drawing Mode Shortcuts"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#16a085",
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#16a085",
     "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#16a085",
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#16a085",
     "<b>Escape</b> finishes the shape or exits the tool."),
     FALSE, FALSE, 0);
 
-  /* Screen paper shortcuts. */
-  gtk_box_pack_start (GTK_BOX (box),
+  gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "<b>Ctrl+F</b> shows or hides the floating icon; <b>Ctrl+T</b> shows "
     "or hides the drawings."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+    "<b>Ctrl+Q</b> exits the screen paper."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "<b>Alt+F4</b> quits."), FALSE, FALSE, 0);
 
   check = gtk_check_button_new_with_label ("Never show hints again");
