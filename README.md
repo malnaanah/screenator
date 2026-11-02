@@ -13,7 +13,9 @@ settings menu.
 
 
 
-https://github.com/user-attachments/assets/986f2411-aed7-4aba-a2bb-5e0d23b65a8b
+
+
+https://github.com/user-attachments/assets/9b04ff90-14df-458c-ae8f-5d2038690ce3
 
 
 
