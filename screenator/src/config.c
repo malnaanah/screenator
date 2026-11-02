@@ -406,10 +406,8 @@ void parse_config (ScreenatorData *data)
             {
               data->hot_keyval = g_strdup(scanner->value.v_string);
             }
-          else if (key_type == UNDOKEY_SYMBOL_VALUE)
-            {
-              data->undo_keyval = g_strdup(scanner->value.v_string);
-            }
+          /* UNDOKEY is still accepted so older configuration files parse,
+           * but the separate undo key is no longer used. */
 
           token = g_scanner_get_next_token(scanner);
 

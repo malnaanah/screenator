@@ -17,9 +17,9 @@ and you can keep using your applications while it is visible.
   Random Signal),
   Line Thickness, Line Color, Shapes Fill Color, Screen Paper, Eraser Size,
   Opacity, Floating Icon Size, Undo, Redo, Clear Screen, Toggle Visibility,
-  Show Hints, Settings (Save Annotations on Exit, Change Font, Show Floating
-  Icon, Show Settings Indicator, Reset Settings), About and Quit. The icon turns into
-  its active (red) variant while a painting mode is on.
+  Show Floating Icon (F9), Show Hints, Settings (Save Annotations on Exit,
+  Change Font, Show Settings Indicator, Reset Settings), About and Quit. The
+  icon turns into its active (red) variant while a painting mode is on.
 - Marker draws a translucent yellow highlighter stroke at 50% opacity with a
   fixed 32 px width. It has its own settings and switching to it does not
   change the line colour, thickness or opacity used by the other tools.
@@ -160,15 +160,15 @@ and you can keep using your applications while it is visible.
   typing do not reach the desktop or the applications below, stays when Clear
   Screen is selected and is remembered across restarts. While a paper is
   active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper,
-  Ctrl+F shows or hides the floating icon, Ctrl+T shows or hides the drawings
-  and Alt+F4 quits.
+  Ctrl+T shows or hides the drawings and Alt+F4 quits.
 - A single, colourful **Hints** dialog appears when Screenator starts. It
-  summarises the common mouse and stylus controls plus Shape Editing tips and
-  the Drawing Mode and Screen Paper shortcuts in one place instead of
-  repeating them for every tool, and it emphasises that a long right click — or a long press of the
-  stylus second side button — opens the **Scroll Mode** menu to choose
-  **Color** or **Thickness** for scrolling. It
-  has a "Never show hints again" option which is remembered across restarts.
+  summarises the common mouse and stylus controls plus Shape Editing tips, the
+  global **F9** shortcut and the Drawing Mode and Screen Paper shortcuts in
+  one place instead of repeating them for every tool, and it emphasises that
+  a long right click — or a long press of the stylus second side button —
+  opens the **Scroll Mode** menu to choose **Color** or **Thickness** for
+  scrolling. It has a "Never show hints again" option which is remembered
+  across restarts.
   **Show Hints** in the menu opens the dialog again, and Reset Settings keeps
   the choice.
 - Pen, marker, font, eraser, shape and screen paper settings are saved in
@@ -176,11 +176,12 @@ and you can keep using your applications while it is visible.
   floating icon and settings indicator visibility. `Reset Settings` restores red, 6 px, 100%
   opacity, no shape fill, Arial Bold 24, a 40 px eraser, a 48x48 icon and no
   screen paper.
-- Hotkeys: `F9` toggle painting, `SHIFT-F9` clear, `CTRL-F9` toggle
-  visibility, `ALT-F9` quit, `F8` undo, `SHIFT-F8` redo. While painting mode
-  is active, `Ctrl+Z` also undoes and `Ctrl+Shift+Z` redoes, even with Caps
-  Lock or Num Lock on, and `Esc` exits the current tool like a right click
-  outside a shape.
+- `F9` is a global shortcut that shows or hides the floating icon at any
+  time, whether or not painting mode is active. The old Gromit-MPX keys
+  (`Shift+F9`, `Ctrl+F9`, `Alt+F9`, `F8` and `Shift+F8`) are no longer
+  grabbed. While painting mode is active, `Ctrl+Z` undoes and `Ctrl+Shift+Z`
+  redoes, even with Caps Lock or Num Lock on, and `Esc` exits the current tool
+  like a right click outside a shape.
 - Stylus: the tip draws like the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
   first side button has two short-press settings, chosen in the stylus menu:
@@ -214,8 +215,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.1_amd64.deb`
-- `Screenator-5.1-x86_64.AppImage`
+- `screenator_5.2_amd64.deb`
+- `Screenator-5.2-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

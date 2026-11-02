@@ -14,8 +14,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_5.1_amd64.deb"
-APPIMAGE="$BUILD/Screenator-5.1-x86_64.AppImage"
+DEB="$BUILD/screenator_5.2_amd64.deb"
+APPIMAGE="$BUILD/Screenator-5.2-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -142,7 +142,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 5.1
+Version: 5.2
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -242,7 +242,7 @@ done
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=5.1
+export LINUXDEPLOY_OUTPUT_VERSION=5.2
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

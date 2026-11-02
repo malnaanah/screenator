@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="5.2" date="2026-11-02">
+      <description>
+        <p>Removes the inherited Gromit-MPX global shortcuts. F9 is now a single global shortcut that shows or hides the floating icon at any time, while Shift+F9, Ctrl+F9, Alt+F9, F8 and Shift+F8 are no longer grabbed. Show Floating Icon moves directly below Toggle Visibility in the menu and is labelled with F9. Ctrl+F is removed from the screen paper shortcuts; Ctrl+T, Ctrl+Q, Ctrl+Z/Ctrl+Shift+Z and Alt+F4 remain.</p>
+      </description>
+    </release>
     <release version="5.1" date="2026-11-02">
       <description>
         <p>Redesigns the stylus first side button: a short press steps through the selected Color or Thickness, and a long press activates the eraser for as long as it is held, including while hovering. The Button 1 Mode menu now lists only Color and Thickness. The per-tool messages are replaced by one colourful hints dialog shown at startup, with Show Hints below Toggle Visibility and a remembered Never show hints again option. With the Eraser tool selected, the mouse wheel changes the eraser size.</p>

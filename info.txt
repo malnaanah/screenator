@@ -1,4 +1,4 @@
-Screenator 5.1
+Screenator 5.2
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 5.1 (amd64)
-  - Screenator-5.1-x86_64.AppImage
+  - screenator 5.2 (amd64)
+  - Screenator-5.2-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,14 +18,16 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_5.1_amd64.deb
-                          Screenator-5.1-x86_64.AppImage
+                          screenator_5.2_amd64.deb
+                          Screenator-5.2-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
   - The Settings submenu holds Save Annotations on Exit, Change Font, Show
-    Floating Icon, Show Settings Indicator and Reset Settings.  With Save
+    Settings Indicator and Reset Settings.  Show Floating Icon sits directly
+    below Toggle Visibility in the main menu and has the global F9 shortcut.
+    With Save
     Annotations on Exit on (the default), the drawings are saved to
     ~/.config/screenator-annotations.png when Screenator quits and restored on
     the next start; the screen paper follows its own setting and Clear Screen
@@ -162,15 +164,14 @@ Features:
     clicks and typing do not reach the desktop or the applications below, stays
     when Clear Screen is selected and is remembered across restarts.  While a
     paper is active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the
-    paper, Ctrl+F shows or hides the floating icon, Ctrl+T shows or hides the
-    drawings and Alt+F4 quits.
+    paper, Ctrl+T shows or hides the drawings and Alt+F4 quits.
   - A single, colourful Hints dialog appears when Screenator starts.  It
-    summarises the common mouse and stylus controls plus Shape Editing tips and
-    the Drawing Mode and Screen Paper shortcuts in one place instead of
-    repeating them for every tool, and it emphasises that a long right click, or a long press of the
-    stylus second side button, opens the Scroll Mode menu to choose Color or
-    Thickness for scrolling.  It has a
-    "Never show hints again" option which is remembered across restarts.
+    summarises the common mouse and stylus controls plus Shape Editing tips,
+    the global F9 shortcut and the Drawing Mode and Screen Paper shortcuts in
+    one place instead of repeating them for every tool, and it emphasises that
+    a long right click, or a long press of the stylus second side button,
+    opens the Scroll Mode menu to choose Color or Thickness for scrolling.  It
+    has a "Never show hints again" option which is remembered across restarts.
     "Show Hints" in the menu opens the dialog again, and Reset Settings keeps
     the choice.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
@@ -193,10 +194,11 @@ Features:
     24, a 40 px eraser and a 48x48 icon.
   - Undo/redo, clear screen, show/hide drawing, show/hide floating icon and
     show hints.
-  - Hotkeys: F9 toggles painting, SHIFT-F9 clears, CTRL-F9 toggles visibility,
-    ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.  While painting mode is
-    active, Ctrl+Z also undoes and Ctrl+Shift+Z redoes, and Esc exits the
-    current tool like a right click outside a shape.
+  - F9 is a global shortcut that shows or hides the floating icon at any time,
+    whether or not painting mode is active.  The old Gromit-MPX keys
+    (Shift+F9, Ctrl+F9, Alt+F9, F8 and Shift+F8) are no longer grabbed.  While
+    painting mode is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc
+    exits the current tool like a right click outside a shape.
   - Multi-pointer support inherited from Gromit-MPX.
   - Stylus support: the tip draws like the left mouse button, using the
     selected line width; pen pressure is ignored so it draws exactly like the

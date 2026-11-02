@@ -50,6 +50,7 @@
 #define GA_ACTIVATE   gdk_atom_intern ("Screenator/activate", FALSE)
 #define GA_DEACTIVATE gdk_atom_intern ("Screenator/deactivate", FALSE)
 #define GA_TOGGLE     gdk_atom_intern ("Screenator/toggle", FALSE)
+#define GA_TOGGLEICON gdk_atom_intern ("Screenator/toggle-icon", FALSE)
 #define GA_VISIBILITY gdk_atom_intern ("Screenator/visibility", FALSE)
 #define GA_CLEAR      gdk_atom_intern ("Screenator/clear", FALSE)
 #define GA_RELOAD     gdk_atom_intern ("Screenator/reload", FALSE)
@@ -471,8 +472,6 @@ typedef struct
   GdkWindow   *root;
   gchar       *hot_keyval;
   guint        hot_keycode;
-  gchar       *undo_keyval;
-  guint        undo_keycode;
   /* Hardware keycode of "z", grabbed for Ctrl+Z / Ctrl+Shift+Z while painting
    * mode is active; 0 when the shortcut is not grabbed. */
   guint        undo_ctrl_keycode;
@@ -562,7 +561,6 @@ typedef struct
   GtkWidget   *about_dialog;
   guint        paper_z_keycode;
   guint        paper_q_keycode;
-  guint        paper_f_keycode;
   guint        paper_t_keycode;
   guint        paper_f4_keycode;
   gboolean     debug;

@@ -139,29 +139,16 @@ static void add_hotkeys_to_compositor(ScreenatorData *data) {
 	}
 
 	/*
-	  add our keybindings
+	  Add the single global shortcut: F9 shows or hides the floating
+	  icon.  The old Gromit-MPX painting, clear, visibility, quit and
+	  undo/redo bindings are not registered.
 	 */
-	gchar *modifier_hotkey_option[18];
+	gchar *modifier_hotkey_option[3];
 	modifier_hotkey_option[0] = "";
-	modifier_hotkey_option[1] = data->hot_keyval;
-	modifier_hotkey_option[2] = "--toggle";
-	modifier_hotkey_option[3] = "<Shift>";
-	modifier_hotkey_option[4] = data->hot_keyval;
-	modifier_hotkey_option[5] = "--clear";
-	modifier_hotkey_option[6] = "<Ctrl>";
-	modifier_hotkey_option[7] = data->hot_keyval;
-	modifier_hotkey_option[8] = "--visibility";
-	modifier_hotkey_option[9] = "<Alt>";
-	modifier_hotkey_option[10] = data->hot_keyval;
-	modifier_hotkey_option[11] = "--quit";
-	modifier_hotkey_option[12] = "";
-	modifier_hotkey_option[13] = data->undo_keyval;
-	modifier_hotkey_option[14] = "--undo";
-	modifier_hotkey_option[15] = "<Shift>";
-	modifier_hotkey_option[16] = data->undo_keyval;
-	modifier_hotkey_option[17] = "--redo";
+	modifier_hotkey_option[1] = data->hot_keyval ? data->hot_keyval : "F9";
+	modifier_hotkey_option[2] = "--toggle-icon";
 
-	for(int i = 0; i < 18; i+=3) {
+	for(int i = 0; i < 3; i+=3) {
 	    gchar *new_binding = g_malloc(128);
 	    snprintf(new_binding,
 		     128,
@@ -239,15 +226,6 @@ void setup_input_devices (ScreenatorData *data)
           devdata->device = device;
           devdata->index = i;
 
-	  /* get attached keyboard and grab the hotkey */
-	  if (!data->hot_keycode && !data->undo_keycode)
-	    {
-	      g_printerr("ERROR: Grabbing keys from attached keyboard of '%s' failed, hotkey or undo key not defined.\n",
-			 gdk_device_get_name(device));
-	      devdata_free(devdata);
-	      continue;
-	    }
-
 
 	  if (GDK_IS_X11_DISPLAY(data->display)) {
 	      gint dev_id = gdk_x11_device_get_id(device);
@@ -266,7 +244,7 @@ void setup_input_devices (ScreenatorData *data)
 	      if(kbd_dev_id != -1)
 		  {
 		      if(data->debug)
-			  g_printerr("DEBUG: Grabbing hotkeys '%s' and '%s' from keyboard '%d' .\n", data->hot_keyval, data->undo_keyval, kbd_dev_id);
+			  g_printerr("DEBUG: Grabbing hotkey '%s' from keyboard '%d' .\n", data->hot_keyval, kbd_dev_id);
 
 		      XIEventMask mask;
 		      unsigned char bits[4] = {0,0,0,0};
@@ -276,8 +254,16 @@ void setup_input_devices (ScreenatorData *data)
 		      XISetMask(bits, XI_KeyPress);
 		      XISetMask(bits, XI_KeyRelease);
 	      
-		      XIGrabModifiers modifiers[] = {{XIAnyModifier, 0}};
-		      int nmods = 1;
+		      /* Bare F9 only, but keep it working with Caps Lock or
+		       * Num Lock on.  Modified combinations stay free for the
+		       * applications below. */
+		      XIGrabModifiers modifiers[] = {
+			{ 0, 0 },
+			{ LockMask, 0 },
+			{ Mod2Mask, 0 },
+			{ LockMask | Mod2Mask, 0 }
+		      };
+		      int nmods = 4;
 	      
 		      gdk_x11_display_error_trap_push(data->display);
 	      
@@ -297,38 +283,13 @@ void setup_input_devices (ScreenatorData *data)
 									 GTK_DIALOG_DESTROY_WITH_PARENT,
 									 GTK_MESSAGE_ERROR,
 									  GTK_BUTTONS_CLOSE,
-									 "Grabbing hotkey %s from keyboard %d failed. The drawing hotkey function will not work unless configured to use another key.",
+									 "Grabbing hotkey %s from keyboard %d failed. The floating icon shortcut will not work unless configured to use another key.",
 									 data->hot_keyval,
 									 kbd_dev_id);
 			      show_dialog_above_drawings (data, dialog);
 			      gtk_dialog_run (GTK_DIALOG (dialog));
 			      gtk_widget_destroy (dialog);
 
-			  }
-		      }
-
-		      if (data->undo_keycode) {
-			  if(XIGrabKeycode(GDK_DISPLAY_XDISPLAY(data->display),
-					   kbd_dev_id,
-					   data->undo_keycode,
-					   GDK_WINDOW_XID(data->root),
-					   GrabModeAsync,
-					   GrabModeAsync,
-					   True,
-					   &mask,
-					   nmods,
-					   modifiers) != 0) {
-			      g_printerr("ERROR: Grabbing undo key from keyboard device %d failed.\n", kbd_dev_id);
-			      GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(data->win),
-									 GTK_DIALOG_DESTROY_WITH_PARENT,
-									 GTK_MESSAGE_ERROR,
-									  GTK_BUTTONS_CLOSE,
-									 "Grabbing undo key %s from keyboard %d failed. The undo hotkey function will not work unless configured to use another key.",
-									 data->undo_keyval,
-									 kbd_dev_id);
-			      show_dialog_above_drawings (data, dialog);
-			      gtk_dialog_run (GTK_DIALOG (dialog));
-			      gtk_widget_destroy (dialog);
 			  }
 		      }
 
@@ -643,9 +604,9 @@ grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
   g_list_free (devices);
 }
 
-/* Grab the paper shortcuts so Ctrl+F, Ctrl+T, Ctrl+Q and Alt+F4 work even
- * after Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and
- * the painting grab), so it is not grabbed twice.  The hardware keycodes are
+/* Grab the paper shortcuts so Ctrl+T, Ctrl+Q and Alt+F4 work even after
+ * Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and the
+ * painting grab), so it is not grabbed twice.  The hardware keycodes are
  * resolved once and also used by the snooper, so the shortcuts keep working
  * with a non-Latin keyboard layout. */
 void
@@ -655,14 +616,11 @@ update_paper_shortcuts (ScreenatorData *data, gboolean grab)
     data->paper_z_keycode = paper_shortcut_keycode (GDK_KEY_z);
   if (!data->paper_q_keycode)
     data->paper_q_keycode = paper_shortcut_keycode (GDK_KEY_q);
-  if (!data->paper_f_keycode)
-    data->paper_f_keycode = paper_shortcut_keycode (GDK_KEY_f);
   if (!data->paper_t_keycode)
     data->paper_t_keycode = paper_shortcut_keycode (GDK_KEY_t);
   if (!data->paper_f4_keycode)
     data->paper_f4_keycode = paper_shortcut_keycode (GDK_KEY_F4);
 
-  grab_paper_key (data, data->paper_f_keycode, ControlMask, grab);
   grab_paper_key (data, data->paper_t_keycode, ControlMask, grab);
   grab_paper_key (data, data->paper_q_keycode, ControlMask, grab);
   grab_paper_key (data, data->paper_f4_keycode, Mod1Mask, grab);
@@ -955,14 +913,6 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  return TRUE;
 	}
 
-      if (ctrl && !alt && !shift && key == data->paper_f_keycode)
-	{
-	  if (data->text_editor_active)
-	    return FALSE;
-	  set_floating_icon_visible (data, !data->show_floating_icon);
-	  return TRUE;
-	}
-
       if (ctrl && !alt && !shift && key == data->paper_t_keycode)
 	{
 	  if (data->text_editor_active)
@@ -986,30 +936,7 @@ gint snoop_key_press(GtkWidget   *grab_widget,
       if(data->debug)
 	g_printerr("DEBUG: Received hotkey press from device '%s'\n", gdk_device_get_name(dev));
 
-      if (event->state & GDK_SHIFT_MASK)
-        clear_screen (data);
-      else if (event->state & GDK_CONTROL_MASK)
-        toggle_visibility (data);
-      else if (event->state & GDK_MOD1_MASK)
-        gtk_main_quit ();
-      else
-	  toggle_grab(data, gdk_device_get_associated_device(dev));
-
-      return TRUE;
-    }
-  if (event->type == GDK_KEY_PRESS &&
-      event->hardware_keycode == data->undo_keycode)
-    {
-      if(data->debug)
-	g_printerr("DEBUG: Received undokey press from device '%s'\n", gdk_device_get_name(dev));
-
-      if (data->hidden)
-        return FALSE;
-      if (event->state & GDK_SHIFT_MASK)
-        redo_drawing (data);
-      else
-        undo_drawing (data);
-
+      set_floating_icon_visible (data, !data->show_floating_icon);
       return TRUE;
     }
 

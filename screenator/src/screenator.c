@@ -4189,12 +4189,11 @@ void main_do_event (GdkEventAny *event,
   if ((event->type == GDK_KEY_PRESS ||
        event->type == GDK_KEY_RELEASE) &&
       event->window == data->root &&
-      (keycode == data->hot_keycode || keycode == data->undo_keycode ||
+      (keycode == data->hot_keycode ||
        keycode == data->undo_ctrl_keycode ||
        keycode == data->escape_keycode ||
        keycode == data->paper_z_keycode ||
        keycode == data->paper_q_keycode ||
-       keycode == data->paper_f_keycode ||
        keycode == data->paper_t_keycode ||
        keycode == data->paper_f4_keycode))
     {
@@ -4225,23 +4224,9 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   /*
     HOT KEYS
   */
+  /* F9 is the global shortcut for showing and hiding the floating icon. */
   data->hot_keyval = DEFAULT_HOTKEY;
   data->hot_keycode = 0;
-
-  data->undo_keyval = DEFAULT_UNDOKEY;
-  data->undo_keycode = 0;
-
-  char *xdg_current_desktop = getenv("XDG_CURRENT_DESKTOP");
-  if (xdg_current_desktop && strcmp(xdg_current_desktop, "XFCE") == 0) {
-      /*
-	XFCE per default grabs Ctrl-F1 to Ctrl-F12 (switch to workspace 1-12)
-	and Alt-F9 (minimize window) which renders Screenator's default hotkey
-	mapping unusable. Provide different defaults for that desktop environment.
-      */
-      data->hot_keyval = DEFAULT_HOTKEY_XFCE;
-      data->undo_keyval = DEFAULT_UNDOKEY_XFCE;
-      g_print("Detected XFCE, changing default hot keys to '" DEFAULT_HOTKEY_XFCE "' and '" DEFAULT_UNDOKEY_XFCE "'\n");
-  }
 
   /* COLOURS */
   g_free(data->white);
@@ -4359,6 +4344,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   gtk_selection_add_target (data->win, GA_CONTROL, GA_ACTIVATE, 2);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_DEACTIVATE, 3);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_TOGGLE, 4);
+  gtk_selection_add_target (data->win, GA_CONTROL, GA_TOGGLEICON, 10);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_VISIBILITY, 5);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_CLEAR, 6);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_RELOAD, 7);
@@ -4421,33 +4407,6 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
         }
     }
 
-  /*
-     FIND UNDOKEY KEYCODE 
-  */
-  if (data->undo_keyval)
-    {
-      GdkKeymap    *keymap;
-      GdkKeymapKey *keys;
-      gint          n_keys;
-      guint         keyval;
-
-      if (strlen (data->undo_keyval) > 0 &&
-          strcasecmp (data->undo_keyval, "none") != 0)
-        {
-          keymap = gdk_keymap_get_for_display (data->display);
-          keyval = gdk_keyval_from_name (data->undo_keyval);
-
-          if (!keyval || !gdk_keymap_get_entries_for_keyval (keymap, keyval,
-                                                             &keys, &n_keys))
-            {
-              g_printerr ("cannot find the key \"%s\"\n", data->undo_keyval);
-              exit (1);
-            }
-
-          data->undo_keycode = keys[0].keycode;
-          g_free (keys);
-        }
-    }
 
 
   /* 
@@ -4593,36 +4552,6 @@ int app_parse_args (int argc, char **argv, ScreenatorData *data)
                wrong_arg = TRUE;
              }
          }
-       else if (strcmp (arg, "-u") == 0 ||
-                strcmp (arg, "--undo-key") == 0)
-         {
-           if (i+1 < argc)
-             {
-               data->undo_keyval = argv[i+1];
-               data->undo_keycode = 0;
-               i++;
-             }
-           else
-             {
-               g_printerr ("-u requires an Key-Name as argument\n");
-               wrong_arg = TRUE;
-             }
-         }
-       else if (strcmp (arg, "-U") == 0 ||
-                strcmp (arg, "--undo-keycode") == 0)
-         {
-           if (i+1 < argc && atoi (argv[i+1]) > 0)
-             {
-               data->undo_keyval = NULL;
-               data->undo_keycode = atoi (argv[i+1]);
-               i++;
-             }
-           else
-             {
-               g_printerr ("-U requires an keycode > 0 as argument\n");
-               wrong_arg = TRUE;
-             }
-         }
        else if (strcmp (arg, "-V") == 0 ||
 		strcmp (arg, "--version") == 0)
          {
@@ -4702,6 +4631,10 @@ int main_client (int argc, char **argv, ScreenatorData *data)
              }
            else
              data->clientdata = "-1"; /* default to grab all */
+         }
+       else if (strcmp (arg, "--toggle-icon") == 0)
+         {
+           action = GA_TOGGLEICON;
          }
        else if (strcmp (arg, "-v") == 0 ||
                 strcmp (arg, "--visibility") == 0)

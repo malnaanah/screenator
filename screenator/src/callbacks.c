@@ -4752,6 +4752,8 @@ void on_mainapp_selection_get (GtkWidget          *widget,
                              GA_TOGGLEDATA, time);
       gtk_main(); /* Wait for the response */
     }
+  else if (action == GA_TOGGLEICON)
+    set_floating_icon_visible (data, !data->show_floating_icon);
   else if (action == GA_VISIBILITY)
     toggle_visibility (data);
   else if (action == GA_CLEAR)
@@ -7022,14 +7024,6 @@ append_settings_items (ScreenatorData *data, GtkWidget *shell)
   gtk_widget_show (item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_change_font), data);
 
-  item = gtk_check_menu_item_new_with_label ("Show Floating Icon");
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->show_floating_icon);
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_floating), data);
-
   item = gtk_check_menu_item_new_with_label ("Show Settings Indicator");
   gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
 				  data->show_settings_indicator);
@@ -7148,6 +7142,24 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
                                    load_menu_icon ("hide.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_toggle_vis), data);
+
+  {
+    gchar *label;
+
+    if (data->hot_keyval && *data->hot_keyval &&
+	g_ascii_strcasecmp (data->hot_keyval, "none") != 0)
+      label = g_strdup_printf ("Show Floating Icon (%s)", data->hot_keyval);
+    else
+      label = g_strdup ("Show Floating Icon");
+
+    item = gtk_check_menu_item_new_with_label (label);
+    g_free (label);
+  }
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
+				  data->show_floating_icon);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_toggle_floating), data);
 
   item = gtk_image_menu_item_new_with_label ("Show Hints");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
@@ -7781,14 +7793,20 @@ show_hints_dialog (ScreenatorData *data)
     FALSE, FALSE, 0);
 
   gtk_box_pack_start (GTK_BOX (right),
+		      hints_heading ("#d35400", "Global Shortcut"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#d35400",
+    "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
+    "hides the floating icon at any time."), FALSE, FALSE, 0);
+
+  gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
 		      FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
     FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
-    "<b>Ctrl+F</b> shows or hides the floating icon; <b>Ctrl+T</b> shows "
-    "or hides the drawings."), FALSE, FALSE, 0);
+    "<b>Ctrl+T</b> shows or hides the drawings."), FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "<b>Ctrl+Q</b> exits the screen paper."), FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
