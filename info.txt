@@ -207,9 +207,11 @@ Features:
     the pen hovers above the tablet.  A short click of the second side button
     acts like Escape/right click, finishing the shape being edited and keeping
     the tool active, or leaving painting mode when no shape is being edited.
-    A long press opens the "Button 1 Mode" menu with Color and Thickness.  The
-    hints dialog covers the stylus controls at startup and can be reopened
-    with "Show Hints".
+    A long press opens the "Button 1 Mode" menu with Color and Thickness.  With
+    the Eraser tool, a short press of the first side button steps through the
+    eraser sizes and a long press of the second side button does not open the
+    menu.  The hints dialog covers the stylus controls at startup and can be
+    reopened with "Show Hints".
 
 Configuration:
   ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser

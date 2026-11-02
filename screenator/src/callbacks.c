@@ -299,6 +299,7 @@ static void show_wheel_menu (ScreenatorData *data,
 			     gint x, gint y);
 static void show_hints_dialog (ScreenatorData *data);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
+static gboolean eraser_tool_active (ScreenatorData *data);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -3682,7 +3683,14 @@ menu_hold_timeout (gpointer user_data)
 
   if (devdata)
     {
-      if (data->menu_hold_is_stylus)
+      /* The Eraser tool uses the first side button for its size, so the
+       * second side button has no menu there.  A short click still performs
+       * Escape when it is released. */
+      if (data->menu_hold_is_stylus && eraser_tool_active (data))
+	{
+	  /* No menu for the Eraser tool. */
+	}
+      else if (data->menu_hold_is_stylus)
 	show_stylus_menu (data, devdata,
 			  data->menu_hold_x, data->menu_hold_y);
       else
@@ -5599,6 +5607,15 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
     apply_shape_fill (data, fill_colors[current].name);
 }
 
+/* TRUE while the Eraser tool is the selected tool. */
+static gboolean
+eraser_tool_active (ScreenatorData *data)
+{
+  return (data->forced_context &&
+	  data->forced_context->type == SCREENATOR_ERASER) ||
+	 data->pen_tool == 3;
+}
+
 /* Apply one wheel notch to the setting that belongs to the active tool: the
  * eraser size for the eraser, the shape fill colour over the Paint Bucket and
  * the line colour for every other tool.  Shared by the mouse wheel and the
@@ -5610,10 +5627,7 @@ apply_scroll_step (ScreenatorData *data, gboolean down, gboolean colors_only)
 		    data->forced_context->type == SCREENATOR_SHAPE &&
 		    data->shape_type == SCREENATOR_SHAPE_BUCKET;
 
-  if (!colors_only &&
-      ((data->forced_context &&
-	data->forced_context->type == SCREENATOR_ERASER) ||
-       data->pen_tool == 3))
+  if (!colors_only && eraser_tool_active (data))
     cycle_eraser_size (data, down);
   else if (bucket)
     cycle_shape_fill_color (data, down);
@@ -5657,7 +5671,9 @@ cycle_line_thickness (ScreenatorData *data, gboolean down)
 static void
 apply_stylus_step (ScreenatorData *data, gboolean down)
 {
-  if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
+  if (eraser_tool_active (data))
+    cycle_eraser_size (data, down);
+  else if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
     cycle_line_thickness (data, down);
   else
     apply_scroll_step (data, down, TRUE);
@@ -5711,9 +5727,7 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
 
   /* The Eraser tool always uses the wheel for its size, whichever scroll
    * setting is selected. */
-  if ((data->forced_context &&
-       data->forced_context->type == SCREENATOR_ERASER) ||
-      data->pen_tool == 3)
+  if (eraser_tool_active (data))
     cycle_eraser_size (data, down);
   else if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
     cycle_line_thickness (data, down);
@@ -7717,9 +7731,11 @@ show_hints_dialog (ScreenatorData *data)
     FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
     "Short press side button 1: step through the selected "
-    "<b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
+    "<b>Color</b> or <b>Thickness</b>, or the eraser size with the "
+    "Eraser tool."), FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
-    "Short click side button 2: finish the shape or exit the tool."),
+    "Short click side button 2: finish the shape or exit the tool. With "
+    "the Eraser tool, a long press does not open the menu."),
     FALSE, FALSE, 0);
 
   /* Drawing mode shortcuts. */
