@@ -14,8 +14,8 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_5.0_amd64.deb"
-APPIMAGE="$BUILD/Screenator-5.0-x86_64.AppImage"
+DEB="$BUILD/screenator_5.1_amd64.deb"
+APPIMAGE="$BUILD/Screenator-5.1-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -130,7 +130,7 @@ install -m 0644 "$SRC"/data/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 for icon in pen arrow text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide font-settings shapes paper; do
+            trash reset-settings hide hint font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
 done
 gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
@@ -142,7 +142,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 5.0
+Version: 5.1
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -235,14 +235,14 @@ install -m 0644 "$SRC"/data/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
 for icon in pen arrow text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide font-settings shapes paper; do
+            trash reset-settings hide hint font-settings shapes paper; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
 done
 
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=5.0
+export LINUXDEPLOY_OUTPUT_VERSION=5.1
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

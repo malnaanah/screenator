@@ -17,8 +17,8 @@ and you can keep using your applications while it is visible.
   Random Signal),
   Line Thickness, Line Color, Shapes Fill Color, Screen Paper, Eraser Size,
   Opacity, Floating Icon Size, Undo, Redo, Clear Screen, Toggle Visibility,
-  Settings (Save Annotations on Exit, Change Font, Show Floating Icon, Show
-  Settings Indicator, Reset Settings), About and Quit. The icon turns into
+  Show Hints, Settings (Save Annotations on Exit, Change Font, Show Floating
+  Icon, Show Settings Indicator, Reset Settings), About and Quit. The icon turns into
   its active (red) variant while a painting mode is on.
 - Marker draws a translucent yellow highlighter stroke at 50% opacity with a
   fixed 32 px width. It has its own settings and switching to it does not
@@ -28,7 +28,8 @@ and you can keep using your applications while it is visible.
 - While painting mode is active, the mouse wheel changes the setting selected
   in the Scroll Mode menu: **Color** steps the line colours (including the
   custom colour), or the shape fill colours over the Paint Bucket; **Thickness**
-  steps through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels. Long-press the right
+  steps through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels. With the Eraser tool
+  selected, the wheel changes the eraser size instead. Long-press the right
   mouse button to choose Color or Thickness; a short right click finishes the
   current shape or exits painting like Escape. The change is the same as
   picking it from the menu, so it is kept when another tool is selected and is
@@ -147,8 +148,8 @@ and you can keep using your applications while it is visible.
   right click on the ring opens the same menu as the floating icon. "Show
   Settings Indicator" in the menu turns it off and on; it is on by default and
   is disabled while the floating icon is hidden.
-- Dialogs and message boxes, such as the Math Function dialog and the tool
-  hints, are shown above the drawings and the screen paper, so both stay
+- Dialogs and message boxes, such as the Math Function dialog and the hints
+  dialog, are shown above the drawings and the screen paper, so both stay
   visible behind them; each dialog is raised as it opens, which also works in
   virtual machines without a compositor.
 - A Screen Paper submenu turns the screen into paper for drawing and writing.
@@ -159,19 +160,16 @@ and you can keep using your applications while it is visible.
   typing do not reach the desktop or the applications below, stays when Clear
   Screen is selected and is remembered across restarts. While a paper is
   active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Alt+F4 quits, Ctrl+F shows or
-  hides the floating icon and Ctrl+T shows or hides the drawings. A message
-  explains these shortcuts when a paper is selected and has its own "Never
-  show this message again" option.
-- Selecting a tool shows a short hint that starts with the tool's name and
-  describes that tool: its mouse
-  buttons, what the mouse wheel changes and how its handles work. Each tool's
-  message has its own "Never show this message again" option, so turning one
-  off leaves the other tools' messages alone. The Spline hint additionally
-  explains how to move its handles, and the tools whose handles snap show a
-  hint about holding `Ctrl` to snap to 0, 30, 45, 60, 90 degrees and so on.
-  Selecting the Text tool explains that the mouse buttons are disabled while
-  typing. Each hint has its own option, and Reset Settings keeps all the
-  choices, so a hint you turned off stays off.
+  hides the floating icon and Ctrl+T shows or hides the drawings.
+- A single, colourful **Hints** dialog appears when Screenator starts. It
+  summarises the common mouse and stylus controls plus the Drawing Mode and
+  Screen Paper shortcuts in one place instead of repeating them for every
+  tool, and it emphasises that a long right click — or a long press of the
+  stylus second side button — opens the **Scroll Mode** menu to choose
+  **Color** or **Thickness** for scrolling. It
+  has a "Never show hints again" option which is remembered across restarts.
+  **Show Hints** in the menu opens the dialog again, and Reset Settings keeps
+  the choice.
 - Pen, marker, font, eraser, shape and screen paper settings are saved in
   `~/.config/screenator.ini` and restored on the next start, together with the
   floating icon and settings indicator visibility. `Reset Settings` restores red, 6 px, 100%
@@ -191,9 +189,9 @@ and you can keep using your applications while it is visible.
   is hovering above the tablet. The second side button acts like Escape/right
   click on a short click, finishing the shape being edited and keeping the tool
   active, or leaving painting mode when no shape is being edited. A long press
-  opens the **Button 1 Mode** menu with Color and Thickness. A short help
-  message appears once when a stylus is detected; its "Never show this message
-  again" option is remembered.
+  opens the **Button 1 Mode** menu with Color and Thickness. The hints dialog
+  covers the stylus controls at startup and can be reopened with **Show
+  Hints**.
 
 ## Build
 
@@ -213,8 +211,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.0_amd64.deb`
-- `Screenator-5.0-x86_64.AppImage`
+- `screenator_5.1_amd64.deb`
+- `Screenator-5.1-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

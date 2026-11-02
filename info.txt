@@ -1,4 +1,4 @@
-Screenator 5.0
+Screenator 5.1
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 5.0 (amd64)
-  - Screenator-5.0-x86_64.AppImage
+  - screenator 5.1 (amd64)
+  - Screenator-5.1-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_5.0_amd64.deb
-                          Screenator-5.0-x86_64.AppImage
+                          screenator_5.1_amd64.deb
+                          Screenator-5.1-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -150,8 +150,8 @@ Features:
     floating icon.  "Show Settings Indicator" in the menu turns it off and on;
     it is on by default and is disabled while the floating icon is hidden.
   - The same menu is available from the system tray icon.
-  - Dialogs and message boxes, such as the Math Function dialog and the tool
-    hints, are shown above the drawings and the screen paper, so both stay
+  - Dialogs and message boxes, such as the Math Function dialog and the hints
+    dialog, are shown above the drawings and the screen paper, so both stay
     visible behind them; each dialog is raised as it opens, which also works
     in virtual machines without a compositor.
   - A Screen Paper submenu turns the screen into paper for drawing and writing.
@@ -163,19 +163,16 @@ Features:
     when Clear Screen is selected and is remembered across restarts.  While a
     paper is active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Alt+F4 quits,
     Ctrl+F shows or hides the floating icon and Ctrl+T shows or hides the
-    drawings.  A
-    message explains these shortcuts when a paper is selected and has its own
-    "Never show this message again" option.
-  - Selecting a tool shows a short hint that starts with the tool's name and
-    describes that tool: its mouse
-    buttons, what the mouse wheel changes and how its handles work.  Each
-    tool's message has its own "Never show this message again" option, so
-    turning one off leaves the other tools' messages alone.  The Spline hint
-    also explains how to move its handles and has its own option; the tools
-    whose handles snap show a hint about holding Ctrl to snap to 0, 30, 45,
-    60, 90 degrees and so on, also with its own option.  Selecting the Text
-    tool explains that the mouse buttons are disabled while typing and has its
-    own option.  Reset Settings keeps all the choices.
+    drawings.
+  - A single, colourful Hints dialog appears when Screenator starts.  It
+    summarises the common mouse and stylus controls plus the Drawing Mode and
+    Screen Paper shortcuts in one place instead of repeating them for every
+    tool, and it emphasises that a long right click, or a long press of the
+    stylus second side button, opens the Scroll Mode menu to choose Color or
+    Thickness for scrolling.  It has a
+    "Never show hints again" option which is remembered across restarts.
+    "Show Hints" in the menu opens the dialog again, and Reset Settings keeps
+    the choice.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
     across restarts, together with whether the floating icon and the settings
@@ -184,8 +181,9 @@ Features:
   - While painting mode is active, the mouse wheel changes the setting selected
     in the Scroll Mode menu: Color steps the line colours (including the custom
     colour), or the shape fill colours over the Paint Bucket; Thickness steps
-    through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels.  Long-press the right mouse
-    button to choose Color or Thickness; a short right click finishes the
+    through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels.  With the Eraser tool
+    selected, the wheel changes the eraser size instead.  Long-press the right
+    mouse button to choose Color or Thickness; a short right click finishes the
     current shape or exits painting like Escape.  The change is the same as
     picking it from the menu, so it is kept when another tool is selected and
     is shown in the settings indicator and the menus.
@@ -193,7 +191,8 @@ Features:
     compression is disabled so fast strokes stay smooth.
   - Reset Settings restores red, 6 px, 100% opacity, no shape fill, Arial Bold
     24, a 40 px eraser and a 48x48 icon.
-  - Undo/redo, clear screen, show/hide drawing and show/hide floating icon.
+  - Undo/redo, clear screen, show/hide drawing, show/hide floating icon and
+    show hints.
   - Hotkeys: F9 toggles painting, SHIFT-F9 clears, CTRL-F9 toggles visibility,
     ALT-F9 quits, F8 undoes and SHIFT-F8 redoes.  While painting mode is
     active, Ctrl+Z also undoes and Ctrl+Shift+Z redoes, and Esc exits the
@@ -208,15 +207,15 @@ Features:
     the pen hovers above the tablet.  A short click of the second side button
     acts like Escape/right click, finishing the shape being edited and keeping
     the tool active, or leaving painting mode when no shape is being edited.
-    A long press opens the "Button 1 Mode" menu with Color and Thickness.  A
-    short help message appears once when a stylus is detected; its "Never show
-    this message again" option is remembered.
+    A long press opens the "Button 1 Mode" menu with Color and Thickness.  The
+    hints dialog covers the stylus controls at startup and can be reopened
+    with "Show Hints".
 
 Configuration:
   ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser
                                     width, opacity, shape fill, screen paper,
                                     text font, icon size, math expression and
-                                    range, hint choices).
+                                    range, hints choice).
   ~/.config/screenator.cfg          User tool configuration.
   /etc/screenator/screenator.cfg    System-wide tool configuration, used when
                                     the user configuration does not exist.

@@ -488,14 +488,6 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
-/* Names of the per-tool hint flags, in ScreenatorToolHint order. */
-static const gchar * const hint_names[] =
-{
-  "pen", "marker", "eraser", "text", "line", "arrow", "spline", "polygon",
-  "triangle", "ellipse", "rounded-rectangle", "math", "bars", "bucket",
-  "random"
-};
-
 void read_keyfile(ScreenatorData *data)
 {
     gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
@@ -526,11 +518,7 @@ void read_keyfile(ScreenatorData *data)
     data->math_polar_expression = g_strdup ("cos(3*theta)");
     data->math_theta_min = 0.0;
     data->math_theta_max = 2.0 * G_PI;
-    memset (data->hide_tool_hints, 0, sizeof (data->hide_tool_hints));
-    data->hide_spline_hint = FALSE;
-    data->hide_snap_hint = FALSE;
-    data->hide_text_hint = FALSE;
-    data->hide_paper_hint = FALSE;
+    data->hide_hints = FALSE;
     data->show_settings_indicator = TRUE;
     data->show_floating_icon = TRUE;
     data->save_annotations_on_exit = TRUE;
@@ -731,58 +719,13 @@ void read_keyfile(ScreenatorData *data)
 	    data->math_theta_max = 2.0 * G_PI;
 	}
 
-    if (g_key_file_has_key (key_file, "Drawing", "HiddenToolHints", NULL))
-	{
-	    gchar *value = g_key_file_get_string (key_file, "Drawing",
-						  "HiddenToolHints", NULL);
-
-	    if (value)
-		{
-		    gchar **names = g_strsplit (value, ",", -1);
-		    guint i;
-
-		    for (i = 0; names[i]; i++)
-			{
-			    gchar *name = g_strstrip (names[i]);
-			    guint j;
-
-			    for (j = 0; j < G_N_ELEMENTS (hint_names); j++)
-				if (g_ascii_strcasecmp (name, hint_names[j]) == 0)
-				    data->hide_tool_hints[j] = TRUE;
-			}
-
-		    g_strfreev (names);
-		    g_free (value);
-		}
-	}
-    else if (g_key_file_has_key (key_file, "Drawing", "HideToolHint", NULL) &&
-	     g_key_file_get_boolean (key_file, "Drawing", "HideToolHint", NULL))
-	{
-	    /* An older build hid all the tool hints with one flag. */
-	    guint j;
-
-	    for (j = 0; j < G_N_ELEMENTS (hint_names); j++)
-		data->hide_tool_hints[j] = TRUE;
-	}
-
-    if (g_key_file_has_key (key_file, "Drawing", "HideSplineHint", NULL))
-	data->hide_spline_hint =
-	    g_key_file_get_boolean (key_file, "Drawing", "HideSplineHint", NULL);
-
-    if (g_key_file_has_key (key_file, "Drawing", "HideSnapHint", NULL))
-	data->hide_snap_hint =
-	    g_key_file_get_boolean (key_file, "Drawing", "HideSnapHint", NULL);
-
-    if (g_key_file_has_key (key_file, "Drawing", "HideTextHint", NULL))
-	data->hide_text_hint =
-	    g_key_file_get_boolean (key_file, "Drawing", "HideTextHint", NULL);
-
-    if (g_key_file_has_key (key_file, "Drawing", "HidePaperHint", NULL))
-	data->hide_paper_hint =
-	    g_key_file_get_boolean (key_file, "Drawing", "HidePaperHint", NULL);
-
-    if (g_key_file_has_key (key_file, "Drawing", "HideStylusHint", NULL))
-	data->hide_stylus_hint =
+    if (g_key_file_has_key (key_file, "Drawing", "HideHints", NULL))
+	data->hide_hints =
+	    g_key_file_get_boolean (key_file, "Drawing", "HideHints", NULL);
+    else if (g_key_file_has_key (key_file, "Drawing", "HideStylusHint", NULL))
+	/* Older builds only had the stylus hint.  Treat that choice as the
+	 * single hints dialog choice. */
+	data->hide_hints =
 	    g_key_file_get_boolean (key_file, "Drawing", "HideStylusHint",
 				    NULL);
 
@@ -879,32 +822,8 @@ void write_keyfile(ScreenatorData *data)
 			   data->math_theta_min);
     g_key_file_set_double (key_file, "Drawing", "MathThetaMax",
 			   data->math_theta_max);
-    {
-	GString *hidden = g_string_new (NULL);
-	guint i;
-
-	for (i = 0; i < G_N_ELEMENTS (hint_names); i++)
-	    if (data->hide_tool_hints[i])
-		{
-		    if (hidden->len > 0)
-			g_string_append_c (hidden, ',');
-		    g_string_append (hidden, hint_names[i]);
-		}
-
-	g_key_file_set_string (key_file, "Drawing", "HiddenToolHints",
-			       hidden->str);
-	g_string_free (hidden, TRUE);
-    }
-    g_key_file_set_boolean (key_file, "Drawing", "HideSplineHint",
-			    data->hide_spline_hint);
-    g_key_file_set_boolean (key_file, "Drawing", "HideSnapHint",
-			    data->hide_snap_hint);
-    g_key_file_set_boolean (key_file, "Drawing", "HideTextHint",
-			    data->hide_text_hint);
-    g_key_file_set_boolean (key_file, "Drawing", "HidePaperHint",
-			    data->hide_paper_hint);
-    g_key_file_set_boolean (key_file, "Drawing", "HideStylusHint",
-			    data->hide_stylus_hint);
+    g_key_file_set_boolean (key_file, "Drawing", "HideHints",
+			    data->hide_hints);
     g_key_file_set_boolean (key_file, "Drawing", "ShowSettingsIndicator",
 			    data->show_settings_indicator);
     g_key_file_set_boolean (key_file, "Drawing", "ShowFloatingIcon",

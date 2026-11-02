@@ -121,28 +121,6 @@ typedef enum
   SCREENATOR_WHEEL_THICKNESS
 } ScreenatorWheelMode;
 
-/* One entry for every tool hint, so "Never show this message again" applies to
- * that tool only.  The order matches the names in config.c. */
-typedef enum
-{
-  SCREENATOR_HINT_PEN = 0,
-  SCREENATOR_HINT_MARKER,
-  SCREENATOR_HINT_ERASER,
-  SCREENATOR_HINT_TEXT,
-  SCREENATOR_HINT_LINE,
-  SCREENATOR_HINT_ARROW,
-  SCREENATOR_HINT_SPLINE,
-  SCREENATOR_HINT_POLYGON,
-  SCREENATOR_HINT_TRIANGLE,
-  SCREENATOR_HINT_ELLIPSE,
-  SCREENATOR_HINT_ROUNDED_RECTANGLE,
-  SCREENATOR_HINT_MATH,
-  SCREENATOR_HINT_BARS,
-  SCREENATOR_HINT_BUCKET,
-  SCREENATOR_HINT_RANDOM,
-  SCREENATOR_HINT_COUNT
-} ScreenatorToolHint;
-
 typedef struct
 {
   ScreenatorPaintType type;
@@ -434,9 +412,9 @@ typedef struct
   GtkWidget   *wheel_menu;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
-  gboolean     hide_stylus_hint;
-  gboolean     stylus_hint_shown;
-  guint        stylus_hint_id;
+  gboolean     hide_hints;
+  gboolean     hints_shown;
+  guint        hints_id;
   guint        menu_hold_id;
   ScreenatorDeviceData *menu_hold_devdata;
   gboolean     menu_hold_is_stylus;
@@ -511,14 +489,6 @@ typedef struct
 			      9 = free line, 10 = angled arrow, 11 = marker */
   gchar       *font;       /* Pango font description for the Text tool */
   guint        icon_size;
-
-  /* Tool hints.  These are independent of the other settings: Reset Settings
-   * must not re-enable hints the user has turned off. */
-  gboolean     hide_tool_hints[SCREENATOR_HINT_COUNT];
-  gboolean     hide_spline_hint;
-  gboolean     hide_snap_hint;
-  gboolean     hide_text_hint;
-  gboolean     hide_paper_hint;
 
   /* Shape tools */
   ScreenatorPaintContext *default_shape;
@@ -626,7 +596,7 @@ void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);
 void parse_print_help (gpointer key, gpointer value, gpointer user_data);
 
 void select_tool (ScreenatorData *data, GdkDevice *device, GdkDevice *slave_device, guint state);
-void schedule_stylus_hint (ScreenatorData *data);
+void schedule_hints (ScreenatorData *data);
 gboolean screenator_exit_tool (ScreenatorData *data);
 
 void apply_pen_settings (ScreenatorData *data);

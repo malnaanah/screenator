@@ -297,6 +297,8 @@ static void show_stylus_menu (ScreenatorData *data,
 static void show_wheel_menu (ScreenatorData *data,
 			     ScreenatorDeviceData *devdata,
 			     gint x, gint y);
+static void show_hints_dialog (ScreenatorData *data);
+static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -4836,11 +4838,6 @@ void on_device_added (GdkDeviceManager *device_manager,
 		      gpointer          user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  GdkInputSource source = gdk_device_get_source (device);
-
-  /* A pen plugged in while Screenator runs gets the stylus help message. */
-  if (source == GDK_SOURCE_PEN || source == GDK_SOURCE_ERASER)
-    schedule_stylus_hint (data);
 
   if(!gdk_device_get_device_type(device) == GDK_DEVICE_TYPE_MASTER
      || gdk_device_get_n_axes(device) < 2)
@@ -4882,6 +4879,12 @@ void on_toggle_vis(GtkMenuItem *menuitem,
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   toggle_drawings_visibility(data);
+}
+
+static void
+on_show_hints (GtkMenuItem *menuitem, gpointer user_data)
+{
+  show_hints_dialog ((ScreenatorData *) user_data);
 }
 
 
@@ -5706,7 +5709,13 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
+  /* The Eraser tool always uses the wheel for its size, whichever scroll
+   * setting is selected. */
+  if ((data->forced_context &&
+       data->forced_context->type == SCREENATOR_ERASER) ||
+      data->pen_tool == 3)
+    cycle_eraser_size (data, down);
+  else if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
     cycle_line_thickness (data, down);
   else
     apply_scroll_step (data, down, TRUE);
@@ -5798,56 +5807,6 @@ paper_restore_focus (ScreenatorData *data)
 #endif
 }
 
-/* Explain the shortcuts that work while the screen paper has the keyboard.
- * The message has its own "Never show this message again" option. */
-static void
-show_paper_shortcuts_hint (ScreenatorData *data)
-{
-  GtkWidget *dialog, *content, *box, *label, *check;
-
-  if (data->hide_paper_hint || data->top_dialog)
-    return;
-
-  dialog = gtk_dialog_new_with_buttons ("Screenator", NULL,
-					GTK_DIALOG_MODAL |
-					GTK_DIALOG_DESTROY_WITH_PARENT,
-					"OK", GTK_RESPONSE_OK, NULL);
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
-  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
-  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
-  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
-
-  show_dialog_above_drawings (data, dialog);
-
-  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
-  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
-  gtk_container_add (GTK_CONTAINER (content), box);
-
-  label = gtk_label_new ("While the screen paper is active, these shortcuts "
-			 "work for Screenator: Ctrl+Z undo, Ctrl+Shift+Z redo, "
-			 "Alt+F4 quit, Ctrl+F show or hide the floating icon, "
-			 "and Ctrl+T show or hide the drawings.");
-  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
-
-  check = gtk_check_button_new_with_label ("Never show this message again");
-  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
-
-  gtk_widget_show_all (dialog);
-  gtk_dialog_run (GTK_DIALOG (dialog));
-
-  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)))
-    {
-      data->hide_paper_hint = TRUE;
-      write_keyfile (data);
-    }
-
-  gtk_widget_destroy (dialog);
-}
-
 /* Show one of the screen papers, or turn it off again.  The paper is drawn on
  * the annotation window below the annotations, so the window has to stay
  * visible and above the other windows even when painting mode is off. */
@@ -5894,19 +5853,6 @@ set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
   schedule_tray_menu_refresh (data);
 }
 
-/* Show the shortcut message after the menu has closed, so the menu cannot
- * stay open behind the modal dialog. */
-static gboolean
-show_paper_hint_idle (gpointer user_data)
-{
-  ScreenatorData *data = (ScreenatorData *) user_data;
-
-  if (data->paper != SCREENATOR_PAPER_NONE)
-    show_paper_shortcuts_hint (data);
-
-  return G_SOURCE_REMOVE;
-}
-
 static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
@@ -5914,17 +5860,7 @@ static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
     (ScreenatorPaperType) GPOINTER_TO_INT (
       g_object_get_data (G_OBJECT (menuitem), "icon-paper-type"));
 
-  {
-    ScreenatorPaperType previous = data->paper;
-
-    set_screen_paper (data, paper);
-
-    /* Explain the shortcuts only when a paper is turned on, not when the
-     * paper type changes or when it is turned off again. */
-    if (previous == SCREENATOR_PAPER_NONE &&
-	paper != SCREENATOR_PAPER_NONE)
-      g_idle_add (show_paper_hint_idle, data);
-  }
+  set_screen_paper (data, paper);
 }
 
 static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
@@ -7191,6 +7127,13 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_toggle_vis), data);
 
+  item = gtk_image_menu_item_new_with_label ("Show Hints");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("hint.png")));
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  g_signal_connect (item, "activate", G_CALLBACK (on_show_hints), data);
+
   item = gtk_menu_item_new_with_label ("Settings");
   submenu = gtk_menu_new ();
   append_settings_items (data, submenu);
@@ -7658,257 +7601,164 @@ gboolean on_icon_button_release (GtkWidget   *win,
   return TRUE;
 }
 
-/* Tools whose handles snap to the common angles while Ctrl is held.  The
- * Spline and Paint Bucket tools have no angle snapping. */
-static gboolean
-shape_type_has_snapping (ScreenatorShapeType type)
+/* A coloured section heading for the hints dialog. */
+static GtkWidget *
+hints_heading (const gchar *color, const gchar *text)
 {
-  switch (type)
-    {
-    case SCREENATOR_SHAPE_SPLINE:
-    case SCREENATOR_SHAPE_BUCKET:
-    case SCREENATOR_SHAPE_RANDOM:
-      return FALSE;
-    default:
-      return TRUE;
-    }
+  GtkWidget *label = gtk_label_new (NULL);
+  gchar *markup = g_markup_printf_escaped (
+    "<span foreground=\"%s\" weight=\"bold\" size=\"large\">%s</span>",
+    color, text);
+
+  gtk_label_set_markup (GTK_LABEL (label), markup);
+  g_free (markup);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_widget_set_margin_top (label, 8);
+  return label;
 }
 
-/* Tool names for the start of the hint messages, in ScreenatorToolHint order. */
-static const gchar * const tool_hint_names[SCREENATOR_HINT_COUNT] =
+/* One bullet line, with the bullet in the section's colour.  The line may
+ * contain its own markup for emphasis. */
+static GtkWidget *
+hints_bullet (const gchar *color, const gchar *markup)
 {
-  "Pen tool", "Marker tool", "Eraser tool", "Text tool", "Line tool",
-  "Arrow tool", "Spline tool", "Polygon tool", "Triangle tool",
-  "Ellipse tool", "Rounded Rectangle tool", "Math Function tool",
-  "Parallel Lines tool", "Paint Bucket tool", "Random Signal tool"
-};
+  GtkWidget *label = gtk_label_new (NULL);
+  gchar *full = g_strdup_printf (
+    "<span foreground=\"%s\">•</span> %s", color, markup);
 
-/* One message for every tool, in ScreenatorToolHint order. */
-static const gchar * const tool_hint_messages[SCREENATOR_HINT_COUNT] =
-{
-  /* SCREENATOR_HINT_PEN */
-  "Left click and drag to draw, middle click to erase, scroll to change the "
-  "line colour, and right click to exit the tool.",
-  /* SCREENATOR_HINT_MARKER */
-  "Left click and drag to draw a highlighter stroke, middle click to erase, "
-  "and right click to exit the tool.",
-  /* SCREENATOR_HINT_ERASER */
-  "Left or middle click and drag to erase, scroll to change the eraser size, "
-  "and right click to exit the tool.",
-  /* SCREENATOR_HINT_TEXT */
-  "Left click to place text, middle click to erase, scroll to change its "
-  "colour, and right click to exit the tool.",
-  /* SCREENATOR_HINT_LINE */
-  "Drag to draw a line, middle click to erase, scroll to change the line "
-  "colour; hold Ctrl to snap the angle, and right click to finish it.",
-  /* SCREENATOR_HINT_ARROW */
-  "Drag to draw an arrow, middle click to erase, scroll to change the line "
-  "colour; hold Ctrl to snap the angle, drag the square handle to change the "
-  "heads (none, start, end or both; end is the default), and right click to "
-  "finish it.",
-  /* SCREENATOR_HINT_SPLINE */
-  "Left click to add a node, middle click to erase, scroll to change the line "
-  "colour; double-click or right click to finish the curve.",
-  /* SCREENATOR_HINT_POLYGON */
-  "Click to place a polygon, middle click to erase, scroll to change the line "
-  "colour; drag its handles to change its sides, radius and rotation, and "
-  "right click to finish it.",
-  /* SCREENATOR_HINT_TRIANGLE */
-  "Click to place a triangle, middle click to erase, scroll to change the line "
-  "colour; drag its vertex handles to reshape it, and right click to finish "
-  "it.",
-  /* SCREENATOR_HINT_ELLIPSE */
-  "Drag to draw an ellipse, middle click to erase, scroll to change the line "
-  "colour; drag its handles to resize and rotate it, and right click to "
-  "finish it.",
-  /* SCREENATOR_HINT_ROUNDED_RECTANGLE */
-  "Drag to draw a rounded rectangle, middle click to erase, scroll to change "
-  "the line colour; drag its handles to resize, round the corners and rotate "
-  "it, and right click to finish it.",
-  /* SCREENATOR_HINT_MATH */
-  "Drag to draw the plot, middle click to erase, scroll to change the line "
-  "colour; drag its handles to resize and rotate it, and right click to "
-  "finish it.",
-  /* SCREENATOR_HINT_BARS */
-  "Drag to draw the parallel lines, middle click to erase, scroll to change "
-  "the line colour; drag its handles to resize, change the line count and "
-  "rotate it, drag the right handle to change the arrows (none, top, bottom "
-  "or both), and right click to finish it.",
-  /* SCREENATOR_HINT_BUCKET */
-  "Left click to fill the enclosed area, middle click to erase, scroll to "
-  "change the fill colour, and right click to exit the tool.",
-  /* SCREENATOR_HINT_RANDOM */
-  "Click to place a random signal (or drag to size it), middle click to "
-  "erase, scroll to change the line colour; the left handle resets the "
-  "smoothness to 1 (sharp) and dragging it away in any direction raises it "
-  "to 16 (smooth), and clicking the signal makes a new one.  Right click "
-  "finishes it."
-};
+  gtk_label_set_markup (GTK_LABEL (label), full);
+  g_free (full);
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 60);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  return label;
+}
 
-/* Show the tool hints.  The tool hint appears when its tool is selected; the
- * spline hint is added for the Spline tool, the snap hint for every tool whose
- * handles snap and the text hint for the Text tool.  Each hint has its own
- * "Never show this message again" check box.  Reset Settings deliberately
- * leaves these flags alone, so a hint the user turned off stays off. */
+/* The single, colourful hints dialog.  It replaces the per-tool messages and
+ * states the common controls once. */
 static void
-show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
-		gboolean snap, gboolean text)
+show_hints_dialog (ScreenatorData *data)
 {
-  const gchar *message = tool_hint_messages[hint];
-  gboolean show_general = !data->hide_tool_hints[hint];
-  gboolean show_spline = spline && !data->hide_spline_hint;
-  gboolean show_snap = snap && !data->hide_snap_hint;
-  gboolean show_text = text && !data->hide_text_hint;
+  GtkWidget *dialog, *content, *box, *label, *check;
   gboolean was_grabbed;
   gboolean changed = FALSE;
-  GtkWidget *dialog, *content, *box, *label;
-  GtkWidget *general_check = NULL;
-  GtkWidget *spline_check = NULL;
-  GtkWidget *snap_check = NULL;
-  GtkWidget *text_check = NULL;
 
-  if (!show_general && !show_spline && !show_snap && !show_text)
-    return;
+  if (data->hints_id)
+    {
+      g_source_remove (data->hints_id);
+      data->hints_id = 0;
+    }
+
+  data->hints_shown = TRUE;
 
   /* A modal dialog cannot be used while the pointer is grabbed. */
   was_grabbed = screenator_any_grabbed (data);
   if (was_grabbed)
     release_grab (data, NULL);
 
-  dialog = gtk_dialog_new_with_buttons ("Screenator",
-					NULL,
+  dialog = gtk_dialog_new_with_buttons ("Screenator Hints", NULL,
 					GTK_DIALOG_MODAL |
 					GTK_DIALOG_DESTROY_WITH_PARENT,
-					"OK", GTK_RESPONSE_OK,
+					"Close", GTK_RESPONSE_CLOSE,
 					NULL);
   gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
   gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
   gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
-  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
 
   /* The hint must stay readable above the drawings. */
   show_dialog_above_drawings (data, dialog);
 
   content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
-  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 14);
   gtk_container_add (GTK_CONTAINER (content), box);
 
-  if (show_general)
-    {
-      gchar *full_message =
-	g_strconcat (tool_hint_names[hint], ": ", message,
-		     "  Press Ctrl+Z and Ctrl+Shift+Z in drawing "
-		     "mode to undo and redo.  Press Escape or short "
-		     "right click to finish a shape or exit the tool.  "
-		     "Long right click opens the Scroll Mode menu "
-		     "(Color or Thickness).", NULL);
+  label = gtk_label_new (NULL);
+  gtk_label_set_markup (GTK_LABEL (label),
+			"<span foreground=\"#2c3e50\" weight=\"bold\" "
+			"size=\"xx-large\">Screenator Hints</span>\n"
+			"<span foreground=\"#7f8c8d\">The important "
+			"controls at a glance.</span>");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
 
-      label = gtk_label_new (full_message);
-      g_free (full_message);
-      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+  /* Mouse. */
+  gtk_box_pack_start (GTK_BOX (box),
+		      hints_heading ("#c0392b", "Mouse"), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+    "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
+    "opens the Scroll Mode menu and chooses what the <b>mouse wheel</b> "
+    "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+    "Left click and drag to draw with the selected tool."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+    "Middle click and drag to erase."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+    "With the Eraser tool, the wheel changes the eraser size."),
+    FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#c0392b",
+    "Short right click finishes the shape or exits the tool."),
+    FALSE, FALSE, 0);
 
-      general_check =
-	gtk_check_button_new_with_label ("Never show this message again");
-      gtk_box_pack_start (GTK_BOX (box), general_check, FALSE, FALSE, 0);
-    }
+  /* Stylus. */
+  gtk_box_pack_start (GTK_BOX (box),
+		      hints_heading ("#8e44ad", "Stylus"), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+    "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
+    "1</span> activates the eraser while it is held, even while "
+    "hovering."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+    "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
+    "2</span> opens the Scroll Mode menu and chooses what scrolling "
+    "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+    "The tip draws like the left mouse button; pressure is ignored."),
+    FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+    "Short press side button 1: step through the selected "
+    "<b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#8e44ad",
+    "Short click side button 2: finish the shape or exit the tool."),
+    FALSE, FALSE, 0);
 
-  if (show_general && show_spline)
-    {
-      GtkWidget *separator =
-	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
-      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
-    }
+  /* Drawing mode shortcuts. */
+  gtk_box_pack_start (GTK_BOX (box),
+		      hints_heading ("#16a085", "Drawing Mode Shortcuts"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#16a085",
+    "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
+    FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#16a085",
+    "<b>Escape</b> finishes the shape or exits the tool."),
+    FALSE, FALSE, 0);
 
-  if (show_spline)
-    {
-      label = gtk_label_new ("Move handles using left mouse button, and hold "
-			     "CTRL to move each handle control point "
-			     "separately.");
-      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+  /* Screen paper shortcuts. */
+  gtk_box_pack_start (GTK_BOX (box),
+		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+    "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
+    FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+    "<b>Ctrl+F</b> shows or hides the floating icon; <b>Ctrl+T</b> shows "
+    "or hides the drawings."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), hints_bullet ("#2980b9",
+    "<b>Alt+F4</b> quits."), FALSE, FALSE, 0);
 
-      spline_check =
-	gtk_check_button_new_with_label ("Never show this message again");
-      gtk_box_pack_start (GTK_BOX (box), spline_check, FALSE, FALSE, 0);
-    }
-
-  if ((show_general || show_spline) && show_snap)
-    {
-      GtkWidget *separator =
-	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
-      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
-    }
-
-  if (show_snap)
-    {
-      label = gtk_label_new ("Hold CTRL to snap to 0, 30, 45, 60, 90 "
-			     "degrees, etc.");
-      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
-
-      snap_check =
-	gtk_check_button_new_with_label ("Never show this message again");
-      gtk_box_pack_start (GTK_BOX (box), snap_check, FALSE, FALSE, 0);
-    }
-
-  if (show_text && (show_general || show_spline || show_snap))
-    {
-      GtkWidget *separator =
-	gtk_separator_new (GTK_ORIENTATION_HORIZONTAL);
-      gtk_box_pack_start (GTK_BOX (box), separator, FALSE, FALSE, 4);
-    }
-
-  if (show_text)
-    {
-      label = gtk_label_new ("Mouse buttons are disabled during typing, "
-			     "press Enter key to accept typed text and "
-			     "enable mouse buttons");
-      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-      gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
-
-      text_check =
-	gtk_check_button_new_with_label ("Never show this message again");
-      gtk_box_pack_start (GTK_BOX (box), text_check, FALSE, FALSE, 0);
-    }
+  check = gtk_check_button_new_with_label ("Never show hints again");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), data->hide_hints);
+  gtk_widget_set_margin_top (check, 10);
+  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
 
   gtk_widget_show_all (dialog);
   gtk_dialog_run (GTK_DIALOG (dialog));
 
-  if (general_check &&
-      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (general_check)))
+  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)) !=
+      data->hide_hints)
     {
-      data->hide_tool_hints[hint] = TRUE;
-      changed = TRUE;
-    }
-
-  if (spline_check &&
-      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (spline_check)))
-    {
-      data->hide_spline_hint = TRUE;
-      changed = TRUE;
-    }
-
-  if (snap_check &&
-      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (snap_check)))
-    {
-      data->hide_snap_hint = TRUE;
-      changed = TRUE;
-    }
-
-  if (text_check &&
-      gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (text_check)))
-    {
-      data->hide_text_hint = TRUE;
+      data->hide_hints =
+	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check));
       changed = TRUE;
     }
 
@@ -7921,120 +7771,21 @@ show_tool_hint (ScreenatorData *data, ScreenatorToolHint hint, gboolean spline,
     acquire_grab (data, NULL);
 }
 
-/* TRUE when at least one pen/eraser slave device is connected. */
 static gboolean
-stylus_is_present (ScreenatorData *data)
+show_hints_idle (gpointer user_data)
 {
-  GdkDeviceManager *manager = gdk_display_get_device_manager (data->display);
-  GList *devices, *d;
-  gboolean found = FALSE;
-
-  if (!manager)
-    return FALSE;
-
-  devices = gdk_device_manager_list_devices (manager, GDK_DEVICE_TYPE_SLAVE);
-  for (d = devices; d; d = d->next)
-    {
-      GdkInputSource source = gdk_device_get_source (d->data);
-
-      if (source == GDK_SOURCE_PEN || source == GDK_SOURCE_ERASER)
-	{
-	  found = TRUE;
-	  break;
-	}
-    }
-  g_list_free (devices);
-
-  return found;
-}
-
-/* One-time (per run) help for the stylus. */
-static gboolean
-show_stylus_hint_idle (gpointer user_data)
-{
-  ScreenatorData *data = user_data;
-  GtkWidget *dialog, *content, *box, *label, *check;
-  gboolean was_grabbed;
-
-  data->stylus_hint_id = 0;
-
-  if (data->hide_stylus_hint || data->stylus_hint_shown ||
-      !stylus_is_present (data))
-    return G_SOURCE_REMOVE;
-
-  data->stylus_hint_shown = TRUE;
-
-  /* A modal dialog cannot be used while the pointer is grabbed. */
-  was_grabbed = screenator_any_grabbed (data);
-  if (was_grabbed)
-    release_grab (data, NULL);
-
-  dialog = gtk_dialog_new_with_buttons ("Stylus", NULL,
-					GTK_DIALOG_MODAL |
-					GTK_DIALOG_DESTROY_WITH_PARENT,
-					"OK", GTK_RESPONSE_OK,
-					NULL);
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
-  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
-  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
-  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
-
-  show_dialog_above_drawings (data, dialog);
-
-  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
-  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
-  gtk_container_add (GTK_CONTAINER (content), box);
-
-  label = gtk_label_new (NULL);
-  gtk_label_set_markup (GTK_LABEL (label),
-			"<b>Stylus detected</b>\n\n"
-			"The tip draws like the left mouse button. Pen "
-			"pressure is ignored and the selected line thickness "
-			"is used.\n\n"
-			"The first side button: a short press steps through "
-			"the selected Color or Thickness; a long press erases "
-			"while it is held.\n\n"
-			"Short click the second side button to act like a "
-			"right click (Escape): it finishes the shape being "
-			"edited or leaves painting mode.\n\n"
-			"Long press the second side button to open the "
-			"Button 1 Mode menu (Color or Thickness).");
-  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_max_width_chars (GTK_LABEL (label), 56);
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
-
-  check = gtk_check_button_new_with_label ("Never show this message again");
-  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
-
-  gtk_widget_show_all (dialog);
-  gtk_dialog_run (GTK_DIALOG (dialog));
-
-  if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)))
-    {
-      data->hide_stylus_hint = TRUE;
-      write_keyfile (data);
-    }
-
-  gtk_widget_destroy (dialog);
-
-  if (was_grabbed)
-    acquire_grab (data, NULL);
-
+  show_hints_dialog ((ScreenatorData *) user_data);
   return G_SOURCE_REMOVE;
 }
 
-/* Called after the device list is rebuilt, so both a stylus present at startup
- * and one plugged in while Screenator runs get the help message. */
+/* Offer the hints once per run, after the input devices are set up. */
 void
-schedule_stylus_hint (ScreenatorData *data)
+schedule_hints (ScreenatorData *data)
 {
-  if (data->hide_stylus_hint || data->stylus_hint_shown ||
-      data->stylus_hint_id)
+  if (data->hide_hints || data->hints_shown || data->hints_id)
     return;
 
-  data->stylus_hint_id = g_idle_add (show_stylus_hint_idle, data);
+  data->hints_id = g_idle_add (show_hints_idle, data);
 }
 
 void on_icon_pen (GtkMenuItem *menuitem,
@@ -8063,7 +7814,6 @@ void on_icon_pen (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, SCREENATOR_HINT_PEN, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -8473,39 +8223,6 @@ show_math_dialog (ScreenatorData *data)
   return accepted;
 }
 
-/* The tool hint that belongs to a shape tool. */
-static ScreenatorToolHint
-shape_tool_hint (ScreenatorShapeType shape)
-{
-  switch (shape)
-    {
-    case SCREENATOR_SHAPE_LINE:
-      return SCREENATOR_HINT_LINE;
-    case SCREENATOR_SHAPE_ARROW:
-      return SCREENATOR_HINT_ARROW;
-    case SCREENATOR_SHAPE_SPLINE:
-      return SCREENATOR_HINT_SPLINE;
-    case SCREENATOR_SHAPE_STAR:
-      return SCREENATOR_HINT_POLYGON;
-    case SCREENATOR_SHAPE_TRIANGLE:
-      return SCREENATOR_HINT_TRIANGLE;
-    case SCREENATOR_SHAPE_ELLIPSE:
-      return SCREENATOR_HINT_ELLIPSE;
-    case SCREENATOR_SHAPE_ROUNDED_RECTANGLE:
-      return SCREENATOR_HINT_ROUNDED_RECTANGLE;
-    case SCREENATOR_SHAPE_MATH:
-      return SCREENATOR_HINT_MATH;
-    case SCREENATOR_SHAPE_BARS:
-      return SCREENATOR_HINT_BARS;
-    case SCREENATOR_SHAPE_RANDOM:
-      return SCREENATOR_HINT_RANDOM;
-    case SCREENATOR_SHAPE_BUCKET:
-      return SCREENATOR_HINT_BUCKET;
-    default:
-      return SCREENATOR_HINT_PEN;
-    }
-}
-
 /* Select one of the shape tools.  All of them share the default_shape
  * context; only the shape type differs. */
 static void
@@ -8531,9 +8248,6 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
       devdata->state = 0;
     }
 
-  show_tool_hint (data, shape_tool_hint (shape),
-		  shape == SCREENATOR_SHAPE_SPLINE,
-		  shape_type_has_snapping (shape), FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -8636,7 +8350,6 @@ void on_icon_text (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, SCREENATOR_HINT_TEXT, FALSE, FALSE, TRUE);
   acquire_grab (data, NULL);
 }
 
@@ -8663,7 +8376,6 @@ void on_icon_eraser (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, SCREENATOR_HINT_ERASER, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
 }
 
@@ -8692,6 +8404,5 @@ void on_icon_marker (GtkMenuItem *menuitem,
       devdata->state = 0;
     }
 
-  show_tool_hint (data, SCREENATOR_HINT_MARKER, FALSE, FALSE, FALSE);
   acquire_grab (data, NULL);
 }
