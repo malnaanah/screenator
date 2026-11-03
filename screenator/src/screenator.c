@@ -200,6 +200,18 @@ void apply_pen_settings (ScreenatorData *data)
 
   apply_pen_style_to_pens (data);
 
+  /* The Marker uses the current line colour at half opacity and keeps its
+   * fixed width. */
+  if (data->default_marker)
+    {
+      data->marker_color.red = data->pen_color.red;
+      data->marker_color.green = data->pen_color.green;
+      data->marker_color.blue = data->pen_color.blue;
+      data->marker_color.alpha = data->marker_opacity;
+      gdk_cairo_set_source_rgba (data->default_marker->paint_ctx,
+				 &data->marker_color);
+    }
+
   /* The eraser size is a setting of its own and does not follow the pen
    * width. */
   if (data->default_eraser)
@@ -4239,11 +4251,11 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   gdk_rgba_parse(data->black, "#000000");
   gdk_rgba_parse(data->red, "#FF0000");
 
-  /* The Marker has a fixed style: yellow, half transparent and 32 px wide.
-   * Its colour lives in ScreenatorData so the context stays valid when the
-   * screen size changes and the contexts are recreated. */
+  /* The Marker uses the line colour with its own opacity and a fixed 32 px
+   * width.  Its colour lives in ScreenatorData so the context stays valid
+   * when the screen size changes and the contexts are recreated. */
   gdk_rgba_parse (&data->marker_color, "#FFFF00");
-  data->marker_color.alpha = 0.5;
+  data->marker_color.alpha = 0.40;
 
 
   /* 

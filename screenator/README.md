@@ -20,9 +20,14 @@ and you can keep using your applications while it is visible.
   Show Floating Icon (F9), Show Hints, Settings (Save Annotations on Exit,
   Change Font, Show Settings Indicator, Reset Settings), About and Quit. The
   icon turns into its active (red) variant while a painting mode is on.
-- Marker draws a translucent yellow highlighter stroke at 50% opacity with a
-  fixed 32 px width. It has its own settings and switching to it does not
-  change the line colour, thickness or opacity used by the other tools.
+- Marker draws a translucent highlighter stroke with a fixed 32 px width,
+  using the current line colour. Its opacity is 40% by default and is
+  independent of the global pen opacity. Long right click, or a long press of
+  the stylus second side button, opens the **Marker Opacity** menu with 30%,
+  40%, 50%, 60% and 70%; the choice is remembered across restarts. Selecting
+  the Marker switches the line colour to yellow; leaving the Marker or
+  exiting painting restores the colour that was active before. The mouse wheel
+  or the stylus first side button changes its colour.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
 - While painting mode is active, the mouse wheel changes the setting selected
@@ -174,7 +179,7 @@ and you can keep using your applications while it is visible.
 - Pen, marker, font, eraser, shape and screen paper settings are saved in
   `~/.config/screenator.ini` and restored on the next start, together with the
   floating icon and settings indicator visibility. `Reset Settings` restores red, 6 px, 100%
-  opacity, no shape fill, Arial Bold 24, a 40 px eraser, a 48x48 icon and no
+  opacity, no shape fill, Arial Bold 24, a 40 px eraser, a 32x32 icon and no
   screen paper.
 - `F9` is a global shortcut that shows or hides the floating icon at any
   time, whether or not painting mode is active. The old Gromit-MPX keys
@@ -215,8 +220,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.2_amd64.deb`
-- `Screenator-5.2-x86_64.AppImage`
+- `screenator_5.3_amd64.deb`
+- `Screenator-5.3-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

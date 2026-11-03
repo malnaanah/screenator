@@ -729,6 +729,7 @@ void release_grab (ScreenatorData *data,
 void acquire_grab (ScreenatorData *data, 
 		   GdkDevice *dev)
 {
+  screenator_marker_prepare (data);
   show_window (data);
 
   char *xdg_session_type = getenv("XDG_SESSION_TYPE");
@@ -842,7 +843,10 @@ void toggle_grab (ScreenatorData *data,
   if(dev == NULL) /* toggle all */
     {
       if (get_are_all_grabbed(data))
-	release_grab (data, NULL);
+	{
+	  screenator_marker_leave (data);
+	  release_grab (data, NULL);
+	}
       else
 	acquire_grab (data, NULL);
       return; 

@@ -411,6 +411,7 @@ typedef struct
   GtkWidget   *win;
   GtkWidget   *stylus_menu;
   GtkWidget   *wheel_menu;
+  GtkWidget   *marker_menu;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
   gboolean     hide_hints;
@@ -481,7 +482,10 @@ typedef struct
   guint        eraser_width;
   GdkRGBA      pen_color;
   GdkRGBA      custom_line_color;
-  GdkRGBA      marker_color; /* fixed yellow, 50% opacity for the Marker tool */
+  GdkRGBA      marker_color; /* line colour with marker_opacity for the Marker */
+  gdouble      marker_opacity; /* Marker-only opacity, independent of the pen */
+  GdkRGBA      marker_saved_color; /* line colour before the Marker was selected */
+  gboolean     marker_saved_color_valid;
   gint         pen_tool;   /* 0 = config default, 1 = pen, 2 = arrow, 3 = eraser,
 			      4 = text, 5 = rectangle, 6 = ellipse,
 			      7 = rounded rectangle, 8 = angled line,
@@ -589,6 +593,8 @@ void draw_screen_paper (ScreenatorData *data, cairo_t *cr);
 void paper_take_focus (ScreenatorData *data);
 void paper_restore_focus (ScreenatorData *data);
 void screenator_exit_screen_paper (ScreenatorData *data);
+void screenator_marker_prepare (ScreenatorData *data);
+void screenator_marker_leave (ScreenatorData *data);
 void update_window_shape (ScreenatorData *data);
 void text_preview_add_shape (ScreenatorData *data, cairo_region_t *region);
 void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);

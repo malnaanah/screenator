@@ -297,9 +297,13 @@ static void show_stylus_menu (ScreenatorData *data,
 static void show_wheel_menu (ScreenatorData *data,
 			     ScreenatorDeviceData *devdata,
 			     gint x, gint y);
+static void show_marker_menu (ScreenatorData *data,
+			      ScreenatorDeviceData *devdata,
+			      gint x, gint y);
 static void show_hints_dialog (ScreenatorData *data);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
 static gboolean eraser_tool_active (ScreenatorData *data);
+static gboolean marker_tool_active (ScreenatorData *data);
 
 
 gboolean on_expose (GtkWidget *widget,
@@ -3400,6 +3404,7 @@ screenator_exit_tool (ScreenatorData *data)
 
   if (!handled && screenator_any_grabbed (data))
     {
+      screenator_marker_leave (data);
       release_grab (data, NULL);
       handled = TRUE;
     }
@@ -3668,6 +3673,152 @@ show_wheel_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
     }
 }
 
+typedef struct
+{
+  ScreenatorData       *data;
+  ScreenatorDeviceData *devdata;
+  gboolean              was_grabbed;
+  gboolean              first_release_ignored;
+} MarkerMenu;
+
+/* The menu opens while the button that opened it is still held.  Swallow that
+ * first release so it cannot activate the item under the pointer. */
+static gboolean
+marker_menu_button_release (GtkWidget *widget, GdkEventButton *event,
+			    gpointer user_data)
+{
+  MarkerMenu *ctx = user_data;
+
+  if (ctx->first_release_ignored)
+    return FALSE;
+
+  ctx->first_release_ignored = TRUE;
+  return TRUE;
+}
+
+static void
+marker_menu_opacity (GtkMenuItem *item, gpointer user_data)
+{
+  MarkerMenu *ctx = user_data;
+  guint percent = GPOINTER_TO_UINT (
+    g_object_get_data (G_OBJECT (item), "marker-opacity"));
+
+  ctx->data->marker_opacity = percent / 100.0;
+  ctx->data->marker_color.alpha = ctx->data->marker_opacity;
+  if (ctx->data->default_marker)
+    gdk_cairo_set_source_rgba (ctx->data->default_marker->paint_ctx,
+			       &ctx->data->marker_color);
+
+  write_keyfile (ctx->data);
+}
+
+static void
+marker_menu_done (GtkMenuShell *menu, gpointer user_data)
+{
+  MarkerMenu *ctx = user_data;
+
+  if (ctx->data->marker_menu == GTK_WIDGET (menu))
+    ctx->data->marker_menu = NULL;
+
+  if (ctx->devdata)
+    ctx->devdata->menu_button_down = FALSE;
+
+  if (ctx->was_grabbed)
+    acquire_grab (ctx->data, NULL);
+
+  g_free (ctx);
+}
+
+/* Long right-click menu for the Marker: its own opacity, independent of the
+ * global pen opacity. */
+static void
+show_marker_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
+		  gint x, gint y)
+{
+  static const guint percents[] = { 30, 40, 50, 60, 70 };
+  MarkerMenu *ctx;
+  GtkWidget *menu, *heading, *item, *first = NULL;
+  GtkWidget *items[G_N_ELEMENTS (percents)];
+  GdkWindow *root;
+  GdkRectangle rect;
+  gboolean was_grabbed;
+  guint i;
+
+  if (data->marker_menu)
+    return;
+
+  devdata->menu_button_down = FALSE;
+
+  was_grabbed = screenator_any_grabbed (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  ctx = g_new0 (MarkerMenu, 1);
+  ctx->data = data;
+  ctx->devdata = devdata;
+  ctx->was_grabbed = was_grabbed;
+
+  menu = gtk_menu_new ();
+  heading = stylus_menu_heading ("Marker Opacity");
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
+
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    {
+      gchar *label = g_strdup_printf ("%u%%", percents[i]);
+
+      if (!first)
+	{
+	  first = gtk_radio_menu_item_new_with_label (NULL, label);
+	  item = first;
+	}
+      else
+	item = gtk_radio_menu_item_new_with_label_from_widget (
+	  GTK_RADIO_MENU_ITEM (first), label);
+      g_free (label);
+
+      g_object_set_data (G_OBJECT (item), "marker-opacity",
+			 GINT_TO_POINTER ((gint) percents[i]));
+
+      if (fabs (data->marker_opacity - percents[i] / 100.0) < 0.001)
+	gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item), TRUE);
+
+      items[i] = item;
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+    }
+
+  /* Connect after showing the menu, so any activation during construction or
+   * the initial radio selection cannot change the stored opacity. */
+  gtk_widget_show_all (menu);
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (marker_menu_opacity), ctx);
+
+  data->marker_menu = menu;
+  g_signal_connect (menu, "button-release-event",
+		    G_CALLBACK (marker_menu_button_release), ctx);
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (marker_menu_done), ctx);
+
+  root = gdk_screen_get_root_window (gdk_screen_get_default ());
+  rect.x = x;
+  rect.y = y;
+  rect.width = 1;
+  rect.height = 1;
+  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
+			  GDK_GRAVITY_NORTH_WEST,
+			  GDK_GRAVITY_NORTH_WEST, NULL);
+
+  if (!gtk_widget_get_visible (menu))
+    {
+      data->marker_menu = NULL;
+      g_signal_handlers_disconnect_by_data (menu, ctx);
+      gtk_widget_destroy (menu);
+      if (was_grabbed)
+	acquire_grab (data, NULL);
+      g_free (ctx);
+    }
+}
+
 /* A long press on the second side button opens the menu; a short click on the
  * release performs Escape instead. */
 #define MENU_HOLD_MS 500
@@ -3683,10 +3834,13 @@ menu_hold_timeout (gpointer user_data)
 
   if (devdata)
     {
-      /* The Eraser tool uses the first side button for its size, so the
-       * second side button has no menu there.  A short click still performs
-       * Escape when it is released. */
-      if (data->menu_hold_is_stylus && eraser_tool_active (data))
+      /* The Marker opens its own opacity menu; the Eraser uses the first
+       * side button for its size and has no menu.  A short click still
+       * performs Escape when it is released. */
+      if (marker_tool_active (data))
+	show_marker_menu (data, devdata,
+			  data->menu_hold_x, data->menu_hold_y);
+      else if (data->menu_hold_is_stylus && eraser_tool_active (data))
 	{
 	  /* No menu for the Eraser tool. */
 	}
@@ -5417,6 +5571,7 @@ apply_line_color (ScreenatorData *data, const gchar *name)
   data->pen_color.alpha = 1.0;
 
   apply_pen_settings (data);
+  update_settings_indicator (data);
   update_active_frame_colors (data);
   invalidate_annotation_window (data);
   schedule_tray_menu_refresh (data);
@@ -5618,6 +5773,15 @@ eraser_tool_active (ScreenatorData *data)
 	 data->pen_tool == 3;
 }
 
+/* TRUE while the Marker tool is the selected tool. */
+static gboolean
+marker_tool_active (ScreenatorData *data)
+{
+  return data->pen_tool == 11 ||
+	 (data->default_marker &&
+	  data->forced_context == data->default_marker);
+}
+
 /* Apply one wheel notch to the setting that belongs to the active tool: the
  * eraser size for the eraser, the shape fill colour over the Paint Bucket and
  * the line colour for every other tool.  Shared by the mouse wheel and the
@@ -5668,13 +5832,16 @@ cycle_line_thickness (ScreenatorData *data, gboolean down)
   schedule_tray_menu_refresh (data);
 }
 
-/* One step of the stylus first-side-button action: colours in Color mode and
- * line thickness in Thickness mode. */
+/* One step of the stylus first-side-button action: eraser size for the
+ * Eraser, colours for the Marker, colours in Color mode and line thickness in
+ * Thickness mode. */
 static void
 apply_stylus_step (ScreenatorData *data, gboolean down)
 {
   if (eraser_tool_active (data))
     cycle_eraser_size (data, down);
+  else if (marker_tool_active (data))
+    apply_scroll_step (data, down, TRUE);
   else if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
     cycle_line_thickness (data, down);
   else
@@ -5731,6 +5898,8 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
    * setting is selected. */
   if (eraser_tool_active (data))
     cycle_eraser_size (data, down);
+  else if (marker_tool_active (data))
+    apply_scroll_step (data, down, TRUE);
   else if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
     cycle_line_thickness (data, down);
   else
@@ -6059,6 +6228,7 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
   data->pen_color.alpha = 1.0;
   data->opacity = DEFAULT_OPACITY;
+  data->marker_opacity = 0.40;
   data->icon_size = KEY_DFLT_ICON_SIZE;
   data->pen_tool = 1;
   g_free (data->font);
@@ -6954,8 +7124,8 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint sizes[] = { 32, 48, 64 };
-    static const gchar * const labels[] = { "32x32", "48x48", "64x64" };
+    static const guint sizes[] = { 16, 32, 48, 64 };
+    static const gchar * const labels[] = { "16x16", "32x32", "48x48", "64x64" };
     GtkWidget *items[G_N_ELEMENTS (sizes)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -7771,7 +7941,7 @@ show_hints_dialog (ScreenatorData *data)
     "the Eraser tool, a long press does not open the menu."),
     FALSE, FALSE, 0);
 
-  /* Right column: shape editing and shortcuts. */
+  /* Right column: shape editing, tool tips and shortcuts. */
   gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#2980b9", "Shape Editing"),
 		      FALSE, FALSE, 0);
@@ -7781,6 +7951,24 @@ show_hints_dialog (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
     "Spline: hold <b>Ctrl</b> while dragging a handle to move each control "
     "point separately."), FALSE, FALSE, 0);
+
+  gtk_box_pack_start (GTK_BOX (right),
+		      hints_heading ("#e67e22", "Text Tool"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#e67e22",
+    "After typing, press <b>Enter</b> to accept the text and re-enable the "
+    "mouse."), FALSE, FALSE, 0);
+
+  gtk_box_pack_start (GTK_BOX (right),
+		      hints_heading ("#b9770e", "Marker Tool"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#b9770e",
+    "The wheel or stylus side button 1 changes its color."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#b9770e",
+    "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
+    "or <span foreground=\"#d35400\" weight=\"bold\">Long press side "
+    "button 2</span> opens the Marker Opacity menu (30%, 40%, 50%, 60% or "
+    "70%)."), FALSE, FALSE, 0);
 
   gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#16a085", "Drawing Mode Shortcuts"),
@@ -7854,6 +8042,41 @@ schedule_hints (ScreenatorData *data)
   data->hints_id = g_idle_add (show_hints_idle, data);
 }
 
+/* Prepare the Marker when painting starts: save the current line colour and
+ * switch to yellow.  Does nothing if the Marker is not selected or its colour
+ * is already prepared. */
+void
+screenator_marker_prepare (ScreenatorData *data)
+{
+  if (data->pen_tool != 11 || data->marker_saved_color_valid)
+    return;
+
+  data->marker_saved_color = data->pen_color;
+  data->marker_saved_color_valid = TRUE;
+  data->pen_color.red = 1.0;
+  data->pen_color.green = 1.0;
+  data->pen_color.blue = 0.0;
+  data->pen_color.alpha = 1.0;
+
+  apply_pen_settings (data);
+  update_settings_indicator (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Leaving the Marker restores the line colour that was active before it. */
+void
+screenator_marker_leave (ScreenatorData *data)
+{
+  if (data->pen_tool != 11 || !data->marker_saved_color_valid)
+    return;
+
+  data->pen_color = data->marker_saved_color;
+  data->marker_saved_color_valid = FALSE;
+  apply_pen_settings (data);
+  update_settings_indicator (data);
+  schedule_tray_menu_refresh (data);
+}
+
 void on_icon_pen (GtkMenuItem *menuitem,
 		  gpointer     user_data)
 {
@@ -7862,6 +8085,7 @@ void on_icon_pen (GtkMenuItem *menuitem,
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
+  screenator_marker_leave (data);
   star_finish_all (data);
   triangle_finish_all (data);
   frame_finish_all (data);
@@ -8303,6 +8527,7 @@ select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shap
   frame_finish_all (data);
   line_finish_all (data);
   spline_cancel_all (data);
+  screenator_marker_leave (data);
   data->forced_context = data->default_shape;
   data->shape_type = shape;
   data->pen_tool = pen_tool;
@@ -8406,6 +8631,7 @@ void on_icon_text (GtkMenuItem *menuitem,
   frame_finish_all (data);
   line_finish_all (data);
   spline_cancel_all (data);
+  screenator_marker_leave (data);
   data->forced_context = data->default_text;
   data->pen_tool = 4;
 
@@ -8432,6 +8658,7 @@ void on_icon_eraser (GtkMenuItem *menuitem,
   frame_finish_all (data);
   line_finish_all (data);
   spline_cancel_all (data);
+  screenator_marker_leave (data);
   data->forced_context = data->default_eraser;
   data->pen_tool = 3;
 
@@ -8453,8 +8680,8 @@ void on_icon_marker (GtkMenuItem *menuitem,
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
-  /* The marker keeps its own fixed colour, opacity and width.  Selecting it
-   * must not change the global pen settings. */
+  /* The Marker uses the line colour with its own opacity.  Selecting it switches
+   * the line colour to yellow; leaving it restores the previous colour. */
   star_finish_all (data);
   triangle_finish_all (data);
   frame_finish_all (data);
@@ -8462,6 +8689,7 @@ void on_icon_marker (GtkMenuItem *menuitem,
   spline_cancel_all (data);
   data->forced_context = data->default_marker;
   data->pen_tool = 11;
+  screenator_marker_prepare (data);
 
   g_hash_table_iter_init (&it, data->devdatatable);
   while (g_hash_table_iter_next (&it, NULL, &value))

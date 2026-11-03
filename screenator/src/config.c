@@ -495,6 +495,7 @@ void read_keyfile(ScreenatorData *data)
       set defaults
     */
     data->opacity = DEFAULT_OPACITY;
+    data->marker_opacity = 0.40;
     data->pen_width = KEY_DFLT_PEN_WIDTH;
     data->eraser_width = KEY_DFLT_ERASER_WIDTH;
     gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
@@ -543,6 +544,15 @@ void read_keyfile(ScreenatorData *data)
 	    // 0.0 is treated as "not set" so strokes never become invisible
 	    if (opacity > 0.0 && opacity <= 1.0)
 		data->opacity = opacity;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "MarkerOpacity", NULL))
+	{
+	    gdouble opacity =
+		g_key_file_get_double (key_file, "Drawing", "MarkerOpacity", NULL);
+
+	    if (opacity >= 0.30 && opacity <= 0.70)
+		data->marker_opacity = opacity;
 	}
 
     if (g_key_file_has_key (key_file, "Drawing", "CustomLineColor", NULL))
@@ -787,6 +797,8 @@ void write_keyfile(ScreenatorData *data)
     gchar *custom_fill = pen_color_to_string (&data->custom_fill_color);
 
     g_key_file_set_double (key_file, "Drawing", "Opacity", data->opacity);
+    g_key_file_set_double (key_file, "Drawing", "MarkerOpacity",
+			   data->marker_opacity);
     g_key_file_set_integer (key_file, "Drawing", "PenWidth", data->pen_width);
     g_key_file_set_integer (key_file, "Drawing", "EraserWidth",
 			    data->eraser_width);
