@@ -4315,6 +4315,8 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 		    G_CALLBACK (on_screen_changed), data);
   g_signal_connect (data->screen,"monitors_changed",
 		    G_CALLBACK (on_monitors_changed), data);
+  g_signal_connect (data->screen,"size-changed",
+		    G_CALLBACK (on_monitors_changed), data);
   g_signal_connect (data->screen,"composited-changed",
 		    G_CALLBACK (on_composited_changed), data);
   g_signal_connect (gdk_display_get_device_manager (data->display), "device-added",
@@ -4377,6 +4379,10 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
     parse key file
   */
   read_keyfile(data);
+
+  /* Always start on the normal desktop, even if a screen paper was selected
+   * when the application last exited. */
+  data->paper = SCREENATOR_PAPER_NONE;
 
   /* The saved screen paper changes how much of the window is visible. */
   update_window_shape (data);

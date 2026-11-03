@@ -222,12 +222,60 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
     }
 }
 
-void
-show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
+/* A managed dialog is placed by the window manager.  Keep it within the
+ * current monitor and let it shrink when the screen is smaller than its
+ * contents. */
+static gboolean
+on_managed_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
-  /* The dialog lives in the same layer as the annotation window, so it can be
-   * raised above the drawings and the screen paper. */
-  make_dialog_popup (dialog);
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  GdkScreen *screen = gtk_widget_get_screen (widget);
+  GdkRectangle area;
+  GtkRequisition req;
+  gint monitor;
+
+  gtk_window_present (GTK_WINDOW (widget));
+
+  if (screen)
+    {
+      monitor = gdk_screen_get_monitor_at_window (screen,
+						  gtk_widget_get_window (widget));
+      gdk_screen_get_monitor_workarea (screen, monitor, &area);
+
+      gint max_w = MAX (320, area.width - 40);
+      gint max_h = MAX (240, area.height - 80);
+
+      gtk_widget_get_preferred_size (widget, NULL, &req);
+      /* Start with a readable size instead of shrinking to the preferred
+       * size of the scrollable content. */
+      req.width = MIN (MAX (req.width, MIN (745, max_w)), max_w);
+      req.height = MIN (MAX (req.height, MIN (602, max_h)), max_h);
+      gtk_window_resize (GTK_WINDOW (widget), req.width, req.height);
+      gtk_window_move (GTK_WINDOW (widget),
+		       area.x + (area.width - req.width) / 2,
+		       area.y + (area.height - req.height) / 2);
+    }
+
+  dialog_take_focus (data, widget);
+  return FALSE;
+}
+
+static void
+show_dialog_common (ScreenatorData *data, GtkWidget *dialog, gboolean popup)
+{
+  if (popup)
+    {
+      /* The dialog lives in the same layer as the annotation window, so it
+       * can be raised above the drawings and the screen paper. */
+      make_dialog_popup (dialog);
+    }
+  else
+    {
+      /* The startup hints are a normal managed window, so the window manager
+       * can keep them on screen and the user can move or close them. */
+      gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+      gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+    }
 
   /* Release the painting grab for the outermost dialog, so its buttons and
    * entries can be used.  The drawings stay visible behind it. */
@@ -242,8 +290,16 @@ show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
 		     data->top_dialog);
   data->top_dialog = dialog;
 
-  g_signal_connect (dialog, "map-event", G_CALLBACK (on_dialog_map), data);
+  g_signal_connect (dialog, "map-event",
+		    G_CALLBACK (popup ? on_dialog_map : on_managed_dialog_map),
+		    data);
   g_signal_connect (dialog, "destroy", G_CALLBACK (on_dialog_destroy), data);
+}
+
+void
+show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
+{
+  show_dialog_common (data, dialog, TRUE);
 }
 
 static void on_icon_eraser_size (GtkMenuItem *menuitem, gpointer user_data);
@@ -300,7 +356,7 @@ static void show_wheel_menu (ScreenatorData *data,
 static void show_marker_menu (ScreenatorData *data,
 			      ScreenatorDeviceData *devdata,
 			      gint x, gint y);
-static void show_hints_dialog (ScreenatorData *data);
+static void show_hints_dialog (ScreenatorData *data, gboolean startup);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
 static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
@@ -578,6 +634,26 @@ void on_monitors_changed ( GdkScreen *screen,
   apply_pen_settings (data);
 
   update_window_shape (data);
+
+  /* Put the floating icon back at the top-right of its monitor after a
+   * resolution change, so it stays by the screen edge and is never left
+   * partly outside the new screen bounds. */
+  if (data->icon_win)
+    {
+      GdkRectangle area;
+      gint x, y, monitor;
+
+      gtk_window_get_position (GTK_WINDOW (data->icon_win), &x, &y);
+      monitor = gdk_screen_get_monitor_at_point (data->screen,
+						 x + data->icon_size / 2,
+						 y + data->icon_size / 2);
+      gdk_screen_get_monitor_geometry (data->screen, monitor, &area);
+
+      x = area.x + area.width - (gint) data->icon_size - 20;
+      y = area.y + 20;
+      gtk_window_move (GTK_WINDOW (data->icon_win), x, y);
+      update_settings_indicator (data);
+    }
 
   setup_input_devices(data);
 
@@ -5048,7 +5124,7 @@ void on_toggle_vis(GtkMenuItem *menuitem,
 static void
 on_show_hints (GtkMenuItem *menuitem, gpointer user_data)
 {
-  show_hints_dialog ((ScreenatorData *) user_data);
+  show_hints_dialog ((ScreenatorData *) user_data, FALSE);
 }
 
 
@@ -6138,19 +6214,74 @@ static void on_icon_opacity (GtkMenuItem *menuitem, gpointer user_data)
   schedule_tray_menu_refresh (data);
 }
 
+typedef struct
+{
+  ScreenatorData *data;
+  gint x;
+  gint y;
+} IconMove;
+
+static gboolean
+icon_move_idle (gpointer user_data)
+{
+  IconMove *move = user_data;
+
+  gtk_window_move (GTK_WINDOW (move->data->icon_win), move->x, move->y);
+  update_settings_indicator (move->data);
+  raise_icon_window (move->data);
+  g_free (move);
+
+  return G_SOURCE_REMOVE;
+}
+
 static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   guint new_size = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (menuitem),
                                                         "icon-size-value"));
+  gint old_size = (gint) data->icon_size;
+  gint x = 0, y = 0, monitor, right_margin = 20, top_margin = 20;
+  GdkRectangle area;
+  gboolean have_area = FALSE;
+
+  /* Keep the icon anchored to the same top/right margins, so changing its
+   * size does not move it away from the screen edge or partly off-screen. */
+  if (data->icon_win)
+    {
+      gtk_window_get_position (GTK_WINDOW (data->icon_win), &x, &y);
+      monitor = gdk_screen_get_monitor_at_point (data->screen,
+						 x + old_size / 2,
+						 y + old_size / 2);
+      gdk_screen_get_monitor_geometry (data->screen, monitor, &area);
+      right_margin = area.x + area.width - x - old_size;
+      top_margin = y - area.y;
+      have_area = TRUE;
+    }
 
   data->icon_size = new_size;
 
-  /* Resize the icon window and reload the icon pixbuf */
+  /* Redraw at the new size first, as before.  Move the window afterwards so
+   * the resize and the redraw are not interleaved. */
   gtk_window_resize (GTK_WINDOW (data->icon_win), new_size, new_size);
   update_icon_image (data);
   update_settings_indicator (data);
   raise_icon_window (data);
+
+  if (have_area)
+    {
+      IconMove *move = g_new0 (IconMove, 1);
+
+      x = area.x + area.width - (gint) new_size - right_margin;
+      y = area.y + top_margin;
+      x = CLAMP (x, area.x,
+		 MAX (area.x, area.x + area.width - (gint) new_size));
+      y = CLAMP (y, area.y,
+		 MAX (area.y, area.y + area.height - (gint) new_size));
+      move->data = data;
+      move->x = x;
+      move->y = y;
+      g_idle_add (icon_move_idle, move);
+    }
 
   schedule_tray_menu_refresh (data);
 }
@@ -7841,12 +7972,13 @@ hints_bullet (const gchar *color, const gchar *markup)
 /* The single, colourful hints dialog.  It replaces the per-tool messages and
  * states the common controls once. */
 static void
-show_hints_dialog (ScreenatorData *data)
+show_hints_dialog (ScreenatorData *data, gboolean startup)
 {
   GtkWidget *dialog, *content, *box, *columns, *left, *right;
-  GtkWidget *separator, *label, *check;
+  GtkWidget *separator, *label, *check, *scroll = NULL;
   gboolean was_grabbed;
   gboolean changed = FALSE;
+  gboolean restore_window = FALSE;
 
   if (data->hints_id)
     {
@@ -7861,6 +7993,14 @@ show_hints_dialog (ScreenatorData *data)
   if (was_grabbed)
     release_grab (data, NULL);
 
+  /* A managed startup hint would otherwise sit below the override-redirect
+   * annotation window (and its saved paper or drawings). */
+  if (startup && data->win && gtk_widget_get_visible (data->win))
+    {
+      hide_window (data);
+      restore_window = TRUE;
+    }
+
   dialog = gtk_dialog_new_with_buttons ("Screenator Hints", NULL,
 					GTK_DIALOG_MODAL |
 					GTK_DIALOG_DESTROY_WITH_PARENT,
@@ -7871,13 +8011,48 @@ show_hints_dialog (ScreenatorData *data)
   gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
   gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
 
-  /* The hint must stay readable above the drawings. */
-  show_dialog_above_drawings (data, dialog);
+  /* At startup the hints are a managed window; from the menu they stay above
+   * the drawings like the other dialogs. */
+  if (startup)
+    show_dialog_common (data, dialog, FALSE);
+  else
+    show_dialog_above_drawings (data, dialog);
 
   content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
   box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
   gtk_container_set_border_width (GTK_CONTAINER (box), 14);
-  gtk_container_add (GTK_CONTAINER (content), box);
+
+  if (startup)
+    {
+      GdkRectangle area;
+      gint monitor, width, height;
+
+      monitor = gdk_screen_get_monitor_at_point (data->screen,
+						 data->width / 2,
+						 data->height / 2);
+      gdk_screen_get_monitor_workarea (data->screen, monitor, &area);
+      width = MIN (745, MAX (320, area.width - 40));
+      height = MIN (602, MAX (240, area.height - 80));
+
+      scroll = gtk_scrolled_window_new (NULL, NULL);
+      gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+				      GTK_POLICY_AUTOMATIC,
+				      GTK_POLICY_AUTOMATIC);
+      gtk_widget_set_hexpand (scroll, TRUE);
+      gtk_widget_set_vexpand (scroll, TRUE);
+      gtk_widget_set_hexpand (box, TRUE);
+      gtk_widget_set_vexpand (box, TRUE);
+
+      /* A non-resizable window sizes itself from its content, so request the
+       * intended size explicitly. */
+      gtk_widget_set_size_request (scroll, width, height);
+      gtk_window_set_default_size (GTK_WINDOW (dialog), width, height);
+
+      gtk_container_add (GTK_CONTAINER (content), scroll);
+      gtk_container_add (GTK_CONTAINER (scroll), box);
+    }
+  else
+    gtk_container_add (GTK_CONTAINER (content), box);
 
   label = gtk_label_new (NULL);
   gtk_label_set_markup (GTK_LABEL (label),
@@ -8021,6 +8196,9 @@ show_hints_dialog (ScreenatorData *data)
   if (changed)
     write_keyfile (data);
 
+  if (restore_window)
+    show_window (data);
+
   if (was_grabbed)
     acquire_grab (data, NULL);
 }
@@ -8028,7 +8206,7 @@ show_hints_dialog (ScreenatorData *data)
 static gboolean
 show_hints_idle (gpointer user_data)
 {
-  show_hints_dialog ((ScreenatorData *) user_data);
+  show_hints_dialog ((ScreenatorData *) user_data, TRUE);
   return G_SOURCE_REMOVE;
 }
 

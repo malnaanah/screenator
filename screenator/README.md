@@ -162,9 +162,10 @@ and you can keep using your applications while it is visible.
   blue writing lines and Graph a white page with a grey square grid. The paper
   is drawn below the annotations and above the other windows (the floating
   icon and its menu stay above it), takes the mouse and keyboard so clicks and
-  typing do not reach the desktop or the applications below, stays when Clear
-  Screen is selected and is remembered across restarts. While a paper is
-  active, Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper,
+  typing do not reach the desktop or the applications below and stays when
+  Clear Screen is selected. Screenator always starts on the normal desktop; a
+  saved paper is not restored. While a paper is active, Ctrl+Z and
+  Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper,
   Ctrl+T shows or hides the drawings and Alt+F4 quits.
 - A single, colourful **Hints** dialog appears when Screenator starts. It
   summarises the common mouse and stylus controls plus Shape Editing tips, the
@@ -220,8 +221,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.3_amd64.deb`
-- `Screenator-5.3-x86_64.AppImage`
+- `screenator_5.4_amd64.deb`
+- `Screenator-5.4-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

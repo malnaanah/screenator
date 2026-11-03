@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="5.4" date="2026-11-03">
+      <description>
+        <p>Makes the startup hints window a managed, non-resizable window at a fixed readable size with scrollable content, so it stays fully on screen and remains controllable. The app now always starts on the normal desktop and does not restore a saved screen paper. On resolution changes the floating icon returns to the top-right of its monitor, and changing the icon size keeps it anchored to the screen edge with a correct redraw.</p>
+      </description>
+    </release>
     <release version="5.3" date="2026-11-03">
       <description>
         <p>The Marker tool now uses the current line color with its own opacity, 40% by default. Long right click or a long press of the stylus second side button opens a Marker Opacity menu with 30%, 40%, 50%, 60% and 70%; the choice is independent of the global pen opacity and is remembered across restarts. Selecting the Marker switches the line color to yellow and leaving it or exiting painting restores the previous color. The floating icon size list adds 16x16, and 32x32 is now the default size.</p>
