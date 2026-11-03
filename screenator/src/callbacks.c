@@ -7941,6 +7941,13 @@ show_hints_dialog (ScreenatorData *data)
     "the Eraser tool, a long press does not open the menu."),
     FALSE, FALSE, 0);
 
+  gtk_box_pack_start (GTK_BOX (left),
+		      hints_heading ("#d35400", "Global Shortcut"),
+		      FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+    "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
+    "hides the floating icon at any time."), FALSE, FALSE, 0);
+
   /* Right column: shape editing, tool tips and shortcuts. */
   gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#2980b9", "Shape Editing"),
@@ -7979,13 +7986,6 @@ show_hints_dialog (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#16a085",
     "<b>Escape</b> finishes the shape or exits the tool."),
     FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (right),
-		      hints_heading ("#d35400", "Global Shortcut"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#d35400",
-    "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
-    "hides the floating icon at any time."), FALSE, FALSE, 0);
 
   gtk_box_pack_start (GTK_BOX (right),
 		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
