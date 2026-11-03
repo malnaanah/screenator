@@ -680,6 +680,27 @@ void on_monitors_changed ( GdkScreen *screen,
 
 
 
+static void
+recreate_icon_windows_for_compositing (ScreenatorData *data)
+{
+  GtkWidget *icon = data->icon_win;
+  GtkWidget *settings = data->settings_win;
+
+  if (!icon || data->icon_pointer_grabbed || data->icon_menu_pending ||
+      data->top_dialog)
+    return;
+
+  data->icon_win = NULL;
+  data->icon_image = NULL;
+  data->settings_win = NULL;
+
+  if (settings)
+    gtk_widget_destroy (settings);
+  gtk_widget_destroy (icon);
+
+  create_icon_window (data);
+}
+
 void on_composited_changed ( GdkScreen *screen,
 			   gpointer   user_data)
 {
@@ -690,6 +711,11 @@ void on_composited_changed ( GdkScreen *screen,
 
   data->composited = gdk_screen_is_composited (data->screen);
 
+  if (data->icon_win &&
+      ((data->composited && data->icon_shaped) ||
+       (!data->composited && !data->icon_shaped)))
+    recreate_icon_windows_for_compositing (data);
+
   if(data->composited)
     {
       // undo shape
@@ -697,6 +723,11 @@ void on_composited_changed ( GdkScreen *screen,
       // the window itself stays opaque; only the strokes carry the opacity
       gtk_widget_set_opacity(data->win, 1.0);
     }
+
+  /* The icon window keeps the visual it was created with.  Refresh its
+   * pixbuf and shape so a compositor that starts after login cannot leave a
+   * stale shape mask around the old icon size. */
+  update_icon_image (data);
 
   // set anti-aliasing
   GHashTableIter it;
@@ -3503,9 +3534,29 @@ line_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
 /* Finish what the active tool is doing and/or leave painting mode.  This is
  * the action of a right click on the canvas, shared by the mouse and by the
  * Escape key so both behave the same. */
+static void send_escape_to_close_menu (ScreenatorData *data);
+
+static gboolean
+close_menu_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->screenshot_close_menu_id = 0;
+  if (data->screenshot_paper)
+    send_escape_to_close_menu (data);
+
+  return G_SOURCE_REMOVE;
+}
+
 void
 screenator_clear_screenshot_paper (ScreenatorData *data)
 {
+  if (data->screenshot_close_menu_id)
+    {
+      g_source_remove (data->screenshot_close_menu_id);
+      data->screenshot_close_menu_id = 0;
+    }
+
   if (!data->screenshot_paper)
     return;
 
@@ -3728,7 +3779,12 @@ screenator_take_screenshot_paper (ScreenatorData *data)
   raise_icon_window (data);
   update_settings_indicator (data);
 
-  send_escape_to_close_menu (data);
+  /* Let the frozen picture become visible before dismissing the real menu.
+   * Otherwise the menu can disappear for one frame while the overlay is still
+   * being mapped. */
+  if (data->screenshot_paper)
+    data->screenshot_close_menu_id =
+      g_timeout_add (150, close_menu_timeout, data);
 }
 
 gboolean
@@ -5765,6 +5821,27 @@ static GdkPixbuf *load_icon_pixbuf (ScreenatorData *data, gboolean active)
 /* Without a compositor the icon window has no alpha channel, so shape it to
  * the icon's circle.  That lets the settings ring show through the square
  * corners and keeps clicks outside the circle away from the icon. */
+static void update_icon_shape (ScreenatorData *data);
+
+static gboolean
+on_icon_configure (GtkWidget *widget, GdkEventConfigure *event, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  if (event->width != (gint) data->icon_size ||
+      event->height != (gint) data->icon_size)
+    {
+      gtk_widget_set_size_request (widget,
+				   (gint) data->icon_size,
+				   (gint) data->icon_size);
+      return FALSE;
+    }
+
+  update_icon_shape (data);
+  gtk_widget_queue_draw (widget);
+  return FALSE;
+}
+
 static void
 update_icon_shape (ScreenatorData *data)
 {
@@ -5774,7 +5851,7 @@ update_icon_shape (ScreenatorData *data)
   gint size;
   gdouble radius;
 
-  if (!data->icon_win || data->composited)
+  if (!data->icon_win || !data->icon_shaped)
     return;
 
   size = MAX (1, (gint) data->icon_size);
@@ -5809,6 +5886,11 @@ void update_icon_image (ScreenatorData *data)
 			     pixbuf ? pixbuf : NULL);
   if (pixbuf)
     g_object_unref (pixbuf);
+
+  if (data->icon_win)
+    gtk_widget_set_size_request (data->icon_win,
+				 (gint) data->icon_size,
+				 (gint) data->icon_size);
 
   update_icon_shape (data);
 }
@@ -6524,22 +6606,37 @@ static void on_icon_opacity (GtkMenuItem *menuitem, gpointer user_data)
   schedule_tray_menu_refresh (data);
 }
 
-typedef struct
-{
-  ScreenatorData *data;
-  gint x;
-  gint y;
-} IconMove;
-
 static gboolean
-icon_move_idle (gpointer user_data)
+icon_reposition_timeout (gpointer user_data)
 {
-  IconMove *move = user_data;
+  ScreenatorData *data = user_data;
 
-  gtk_window_move (GTK_WINDOW (move->data->icon_win), move->x, move->y);
-  update_settings_indicator (move->data);
-  raise_icon_window (move->data);
-  g_free (move);
+  /* The first update can run before the X window has processed its new size.
+   * Reapply the pixbuf, shape and size request, then position the window. */
+  update_icon_image (data);
+  gtk_widget_queue_draw (data->icon_win);
+  screenator_position_icon (data);
+  return G_SOURCE_REMOVE;
+}
+
+/* A login-time start can run before the window manager and panel have settled
+ * the monitor work area.  Recheck once shortly after startup. */
+static gboolean
+icon_startup_settle (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  GdkScreen *screen = data->screen;
+
+  if (data->show_floating_icon && data->icon_win &&
+      !gtk_widget_get_visible (data->icon_win))
+    gtk_widget_show (data->icon_win);
+
+  if (screen &&
+      (gdk_screen_get_width (screen) != (gint) data->width ||
+       gdk_screen_get_height (screen) != (gint) data->height))
+    on_monitors_changed (screen, data);
+  else
+    screenator_position_icon (data);
 
   return G_SOURCE_REMOVE;
 }
@@ -6630,31 +6727,28 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
   ScreenatorData *data = (ScreenatorData *) user_data;
   guint new_size = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (menuitem),
                                                         "icon-size-value"));
-  gint old_size = (gint) data->icon_size;
-  gint x = 0, y = 0;
-  gboolean have_area = data->icon_win != NULL;
-
-  if (have_area)
-    icon_corner_position (data, old_size, (gint) new_size, &x, &y);
-
   data->icon_size = new_size;
 
   /* Redraw at the new size first, as before.  Move the window afterwards so
    * the resize and the redraw are not interleaved. */
+  gtk_widget_set_size_request (data->icon_win,
+			       (gint) new_size, (gint) new_size);
   gtk_window_resize (GTK_WINDOW (data->icon_win), new_size, new_size);
+  {
+    GdkWindow *window = gtk_widget_get_window (data->icon_win);
+
+    if (window)
+      {
+	gdk_window_resize (window, (gint) new_size, (gint) new_size);
+	gdk_display_sync (gdk_display_get_default ());
+      }
+  }
   update_icon_image (data);
   update_settings_indicator (data);
   raise_icon_window (data);
 
-  if (have_area)
-    {
-      IconMove *move = g_new0 (IconMove, 1);
-
-      move->data = data;
-      move->x = x;
-      move->y = y;
-      g_idle_add (icon_move_idle, move);
-    }
+  if (data->icon_win)
+    g_timeout_add (50, icon_reposition_timeout, data);
 
   schedule_tray_menu_refresh (data);
 }
@@ -6667,6 +6761,7 @@ set_floating_icon_visible (ScreenatorData *data, gboolean show)
   if (show)
     {
       gtk_widget_show (data->icon_win);
+      screenator_position_icon (data);
       update_settings_indicator (data);
       raise_icon_window (data);
     }
@@ -7220,8 +7315,11 @@ void create_icon_window (ScreenatorData *data)
   {
     GdkScreen *screen = gtk_widget_get_screen (GTK_WIDGET (data->icon_win));
     GdkVisual *visual = gdk_screen_get_rgba_visual (screen);
+    gboolean use_alpha = visual && gdk_screen_is_composited (screen);
 
-    if (visual && gdk_screen_is_composited (screen))
+    data->icon_shaped = !use_alpha;
+
+    if (use_alpha)
       {
 	gtk_widget_set_visual (GTK_WIDGET (data->icon_win), visual);
 	/* Paint the window background ourselves, so GTK does not fill it
@@ -7250,6 +7348,8 @@ void create_icon_window (ScreenatorData *data)
 		    G_CALLBACK (on_icon_button_release), data);
   g_signal_connect (data->icon_win, "grab-broken-event",
 		    G_CALLBACK (on_icon_grab_broken), data);
+  g_signal_connect (data->icon_win, "configure-event",
+		    G_CALLBACK (on_icon_configure), data);
 
   data->icon_dragging = FALSE;
   data->icon_pointer_grabbed = FALSE;
@@ -7268,8 +7368,12 @@ void create_icon_window (ScreenatorData *data)
   gtk_widget_show_all (data->icon_win);
   update_icon_shape (data);
 
-  /* Place the icon at the configured corner of its monitor. */
+  /* Place the icon at the configured corner of its monitor.  At login the
+   * panel/window manager may not have settled the work area yet, so recheck
+   * once shortly after startup. */
   screenator_position_icon (data);
+  g_timeout_add (1500, icon_startup_settle, data);
+  g_timeout_add (4000, icon_startup_settle, data);
 
   /* The annotation window is created first; make sure the icon starts above
    * it, otherwise the annotation window takes the clicks for the icon. */

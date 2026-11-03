@@ -235,8 +235,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.5_amd64.deb`
-- `Screenator-5.5-x86_64.AppImage`
+- `screenator_5.6_amd64.deb`
+- `Screenator-5.6-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

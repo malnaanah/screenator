@@ -1,4 +1,4 @@
-Screenator 5.5
+Screenator 5.6
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 5.5 (amd64)
-  - Screenator-5.5-x86_64.AppImage
+  - screenator 5.6 (amd64)
+  - Screenator-5.6-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_5.5_amd64.deb
-                          Screenator-5.5-x86_64.AppImage
+                          screenator_5.6_amd64.deb
+                          Screenator-5.6-x86_64.AppImage
   info.txt              This file.
 
 Features:

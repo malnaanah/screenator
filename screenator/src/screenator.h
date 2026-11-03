@@ -511,6 +511,9 @@ typedef struct
   guint        tool_delay_id;
   guint        tool_grab_retry_id;
   gboolean     force_active_icon;
+  /* The icon window was created without an alpha visual, so it keeps a shape
+   * mask even if the compositor starts later. */
+  gboolean     icon_shaped;
   gint         pending_pen_tool;
   gint         pending_shape_type;
 
@@ -605,6 +608,7 @@ typedef struct
   /* A one-off screenshot used as the frozen background for a delayed tool
    * when another application owns the pointer grab. */
   cairo_surface_t *screenshot_paper;
+  guint        screenshot_close_menu_id;
   /* X11 window that had the focus before a paper took it. */
   gulong       paper_prev_focus;
 
