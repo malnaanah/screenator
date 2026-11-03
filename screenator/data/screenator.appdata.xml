@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="5.5" date="2026-11-04">
+      <description>
+        <p>Adds a Tool Activation Delay submenu with 0, 1, 2, 3, 4, 5, 7, 9 and 11 seconds and resets the delay to 0 on every start. F8, F6 and F7 select the Pen, Arrow and Text tools globally and switch immediately when a tool is already active, updating its cursor. A delayed activation blocked by another application's context menu now freezes the screen into a temporary screenshot, accepts XInput2 raw drawing for Pen/Marker/Eraser and text-editor clicks, and closes the other menu with Escape so the real grab can resume. Adds a Floating Icon Position dialog with Top Right (default), Top Left, Bottom Right and Bottom Left, saved across restarts, and improves text-editor focus handling.</p>
+      </description>
+    </release>
     <release version="5.4" date="2026-11-03">
       <description>
         <p>Makes the startup hints window a managed, non-resizable window at a fixed readable size with scrollable content, so it stays fully on screen and remains controllable. The app now always starts on the normal desktop and does not restore a saved screen paper. On resolution changes the floating icon returns to the top-right of its monitor, and changing the icon size keeps it anchored to the screen edge with a correct redraw.</p>

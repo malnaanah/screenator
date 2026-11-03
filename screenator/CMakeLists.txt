@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 5.4 LANGUAGES C)
+project(screenator VERSION 5.5 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
@@ -11,6 +11,7 @@ find_package(PkgConfig)
 pkg_check_modules(gtk3 REQUIRED "gtk+-3.0 >= 3.22")
 pkg_check_modules(xinput REQUIRED "xi >= 1.3")
 pkg_check_modules(x11 REQUIRED x11)
+pkg_check_modules(xtst xtst)
 pkg_check_modules(appindicator3 "ayatana-appindicator3-0.1 >= 0.5")
 if(NOT appindicator3_FOUND)
   pkg_check_modules(appindicator3 REQUIRED "appindicator3-0.1 >= 0.4.92")
@@ -25,6 +26,7 @@ include_directories(
     ${appindicator3_INCLUDE_DIRS}
     ${xinput_INCLUDE_DIRS}
     ${x11_INCLUDE_DIRS}
+    ${xtst_INCLUDE_DIRS}
 )
 
 link_directories(
@@ -32,7 +34,12 @@ link_directories(
     ${appindicator3_LIBRARY_DIRS}
     ${xinput_LIBRARY_DIRS}
     ${x11_LIBRARY_DIRS}
+    ${xtst_LIBRARY_DIRS}
 )
+
+if(xtst_FOUND)
+  add_definitions(-DHAVE_XTEST)
+endif()
 
 set(sources
     src/screenator.c
@@ -56,6 +63,8 @@ target_link_libraries(${target_name}
     ${appindicator3_LIBRARIES}
     ${xinput_LIBRARIES}
     ${x11_LIBRARIES}
+    ${xtst_LIBRARIES}
+    -lXext
     -lm
 )
 

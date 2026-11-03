@@ -1,4 +1,4 @@
-Screenator 5.4
+Screenator 5.5
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 5.4 (amd64)
-  - Screenator-5.4-x86_64.AppImage
+  - screenator 5.5 (amd64)
+  - Screenator-5.5-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,20 +18,30 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_5.4_amd64.deb
-                          Screenator-5.4-x86_64.AppImage
+                          screenator_5.5_amd64.deb
+                          Screenator-5.5-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
+  - Floating Icon Position... in Settings chooses Top Right (default), Top
+    Left, Bottom Right or Bottom Left.  The choice is saved across restarts.
   - The Settings submenu holds Save Annotations on Exit, Change Font, Show
-    Settings Indicator and Reset Settings.  Show Floating Icon sits directly
+    Settings Indicator, Floating Icon Position... and Reset Settings.  Show
+    Floating Icon sits directly
     below Toggle Visibility in the main menu and has the global F9 shortcut.
     With Save
     Annotations on Exit on (the default), the drawings are saved to
     ~/.config/screenator-annotations.png when Screenator quits and restored on
     the next start; the screen paper follows its own setting and Clear Screen
     removes the saved drawing.
+  - Tool Activation Delay in the main menu can delay a newly selected tool by
+    0, 1, 2, 3, 4, 5, 7, 9 or 11 seconds.  The delay is always 0 when the
+    application starts and is not remembered across restarts.  During the
+    delay the previously selected tool stays active.  If the pointer grab is blocked when the delay ends, for
+    example by another application's context menu, Screenator freezes the
+    current screen as a temporary background so the tool can draw over it;
+    exiting the tool removes the frozen background.
   - The Shapes submenu holds the Marker, Line, Spline, Polygon, Triangle,
     Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
     Lines tools.  Shapes are drawn by dragging; the Line and Arrow follow the
@@ -200,11 +210,13 @@ Features:
     24, a 40 px eraser and a 32x32 icon.
   - Undo/redo, clear screen, show/hide drawing, show/hide floating icon and
     show hints.
-  - F9 is a global shortcut that shows or hides the floating icon at any time,
-    whether or not painting mode is active.  The old Gromit-MPX keys
-    (Shift+F9, Ctrl+F9, Alt+F9, F8 and Shift+F8) are no longer grabbed.  While
-    painting mode is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc
-    exits the current tool like a right click outside a shape.
+  - F9 is a global shortcut that shows or hides the floating icon at any time.
+    F8 selects the Pen tool, F6 the Arrow tool and F7 the Text tool.  While a
+    tool is active these switch immediately; otherwise they honor the Tool
+    Activation Delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
+    Shift+F8 and the old F8 undo) are no longer grabbed.  While painting mode
+    is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc exits the current
+    tool like a right click outside a shape.
   - Multi-pointer support inherited from Gromit-MPX.
   - Stylus support: the tip draws like the left mouse button, using the
     selected line width; pen pressure is ignored so it draws exactly like the

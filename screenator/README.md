@@ -14,12 +14,16 @@ and you can keep using your applications while it is visible.
 - A small draggable floating icon. Left or right click opens the menu with:
   Pen, Text, Eraser, Shapes (Marker, Line, Spline, Polygon, Triangle, Arrow,
   Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel Lines,
-  Random Signal),
+  Random Signal), Tool Activation Delay,
   Line Thickness, Line Color, Shapes Fill Color, Screen Paper, Eraser Size,
   Opacity, Floating Icon Size, Undo, Redo, Clear Screen, Toggle Visibility,
   Show Floating Icon (F9), Show Hints, Settings (Save Annotations on Exit,
-  Change Font, Show Settings Indicator, Reset Settings), About and Quit. The
-  icon turns into its active (red) variant while a painting mode is on.
+  Change Font, Show Settings Indicator, Floating Icon Position..., Reset
+  Settings), About and Quit. The icon turns into its active (red) variant
+  while a painting mode is on.
+- **Floating Icon Position...** in Settings opens a dialog with Top Right
+  (default), Top Left, Bottom Right and Bottom Left. The chosen corner is
+  saved and restored on the next start.
 - Marker draws a translucent highlighter stroke with a fixed 32 px width,
   using the current line colour. Its opacity is 40% by default and is
   independent of the global pen opacity. Long right click, or a long press of
@@ -28,6 +32,14 @@ and you can keep using your applications while it is visible.
   the Marker switches the line colour to yellow; leaving the Marker or
   exiting painting restores the colour that was active before. The mouse wheel
   or the stylus first side button changes its colour.
+- Tool Activation Delay can delay a newly selected tool by 0, 1, 2, 3, 4, 5,
+  7, 9 or 11 seconds. The delay is always 0 when the application starts; it is
+  not remembered across restarts. During the delay the previously selected
+  tool stays active.
+  If the pointer grab is blocked when the delay ends, for example by another
+  application's context menu, Screenator freezes the current screen as a
+  temporary background so the tool can draw over it; exiting the tool removes
+  the frozen background.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
 - While painting mode is active, the mouse wheel changes the setting selected
@@ -183,11 +195,13 @@ and you can keep using your applications while it is visible.
   opacity, no shape fill, Arial Bold 24, a 40 px eraser, a 32x32 icon and no
   screen paper.
 - `F9` is a global shortcut that shows or hides the floating icon at any
-  time, whether or not painting mode is active. The old Gromit-MPX keys
-  (`Shift+F9`, `Ctrl+F9`, `Alt+F9`, `F8` and `Shift+F8`) are no longer
-  grabbed. While painting mode is active, `Ctrl+Z` undoes and `Ctrl+Shift+Z`
-  redoes, even with Caps Lock or Num Lock on, and `Esc` exits the current tool
-  like a right click outside a shape.
+  time. `F8` selects the Pen tool, `F6` the Arrow tool and `F7` the Text
+  tool. While a tool is active these switch immediately; otherwise they honor
+  the Tool Activation Delay. The old Gromit-MPX keys (`Shift+F9`, `Ctrl+F9`,
+  `Alt+F9`, `Shift+F8` and the old F8 undo) are no longer grabbed. While
+  painting mode is active, `Ctrl+Z` undoes and `Ctrl+Shift+Z` redoes, even
+  with Caps Lock or Num Lock on, and `Esc` exits the current tool like a
+  right click outside a shape.
 - Stylus: the tip draws like the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
   first side button has two short-press settings, chosen in the stylus menu:
@@ -221,8 +235,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.4_amd64.deb`
-- `Screenator-5.4-x86_64.AppImage`
+- `screenator_5.5_amd64.deb`
+- `Screenator-5.5-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

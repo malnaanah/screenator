@@ -122,6 +122,15 @@ typedef enum
   SCREENATOR_WHEEL_THICKNESS
 } ScreenatorWheelMode;
 
+/* Corner where the floating icon is placed. */
+typedef enum
+{
+  SCREENATOR_ICON_TOP_RIGHT = 0,
+  SCREENATOR_ICON_TOP_LEFT,
+  SCREENATOR_ICON_BOTTOM_RIGHT,
+  SCREENATOR_ICON_BOTTOM_LEFT
+} ScreenatorIconPosition;
+
 typedef struct
 {
   ScreenatorPaintType type;
@@ -477,6 +486,10 @@ typedef struct
    * mode is active; 0 when the shortcut is not grabbed. */
   guint        undo_ctrl_keycode;
   guint        escape_keycode;
+  /* Global F8 / F7 shortcuts for the Pen and Text tools. */
+  guint        pen_keycode;
+  guint        text_keycode;
+  guint        arrow_keycode;
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
@@ -492,6 +505,22 @@ typedef struct
 			      9 = free line, 10 = angled arrow, 11 = marker */
   gchar       *font;       /* Pango font description for the Text tool */
   guint        icon_size;
+  ScreenatorIconPosition icon_position;
+  /* Delay before a newly selected tool becomes active. */
+  guint        tool_delay_seconds;
+  guint        tool_delay_id;
+  guint        tool_grab_retry_id;
+  gboolean     force_active_icon;
+  gint         pending_pen_tool;
+  gint         pending_shape_type;
+
+  /* Experimental fallback for drawing while another application holds the
+   * pointer grab: XInput2 raw events plus XQueryPointer. */
+  int          xi_opcode;
+  gboolean     raw_filter_installed;
+  gboolean     raw_input_enabled;
+  gboolean     raw_button_down;
+  GdkDevice   *raw_device;
 
   /* Shape tools */
   ScreenatorPaintContext *default_shape;
@@ -525,6 +554,8 @@ typedef struct
   gboolean     text_editor_positioned; /* the editor window has been placed */
   gboolean     text_editor_sized;  /* fixed width chosen for this editor */
   gboolean     text_editor_rtl;    /* editor width was sized for RTL text */
+  guint        text_focus_id;
+  guint        text_focus_attempts;
   /* The text being typed is previewed in the annotation window, above the
    * annotations, because the editor window itself can be hidden behind them.
    * The caret is drawn there too, so it is never hidden by a drawing or the
@@ -571,6 +602,9 @@ typedef struct
 
   /* Screen paper drawn below the annotations. */
   ScreenatorPaperType paper;
+  /* A one-off screenshot used as the frozen background for a delayed tool
+   * when another application owns the pointer grab. */
+  cairo_surface_t *screenshot_paper;
   /* X11 window that had the focus before a paper took it. */
   gulong       paper_prev_focus;
 
@@ -595,6 +629,15 @@ void paper_restore_focus (ScreenatorData *data);
 void screenator_exit_screen_paper (ScreenatorData *data);
 void screenator_marker_prepare (ScreenatorData *data);
 void screenator_marker_leave (ScreenatorData *data);
+void screenator_schedule_tool (ScreenatorData *data, gint pen_tool,
+			       gint shape_type);
+void screenator_show_text (ScreenatorData *data, GdkDevice *device,
+			   gint x, gint y);
+void screenator_position_icon (ScreenatorData *data);
+void screenator_raw_input_enable (ScreenatorData *data);
+void screenator_raw_input_disable (ScreenatorData *data);
+void screenator_take_screenshot_paper (ScreenatorData *data);
+void screenator_clear_screenshot_paper (ScreenatorData *data);
 void update_window_shape (ScreenatorData *data);
 void text_preview_add_shape (ScreenatorData *data, cairo_region_t *region);
 void shape_previews_add_shape (ScreenatorData *data, cairo_region_t *region);

@@ -503,6 +503,10 @@ void read_keyfile(ScreenatorData *data)
     data->custom_line_color.alpha = 1.0;
     data->pen_tool = 0;
     data->icon_size = KEY_DFLT_ICON_SIZE;
+    data->icon_position = SCREENATOR_ICON_TOP_RIGHT;
+    data->tool_delay_seconds = 0;
+    data->tool_delay_id = 0;
+    data->force_active_icon = FALSE;
     data->font = g_strdup (KEY_DFLT_FONT);
     data->shape_fill_enabled = FALSE;
     gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
@@ -610,6 +614,16 @@ void read_keyfile(ScreenatorData *data)
 
 	    if (size > 0)
 		data->icon_size = size;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "IconPosition", NULL))
+	{
+	    gint position =
+		g_key_file_get_integer (key_file, "Drawing", "IconPosition", NULL);
+
+	    if (position >= SCREENATOR_ICON_TOP_RIGHT &&
+		position <= SCREENATOR_ICON_BOTTOM_LEFT)
+		data->icon_position = (ScreenatorIconPosition) position;
 	}
 
     if (g_key_file_has_key (key_file, "Drawing", "Font", NULL))
@@ -804,6 +818,8 @@ void write_keyfile(ScreenatorData *data)
 			    data->eraser_width);
     g_key_file_set_string (key_file, "Drawing", "PenColor", color);
     g_key_file_set_integer (key_file, "Drawing", "IconSize", data->icon_size);
+    g_key_file_set_integer (key_file, "Drawing", "IconPosition",
+			    (gint) data->icon_position);
     g_key_file_set_string (key_file, "Drawing", "Font",
 			   (data->font && *data->font) ? data->font
 						       : KEY_DFLT_FONT);

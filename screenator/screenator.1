@@ -49,6 +49,14 @@ or exits painting like Escape. The change is the same as picking it from
 the menu, so it is kept when another tool is selected and is shown in the
 settings indicator and the menus.
 .br
+The Tool Activation Delay submenu can delay a newly selected tool by 0, 1, 2,
+3, 4, 5, 7, 9 or 11 seconds. The delay is always 0 when the application starts
+and is not remembered across restarts. During the delay the previously
+selected tool stays active. If the pointer grab is blocked when the delay ends, for example
+by another application's context menu, Screenator freezes the current screen
+as a temporary background so the tool can draw over it; exiting the tool
+removes the frozen background.
+.br
 The Shapes submenu contains the Marker, Line, Spline, Polygon, Triangle,
 Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
 Lines tools.
@@ -170,14 +178,17 @@ stays editable: drag it to
 move it, drag a corner handle to change the font size, and drag its round
 handle to rotate it.
 .br
-The pen and font settings are remembered in
+The pen, font and floating icon position settings are remembered in
 .I ~/.config/screenator.ini
 and can be restored to their defaults with the "Reset Settings" menu entry.
 The screen paper is not restored at startup; the normal desktop is always
 shown.
 .br
 The "Settings" submenu holds "Save annotations on exit", "Change Font", "Show
-Settings Indicator" and "Reset Settings". "Show Floating Icon (F9)" sits
+Settings Indicator", "Floating Icon Position..." and "Reset Settings".
+"Floating Icon Position..." opens a dialog with Top Right (the default), Top
+Left, Bottom Right and Bottom Left; the choice is saved across restarts.
+"Show Floating Icon (F9)" sits
 directly below "Toggle Visibility" in the main menu. With "Save
 annotations on exit" on (the default), the drawings are saved to
 .I ~/.config/screenator-annotations.png
@@ -197,9 +208,16 @@ dialog again, and Reset Settings keeps the choice.
 By default, Screenator grabs the "F9" key globally (this can be changed using
 the "\-\-key" option), making it unavailable to other applications. Pressing
 .B F9
-shows or hides the floating icon at any time, whether or not painting mode is
-active. The old Gromit-MPX shortcuts (Shift+F9, Ctrl+F9, Alt+F9, F8 and
-Shift+F8) are no longer grabbed.
+shows or hides the floating icon at any time.
+.B F8
+selects the Pen tool,
+.B F6
+selects the Arrow tool and
+.B F7
+selects the Text tool. While a tool is active these switch immediately;
+otherwise they honor the Tool Activation Delay. The old Gromit-MPX shortcuts
+(Shift+F9, Ctrl+F9, Alt+F9, Shift+F8 and the old F8 undo) are no longer
+grabbed.
 .PP
 While painting mode is active, the usual
 .B Ctrl+Z

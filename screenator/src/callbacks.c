@@ -29,9 +29,14 @@
 #include <stdint.h>
 #include <math.h>
 #include <gdk/gdk.h>
+#include <glib/gstdio.h>
 #ifdef GDK_WINDOWING_X11
 #include <X11/Xlib.h>
+#include <X11/keysym.h>
 #include <gdk/gdkx.h>
+#ifdef HAVE_XTEST
+#include <X11/extensions/XTest.h>
+#endif
 #endif
 #include "screenator.h"
 #include "input.h"
@@ -362,6 +367,19 @@ static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
 
 
+static void
+draw_screenshot_paper (ScreenatorData *data, cairo_t *cr)
+{
+  if (!data->screenshot_paper)
+    return;
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_surface (cr, data->screenshot_paper, 0, 0);
+  cairo_paint (cr);
+  cairo_restore (cr);
+}
+
 gboolean on_expose (GtkWidget *widget,
 		    cairo_t* cr,
 		    gpointer user_data)
@@ -376,7 +394,9 @@ gboolean on_expose (GtkWidget *widget,
   /* The visibility toggle hides the drawings but keeps the screen paper. */
   if (data->hide_drawings)
     {
-      if (data->paper != SCREENATOR_PAPER_NONE)
+      if (data->screenshot_paper)
+	draw_screenshot_paper (data, cr);
+      else if (data->paper != SCREENATOR_PAPER_NONE)
 	draw_screen_paper (data, cr);
 
       return TRUE;
@@ -384,7 +404,17 @@ gboolean on_expose (GtkWidget *widget,
 
   /* The screen paper is drawn first, so it stays below the annotations and is
    * not part of the backbuffer: clearing the screen leaves it in place. */
-  if (data->paper != SCREENATOR_PAPER_NONE)
+  if (data->screenshot_paper)
+    {
+      draw_screenshot_paper (data, cr);
+
+      cairo_save (cr);
+      cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+      cairo_paint (cr);
+      cairo_restore (cr);
+    }
+  else if (data->paper != SCREENATOR_PAPER_NONE)
     {
       draw_screen_paper (data, cr);
 
@@ -635,25 +665,9 @@ void on_monitors_changed ( GdkScreen *screen,
 
   update_window_shape (data);
 
-  /* Put the floating icon back at the top-right of its monitor after a
-   * resolution change, so it stays by the screen edge and is never left
-   * partly outside the new screen bounds. */
-  if (data->icon_win)
-    {
-      GdkRectangle area;
-      gint x, y, monitor;
-
-      gtk_window_get_position (GTK_WINDOW (data->icon_win), &x, &y);
-      monitor = gdk_screen_get_monitor_at_point (data->screen,
-						 x + data->icon_size / 2,
-						 y + data->icon_size / 2);
-      gdk_screen_get_monitor_geometry (data->screen, monitor, &area);
-
-      x = area.x + area.width - (gint) data->icon_size - 20;
-      y = area.y + 20;
-      gtk_window_move (GTK_WINDOW (data->icon_win), x, y);
-      update_settings_indicator (data);
-    }
+  /* Keep the floating icon at the configured corner of its monitor after a
+   * resolution change. */
+  screenator_position_icon (data);
 
   setup_input_devices(data);
 
@@ -1338,6 +1352,12 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 	gdk_window_invalidate_rect (window, &caret, 0);
     }
 
+  if (data->text_focus_id)
+    {
+      g_source_remove (data->text_focus_id);
+      data->text_focus_id = 0;
+    }
+
   data->text_editor = NULL;
   data->text_entry = NULL;
   data->text_editor_active = FALSE;
@@ -1439,6 +1459,11 @@ on_text_editor_destroy (GtkWidget *widget, gpointer user_data)
 	  data->text_caret_timeout = 0;
 	}
       data->text_caret_visible = FALSE;
+      if (data->text_focus_id)
+	{
+	  g_source_remove (data->text_focus_id);
+	  data->text_focus_id = 0;
+	}
       data->text_editor = NULL;
       data->text_entry = NULL;
       data->text_editor_active = FALSE;
@@ -1457,6 +1482,45 @@ on_text_editor_focus_out (GtkWidget *widget, GdkEventFocus *event,
     close_text_editor (data, TRUE);
 
   return FALSE;
+}
+
+static gboolean
+text_editor_focus_retry (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->text_focus_id = 0;
+
+  if (!data->text_editor || data->text_editor_active ||
+      data->text_focus_attempts >= 10)
+    return G_SOURCE_REMOVE;
+
+  data->text_focus_attempts++;
+
+  gtk_window_present (GTK_WINDOW (data->text_editor));
+  if (data->text_entry)
+    gtk_widget_grab_focus (data->text_entry);
+
+#ifdef GDK_WINDOWING_X11
+  {
+    GdkWindow *window = gtk_widget_get_window (data->text_editor);
+
+    if (window && GDK_IS_X11_WINDOW (window))
+      {
+	GdkDisplay *display = gdk_window_get_display (window);
+	Display *xdisplay = GDK_DISPLAY_XDISPLAY (display);
+
+	gdk_x11_display_error_trap_push (display);
+	XSetInputFocus (xdisplay, GDK_WINDOW_XID (window),
+			RevertToParent, CurrentTime);
+	XFlush (xdisplay);
+	gdk_x11_display_error_trap_pop_ignored (display);
+      }
+  }
+#endif
+
+  data->text_focus_id = g_timeout_add (100, text_editor_focus_retry, data);
+  return G_SOURCE_REMOVE;
 }
 
 static void
@@ -1592,6 +1656,11 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   gtk_widget_grab_focus (entry);
   gtk_window_present (GTK_WINDOW (editor));
 
+  data->text_focus_attempts = 0;
+  if (data->text_focus_id)
+    g_source_remove (data->text_focus_id);
+  data->text_focus_id = g_timeout_add (50, text_editor_focus_retry, data);
+
   invalidate_text_area (data, x, y);
 
   data->text_caret_visible = TRUE;
@@ -1607,6 +1676,13 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   }
 }
 
+
+void
+screenator_show_text (ScreenatorData *data, GdkDevice *device, gint x, gint y)
+{
+  if (!data->text_editor)
+    show_text_editor (data, device, x, y);
+}
 
 /* The spline tool places nodes with single clicks.  Every node carries two
  * Bezier handles that can be dragged to shape the curve; the handles mirror
@@ -3427,6 +3503,234 @@ line_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
 /* Finish what the active tool is doing and/or leave painting mode.  This is
  * the action of a right click on the canvas, shared by the mouse and by the
  * Escape key so both behave the same. */
+void
+screenator_clear_screenshot_paper (ScreenatorData *data)
+{
+  if (!data->screenshot_paper)
+    return;
+
+  cairo_surface_destroy (data->screenshot_paper);
+  data->screenshot_paper = NULL;
+
+  if (data->win && gtk_widget_get_window (data->win))
+    gdk_window_invalidate_rect (gtk_widget_get_window (data->win), NULL, 0);
+}
+
+static GdkPixbuf *
+flatten_screenshot_pixbuf (GdkPixbuf *pixbuf)
+{
+  GdkPixbuf *opaque;
+  gint width, height;
+
+  if (!pixbuf || !gdk_pixbuf_get_has_alpha (pixbuf))
+    return pixbuf;
+
+  width = gdk_pixbuf_get_width (pixbuf);
+  height = gdk_pixbuf_get_height (pixbuf);
+  opaque = gdk_pixbuf_new (GDK_COLORSPACE_RGB, FALSE, 8, width, height);
+  if (!opaque)
+    {
+      g_object_unref (pixbuf);
+      return NULL;
+    }
+
+  gdk_pixbuf_fill (opaque, 0x000000ff);
+  gdk_pixbuf_composite (pixbuf, opaque, 0, 0, width, height,
+			0, 0, 1.0, 1.0, GDK_INTERP_NEAREST, 255);
+  g_object_unref (pixbuf);
+
+  return opaque;
+}
+
+static cairo_surface_t *
+load_screenshot_file (const gchar *path)
+{
+  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file (path, NULL);
+  cairo_surface_t *surface;
+
+  pixbuf = flatten_screenshot_pixbuf (pixbuf);
+  surface = pixbuf
+    ? gdk_cairo_surface_create_from_pixbuf (pixbuf, 1, NULL) : NULL;
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+
+  return surface;
+}
+
+/* Prefer a real screenshot tool: on a compositor the root window can return
+ * the desktop background without the composited application windows. */
+static cairo_surface_t *
+capture_screen_external (void)
+{
+  static const gchar * const programs[] = {
+    "spectacle", "gnome-screenshot", "import", "grim"
+  };
+  gchar *path = g_strdup_printf ("%s/screenator-shot-%d.png",
+				 g_get_tmp_dir (), (gint) getpid ());
+  cairo_surface_t *surface = NULL;
+  guint i;
+
+  g_unlink (path);
+
+  for (i = 0; i < G_N_ELEMENTS (programs) && !surface; i++)
+    {
+      gchar *program = g_find_program_in_path (programs[i]);
+      gchar *argv[8];
+      gint argc = 0;
+      gint status = 0;
+      GError *error = NULL;
+
+      if (!program)
+	continue;
+
+      argv[argc++] = program;
+      if (g_strcmp0 (programs[i], "import") == 0)
+	{
+	  argv[argc++] = "-window";
+	  argv[argc++] = "root";
+	}
+      else if (g_strcmp0 (programs[i], "spectacle") == 0)
+	{
+	  argv[argc++] = "-b";
+	  argv[argc++] = "-n";
+	  argv[argc++] = "-o";
+	}
+      else if (g_strcmp0 (programs[i], "gnome-screenshot") == 0)
+	argv[argc++] = "-f";
+      argv[argc++] = path;
+      argv[argc] = NULL;
+
+      if (g_spawn_sync (NULL, argv, NULL,
+			G_SPAWN_SEARCH_PATH |
+			G_SPAWN_STDERR_TO_DEV_NULL |
+			G_SPAWN_STDOUT_TO_DEV_NULL,
+			NULL, NULL, NULL, NULL, &status, &error))
+	{
+	  gint attempt;
+
+	  /* A background screenshot tool can exit just before its output file
+	   * is written.  Give it a short moment to appear. */
+	  for (attempt = 0; attempt < 20 && !surface; attempt++)
+	    {
+	      GStatBuf st;
+
+	      if (g_stat (path, &st) == 0 && st.st_size > 0)
+		{
+		  surface = load_screenshot_file (path);
+		  if (surface)
+		    g_printerr ("Screenshot captured with %s.\n", programs[i]);
+		  break;
+		}
+	      g_usleep (50000);
+	    }
+	}
+
+      g_clear_error (&error);
+      g_free (program);
+      g_unlink (path);
+    }
+
+  g_free (path);
+  return surface;
+}
+
+static void
+send_escape_to_close_menu (ScreenatorData *data)
+{
+#ifdef HAVE_XTEST
+  Display *xdisplay;
+  KeyCode keycode;
+  int event_base, error_base, major, minor;
+
+  if (!data->display || !GDK_IS_X11_DISPLAY (data->display))
+    return;
+
+  xdisplay = GDK_DISPLAY_XDISPLAY (data->display);
+  if (!XTestQueryExtension (xdisplay, &event_base, &error_base,
+			    &major, &minor))
+    return;
+
+  keycode = XKeysymToKeycode (xdisplay, XK_Escape);
+  if (!keycode)
+    return;
+
+  /* Escape closes the context menu that still owns the pointer grab, while
+   * the frozen screenshot keeps its picture on screen. */
+  XTestFakeKeyEvent (xdisplay, keycode, True, CurrentTime);
+  XTestFakeKeyEvent (xdisplay, keycode, False, CurrentTime);
+  XFlush (xdisplay);
+#endif
+}
+
+/* Freeze the current screen into a temporary background.  Hiding the overlay
+ * and icon first keeps the screenshot free of Screenator's own windows. */
+void
+screenator_take_screenshot_paper (ScreenatorData *data)
+{
+  GdkWindow *root;
+  GdkPixbuf *pixbuf;
+  cairo_surface_t *surface;
+  gboolean win_visible, icon_visible, settings_visible;
+
+  screenator_clear_screenshot_paper (data);
+
+  if (!data->win || !data->display || !data->width || !data->height)
+    return;
+
+  win_visible = gtk_widget_get_visible (data->win);
+  icon_visible = data->icon_win && gtk_widget_get_visible (data->icon_win);
+  settings_visible = data->settings_win &&
+    gtk_widget_get_visible (data->settings_win);
+
+  if (settings_visible)
+    gtk_widget_hide (data->settings_win);
+  if (icon_visible)
+    gtk_widget_hide (data->icon_win);
+  if (win_visible)
+    gtk_widget_hide (data->win);
+
+  gdk_display_sync (gdk_display_get_default ());
+  gdk_window_process_all_updates ();
+
+  surface = capture_screen_external ();
+
+  if (!surface)
+    {
+      root = gdk_get_default_root_window ();
+      pixbuf = root ? gdk_pixbuf_get_from_window (root, 0, 0,
+						  data->width, data->height)
+		    : NULL;
+      pixbuf = flatten_screenshot_pixbuf (pixbuf);
+      surface = pixbuf
+	? gdk_cairo_surface_create_from_pixbuf (pixbuf, 1, NULL) : NULL;
+      if (pixbuf)
+	g_object_unref (pixbuf);
+    }
+
+  if (surface)
+    data->screenshot_paper = surface;
+  else
+    g_printerr ("Screenshot capture failed; using the live screen.\n");
+
+  if (win_visible)
+    gtk_widget_show (data->win);
+  if (icon_visible)
+    gtk_widget_show (data->icon_win);
+  if (settings_visible)
+    gtk_widget_show (data->settings_win);
+
+  if (data->win && gtk_widget_get_window (data->win))
+    {
+      gdk_window_raise (gtk_widget_get_window (data->win));
+      gdk_window_invalidate_rect (gtk_widget_get_window (data->win), NULL, 0);
+    }
+  raise_icon_window (data);
+  update_settings_indicator (data);
+
+  send_escape_to_close_menu (data);
+}
+
 gboolean
 screenator_exit_tool (ScreenatorData *data)
 {
@@ -3481,6 +3785,7 @@ screenator_exit_tool (ScreenatorData *data)
   if (!handled && screenator_any_grabbed (data))
     {
       screenator_marker_leave (data);
+      screenator_clear_screenshot_paper (data);
       release_grab (data, NULL);
       handled = TRUE;
     }
@@ -5497,7 +5802,9 @@ void update_icon_image (ScreenatorData *data)
   if (!data->icon_image)
     return;
 
-  pixbuf = load_icon_pixbuf (data, screenator_any_grabbed (data));
+  pixbuf = load_icon_pixbuf (data,
+			     data->force_active_icon ||
+			     screenator_any_grabbed (data));
   gtk_image_set_from_pixbuf (GTK_IMAGE (data->icon_image),
 			     pixbuf ? pixbuf : NULL);
   if (pixbuf)
@@ -6074,6 +6381,9 @@ paper_restore_focus (ScreenatorData *data)
 static void
 set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
 {
+  if (paper != SCREENATOR_PAPER_NONE)
+    screenator_clear_screenshot_paper (data);
+
   data->hide_drawings = FALSE;
   data->paper = paper;
   update_paper_shortcuts (data, paper != SCREENATOR_PAPER_NONE);
@@ -6234,29 +6544,98 @@ icon_move_idle (gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+static void on_icon_tool_delay (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  guint delay = GPOINTER_TO_UINT (
+    g_object_get_data (G_OBJECT (menuitem), "tool-delay-seconds"));
+
+  data->tool_delay_seconds = delay;
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void
+icon_corner_position (ScreenatorData *data, gint current_size,
+		      gint target_size, gint *x, gint *y)
+{
+  GdkRectangle area;
+  gint monitor;
+  const gint margin = 20;
+
+  if (!data->screen)
+    return;
+
+  if (data->icon_win)
+    {
+      gint icon_x, icon_y;
+
+      gtk_window_get_position (GTK_WINDOW (data->icon_win),
+			       &icon_x, &icon_y);
+      monitor = gdk_screen_get_monitor_at_point (data->screen,
+						 icon_x + current_size / 2,
+						 icon_y + current_size / 2);
+    }
+  else
+    monitor = gdk_screen_get_primary_monitor (data->screen);
+
+  if (monitor < 0)
+    monitor = 0;
+  gdk_screen_get_monitor_workarea (data->screen, monitor, &area);
+
+  switch (data->icon_position)
+    {
+    case SCREENATOR_ICON_TOP_LEFT:
+      *x = area.x + margin;
+      *y = area.y + margin;
+      break;
+    case SCREENATOR_ICON_BOTTOM_RIGHT:
+      *x = area.x + area.width - target_size - margin;
+      *y = area.y + area.height - target_size - margin;
+      break;
+    case SCREENATOR_ICON_BOTTOM_LEFT:
+      *x = area.x + margin;
+      *y = area.y + area.height - target_size - margin;
+      break;
+    case SCREENATOR_ICON_TOP_RIGHT:
+    default:
+      *x = area.x + area.width - target_size - margin;
+      *y = area.y + margin;
+      break;
+    }
+
+  *x = CLAMP (*x, area.x,
+	      MAX (area.x, area.x + area.width - target_size));
+  *y = CLAMP (*y, area.y,
+	      MAX (area.y, area.y + area.height - target_size));
+}
+
+void
+screenator_position_icon (ScreenatorData *data)
+{
+  gint x = 0, y = 0;
+
+  if (!data->icon_win)
+    return;
+
+  icon_corner_position (data, (gint) data->icon_size,
+			(gint) data->icon_size, &x, &y);
+  gtk_window_move (GTK_WINDOW (data->icon_win), x, y);
+  update_settings_indicator (data);
+  raise_icon_window (data);
+}
+
 static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   guint new_size = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (menuitem),
                                                         "icon-size-value"));
   gint old_size = (gint) data->icon_size;
-  gint x = 0, y = 0, monitor, right_margin = 20, top_margin = 20;
-  GdkRectangle area;
-  gboolean have_area = FALSE;
+  gint x = 0, y = 0;
+  gboolean have_area = data->icon_win != NULL;
 
-  /* Keep the icon anchored to the same top/right margins, so changing its
-   * size does not move it away from the screen edge or partly off-screen. */
-  if (data->icon_win)
-    {
-      gtk_window_get_position (GTK_WINDOW (data->icon_win), &x, &y);
-      monitor = gdk_screen_get_monitor_at_point (data->screen,
-						 x + old_size / 2,
-						 y + old_size / 2);
-      gdk_screen_get_monitor_geometry (data->screen, monitor, &area);
-      right_margin = area.x + area.width - x - old_size;
-      top_margin = y - area.y;
-      have_area = TRUE;
-    }
+  if (have_area)
+    icon_corner_position (data, old_size, (gint) new_size, &x, &y);
 
   data->icon_size = new_size;
 
@@ -6271,12 +6650,6 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
     {
       IconMove *move = g_new0 (IconMove, 1);
 
-      x = area.x + area.width - (gint) new_size - right_margin;
-      y = area.y + top_margin;
-      x = CLAMP (x, area.x,
-		 MAX (area.x, area.x + area.width - (gint) new_size));
-      y = CLAMP (y, area.y,
-		 MAX (area.y, area.y + area.height - (gint) new_size));
       move->data = data;
       move->x = x;
       move->y = y;
@@ -6348,6 +6721,69 @@ static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
   schedule_tray_menu_refresh (data);
 }
 
+static void on_icon_position (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  static const gchar * const labels[] = {
+    "Top Right", "Top Left", "Bottom Right", "Bottom Left"
+  };
+  GtkWidget *dialog, *content, *box, *label;
+  GtkWidget *buttons[G_N_ELEMENTS (labels)];
+  gint response, selected = 0;
+  guint i;
+
+  dialog = gtk_dialog_new_with_buttons ("Floating Icon Position", NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"Cancel", GTK_RESPONSE_CANCEL,
+					"OK", GTK_RESPONSE_OK,
+					NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
+
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  label = gtk_label_new ("Choose where the floating icon is placed:");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  for (i = 0; i < G_N_ELEMENTS (labels); i++)
+    {
+      buttons[i] = gtk_radio_button_new_with_label (
+	i == 0 ? NULL : gtk_radio_button_get_group (GTK_RADIO_BUTTON (buttons[0])),
+	labels[i]);
+      gtk_box_pack_start (GTK_BOX (box), buttons[i], FALSE, FALSE, 0);
+      if ((guint) data->icon_position == i)
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (buttons[i]), TRUE);
+    }
+
+  gtk_widget_show_all (dialog);
+  response = gtk_dialog_run (GTK_DIALOG (dialog));
+  if (response == GTK_RESPONSE_OK)
+    {
+      for (i = 0; i < G_N_ELEMENTS (buttons); i++)
+	if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (buttons[i])))
+	  {
+	    selected = (gint) i;
+	    break;
+	  }
+
+      data->icon_position = (ScreenatorIconPosition) selected;
+      write_keyfile (data);
+      screenator_position_icon (data);
+      schedule_tray_menu_refresh (data);
+    }
+
+  gtk_widget_destroy (dialog);
+}
+
 static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
@@ -6361,6 +6797,8 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   data->opacity = DEFAULT_OPACITY;
   data->marker_opacity = 0.40;
   data->icon_size = KEY_DFLT_ICON_SIZE;
+  data->icon_position = SCREENATOR_ICON_TOP_RIGHT;
+  data->tool_delay_seconds = 0;
   data->pen_tool = 1;
   g_free (data->font);
   data->font = g_strdup (KEY_DFLT_FONT);
@@ -6388,6 +6826,7 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   gtk_window_resize (GTK_WINDOW (data->icon_win), data->icon_size,
 		     data->icon_size);
   update_icon_image (data);
+  screenator_position_icon (data);
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
 }
@@ -6829,14 +7268,8 @@ void create_icon_window (ScreenatorData *data)
   gtk_widget_show_all (data->icon_win);
   update_icon_shape (data);
 
-  /* place at the top-right corner of the screen (icon is data->icon_size) */
-  {
-    gint x = data->width - data->icon_size - 20;
-    gint y = 20;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    gtk_window_move (GTK_WINDOW (data->icon_win), x, y);
-  }
+  /* Place the icon at the configured corner of its monitor. */
+  screenator_position_icon (data);
 
   /* The annotation window is created first; make sure the icon starts above
    * it, otherwise the annotation window takes the clicks for the icon. */
@@ -6933,6 +7366,41 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	g_signal_connect (shape_item, "activate", shapes[i].callback, data);
 	gtk_widget_show (shape_item);
       }
+  }
+  gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+  /* --- delayed tool activation submenu --- */
+  item = gtk_menu_item_new_with_label ("Tool Activation Delay");
+  submenu = gtk_menu_new ();
+  {
+    GSList *group = NULL;
+    static const guint delays[] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
+    static const gchar * const labels[] = {
+      "0 s", "1 s", "2 s", "3 s", "4 s", "5 s", "7 s", "9 s", "11 s"
+    };
+    GtkWidget *items[G_N_ELEMENTS (delays)];
+    GtkWidget *active_item = NULL;
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (delays); i++)
+      {
+	GtkWidget *subitem = gtk_radio_menu_item_new_with_label (group,
+								 labels[i]);
+	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
+	gtk_widget_show (subitem);
+	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
+	g_object_set_data (G_OBJECT (subitem), "tool-delay-seconds",
+			   GUINT_TO_POINTER (delays[i]));
+	items[i] = subitem;
+	if (data->tool_delay_seconds == delays[i])
+	  active_item = subitem;
+      }
+    if (active_item)
+      gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+    for (i = 0; i < G_N_ELEMENTS (delays); i++)
+      g_signal_connect (items[i], "activate",
+			G_CALLBACK (on_icon_tool_delay), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
@@ -7334,6 +7802,15 @@ append_settings_items (ScreenatorData *data, GtkWidget *shell)
   gtk_widget_show (item);
   g_signal_connect (item, "activate",
 		    G_CALLBACK (on_icon_toggle_settings_indicator), data);
+
+  item = gtk_image_menu_item_new_with_label ("Floating Icon Position...");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("screenator.png")));
+  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
+  gtk_widget_show (item);
+  g_signal_connect (item, "activate",
+		    G_CALLBACK (on_icon_position), data);
 
   item = gtk_separator_menu_item_new ();
   gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
@@ -8122,6 +8599,12 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
     "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
     "hides the floating icon at any time."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+    "<span foreground=\"#d35400\" weight=\"bold\">F8</span> selects the "
+    "Pen, <span foreground=\"#d35400\" weight=\"bold\">F6</span> the "
+    "Arrow and <span foreground=\"#d35400\" weight=\"bold\">F7</span> the "
+    "Text tool. With a tool active they switch immediately; otherwise they "
+    "use the delayed activation setting."), FALSE, FALSE, 0);
 
   /* Right column: shape editing, tool tips and shortcuts. */
   gtk_box_pack_start (GTK_BOX (right),
@@ -8255,23 +8738,91 @@ screenator_marker_leave (ScreenatorData *data)
   schedule_tray_menu_refresh (data);
 }
 
-void on_icon_pen (GtkMenuItem *menuitem,
-		  gpointer     user_data)
+static gboolean
+tool_grab_retry (gpointer user_data)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
+  ScreenatorData *data = user_data;
+
+  data->tool_grab_retry_id = 0;
+
+  if (data->top_dialog || screenator_any_grabbed (data))
+    {
+      screenator_raw_input_disable (data);
+      return G_SOURCE_REMOVE;
+    }
+
+  acquire_grab (data, NULL);
+
+  if (!screenator_any_grabbed (data))
+    data->tool_grab_retry_id = g_timeout_add (250, tool_grab_retry, data);
+
+  return G_SOURCE_REMOVE;
+}
+
+/* A delayed tool activation can fire while another application holds a menu
+ * or a pointer grab.  Try again until the grab becomes available. */
+static void
+ensure_tool_grab (ScreenatorData *data)
+{
+  if (data->tool_grab_retry_id)
+    {
+      g_source_remove (data->tool_grab_retry_id);
+      data->tool_grab_retry_id = 0;
+    }
+  screenator_raw_input_disable (data);
+
+  if (!data->top_dialog && !screenator_any_grabbed (data))
+    {
+      /* A menu or another application may hold the pointer grab.  Freeze the
+       * current screen and use raw events so the selected tool can draw over
+       * the frozen picture until the real grab becomes available. */
+      screenator_take_screenshot_paper (data);
+      screenator_raw_input_enable (data);
+      data->tool_grab_retry_id = g_timeout_add (250, tool_grab_retry, data);
+    }
+  else
+    screenator_raw_input_disable (data);
+}
+
+static void
+activate_tool_now (ScreenatorData *data, gint pen_tool, gint shape_type)
+{
   GHashTableIter it;
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
 
-  screenator_marker_leave (data);
+  text_editor_finish (data);
+
+  if (pen_tool != 11)
+    screenator_marker_leave (data);
+
   star_finish_all (data);
   triangle_finish_all (data);
   frame_finish_all (data);
   line_finish_all (data);
   spline_cancel_all (data);
-  data->forced_context = data->default_pen;
-  data->pen_tool = 1;
-  data->default_pen->arrowsize = 0;
+
+  if (pen_tool == 1)
+    {
+      data->forced_context = data->default_pen;
+      data->default_pen->arrowsize = 0;
+    }
+  else if (pen_tool == 3)
+    data->forced_context = data->default_eraser;
+  else if (pen_tool == 4)
+    data->forced_context = data->default_text;
+  else if (pen_tool == 11)
+    data->forced_context = data->default_marker;
+  else
+    {
+      data->forced_context = data->default_shape;
+      data->shape_type = (ScreenatorShapeType) shape_type;
+    }
+
+  data->pen_tool = pen_tool;
+
+  if (pen_tool == 11)
+    screenator_marker_prepare (data);
 
   /* Reset tracked button state so select_tool() is re-invoked on the next
    * button press and the newly selected tool takes effect immediately. */
@@ -8280,9 +8831,86 @@ void on_icon_pen (GtkMenuItem *menuitem,
     {
       devdata = value;
       devdata->state = 0;
+
+      /* The device is already grabbed while a tool is active, so
+       * acquire_grab() will skip it.  Update its context and cursor here so
+       * the new tool's cursor appears immediately. */
+      if (devdata->is_grabbed && data->forced_context)
+	{
+	  devdata->cur_context = data->forced_context;
+	  set_device_cursor (data, devdata->device, devdata->cur_context);
+	}
     }
 
   acquire_grab (data, NULL);
+  ensure_tool_grab (data);
+}
+
+static gboolean
+tool_activation_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->tool_delay_id = 0;
+  activate_tool_now (data, data->pending_pen_tool, data->pending_shape_type);
+  return G_SOURCE_REMOVE;
+}
+
+/* Apply a tool selection now, or after the configured delay. */
+static void
+schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
+{
+  if (data->tool_delay_id)
+    {
+      g_source_remove (data->tool_delay_id);
+      data->tool_delay_id = 0;
+    }
+
+  if (data->tool_grab_retry_id)
+    {
+      g_source_remove (data->tool_grab_retry_id);
+      data->tool_grab_retry_id = 0;
+    }
+
+  if (data->tool_delay_seconds == 0)
+    {
+      activate_tool_now (data, pen_tool, shape_type);
+      return;
+    }
+
+  data->pending_pen_tool = pen_tool;
+  data->pending_shape_type = shape_type;
+  data->tool_delay_id = g_timeout_add_seconds (data->tool_delay_seconds,
+					       tool_activation_timeout, data);
+}
+
+void
+screenator_schedule_tool (ScreenatorData *data, gint pen_tool, gint shape_type)
+{
+  /* Keyboard tool shortcuts switch immediately while a tool is already
+   * active; the delay only applies when starting from the normal desktop. */
+  if (screenator_any_grabbed (data) || data->raw_input_enabled)
+    {
+      if (data->tool_delay_id)
+	{
+	  g_source_remove (data->tool_delay_id);
+	  data->tool_delay_id = 0;
+	}
+      if (data->tool_grab_retry_id)
+	{
+	  g_source_remove (data->tool_grab_retry_id);
+	  data->tool_grab_retry_id = 0;
+	}
+      activate_tool_now (data, pen_tool, shape_type);
+    }
+  else
+    schedule_tool_activation (data, pen_tool, shape_type);
+}
+
+void on_icon_pen (GtkMenuItem *menuitem,
+		  gpointer     user_data)
+{
+  schedule_tool_activation ((ScreenatorData *) user_data, 1, -1);
 }
 
 /* --- Math Function dialog -------------------------------------------------
@@ -8696,28 +9324,7 @@ show_math_dialog (ScreenatorData *data)
 static void
 select_shape_tool (ScreenatorData *data, gint pen_tool, ScreenatorShapeType shape)
 {
-  GHashTableIter it;
-  gpointer value;
-  ScreenatorDeviceData *devdata = NULL;
-
-  star_finish_all (data);
-  triangle_finish_all (data);
-  frame_finish_all (data);
-  line_finish_all (data);
-  spline_cancel_all (data);
-  screenator_marker_leave (data);
-  data->forced_context = data->default_shape;
-  data->shape_type = shape;
-  data->pen_tool = pen_tool;
-
-  g_hash_table_iter_init (&it, data->devdatatable);
-  while (g_hash_table_iter_next (&it, NULL, &value))
-    {
-      devdata = value;
-      devdata->state = 0;
-    }
-
-  acquire_grab (data, NULL);
+  schedule_tool_activation (data, pen_tool, (gint) shape);
 }
 
 void on_icon_arrow (GtkMenuItem *menuitem,
@@ -8799,82 +9406,17 @@ void on_icon_random (GtkMenuItem *menuitem,
 void on_icon_text (GtkMenuItem *menuitem,
 		   gpointer     user_data)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  GHashTableIter it;
-  gpointer value;
-  ScreenatorDeviceData *devdata = NULL;
-
-  star_finish_all (data);
-  triangle_finish_all (data);
-  frame_finish_all (data);
-  line_finish_all (data);
-  spline_cancel_all (data);
-  screenator_marker_leave (data);
-  data->forced_context = data->default_text;
-  data->pen_tool = 4;
-
-  g_hash_table_iter_init (&it, data->devdatatable);
-  while (g_hash_table_iter_next (&it, NULL, &value))
-    {
-      devdata = value;
-      devdata->state = 0;
-    }
-
-  acquire_grab (data, NULL);
+  schedule_tool_activation ((ScreenatorData *) user_data, 4, -1);
 }
 
 void on_icon_eraser (GtkMenuItem *menuitem,
 		     gpointer     user_data)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  GHashTableIter it;
-  gpointer value;
-  ScreenatorDeviceData *devdata = NULL;
-
-  star_finish_all (data);
-  triangle_finish_all (data);
-  frame_finish_all (data);
-  line_finish_all (data);
-  spline_cancel_all (data);
-  screenator_marker_leave (data);
-  data->forced_context = data->default_eraser;
-  data->pen_tool = 3;
-
-  g_hash_table_iter_init (&it, data->devdatatable);
-  while (g_hash_table_iter_next (&it, NULL, &value))
-    {
-      devdata = value;
-      devdata->state = 0;
-    }
-
-  acquire_grab (data, NULL);
+  schedule_tool_activation ((ScreenatorData *) user_data, 3, -1);
 }
 
 void on_icon_marker (GtkMenuItem *menuitem,
 		     gpointer     user_data)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  GHashTableIter it;
-  gpointer value;
-  ScreenatorDeviceData *devdata = NULL;
-
-  /* The Marker uses the line colour with its own opacity.  Selecting it switches
-   * the line colour to yellow; leaving it restores the previous colour. */
-  star_finish_all (data);
-  triangle_finish_all (data);
-  frame_finish_all (data);
-  line_finish_all (data);
-  spline_cancel_all (data);
-  data->forced_context = data->default_marker;
-  data->pen_tool = 11;
-  screenator_marker_prepare (data);
-
-  g_hash_table_iter_init (&it, data->devdatatable);
-  while (g_hash_table_iter_next (&it, NULL, &value))
-    {
-      devdata = value;
-      devdata->state = 0;
-    }
-
-  acquire_grab (data, NULL);
+  schedule_tool_activation ((ScreenatorData *) user_data, 11, -1);
 }

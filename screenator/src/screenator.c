@@ -4202,6 +4202,9 @@ void main_do_event (GdkEventAny *event,
        event->type == GDK_KEY_RELEASE) &&
       event->window == data->root &&
       (keycode == data->hot_keycode ||
+       keycode == data->pen_keycode ||
+       keycode == data->text_keycode ||
+       keycode == data->arrow_keycode ||
        keycode == data->undo_ctrl_keycode ||
        keycode == data->escape_keycode ||
        keycode == data->paper_z_keycode ||
@@ -4807,6 +4810,7 @@ void indicate_active(ScreenatorData *data, gboolean YESNO)
 {
     /* During startup the input devices are set up before the tray icon is
      * created, so this can be called while there is no indicator yet. */
+    data->force_active_icon = YESNO;
     set_tray_icon (data);
 
     update_icon_image (data);

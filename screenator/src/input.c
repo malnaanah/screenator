@@ -64,6 +64,15 @@ static gboolean get_are_some_grabbed(ScreenatorData *data)
 
 static guint paper_shortcut_keycode (guint keyval);
 static void grab_escape_shortcut (ScreenatorData *data, gboolean grab);
+static GdkFilterReturn raw_input_filter (GdkXEvent *xevent, GdkEvent *event,
+					 gpointer user_data);
+static GdkDevice *raw_master_device (ScreenatorData *data, int deviceid);
+static void raw_draw_press (ScreenatorData *data, GdkDevice *dev,
+			    gint x, gint y);
+static void raw_draw_motion (ScreenatorData *data, GdkDevice *dev,
+			     gint x, gint y);
+static void raw_draw_release (ScreenatorData *data, GdkDevice *dev);
+static void raw_input_select (ScreenatorData *data, gboolean enable);
 
 static void remove_hotkeys_from_compositor(ScreenatorData *data) {
     char *xdg_current_desktop = getenv("XDG_CURRENT_DESKTOP");
@@ -204,6 +213,26 @@ void setup_input_devices (ScreenatorData *data)
     devdata_free(value);
   g_hash_table_remove_all(data->devdatatable);
 
+  if (!data->raw_filter_installed && GDK_IS_X11_DISPLAY (data->display))
+    {
+      int event_base, error_base;
+
+      if (XQueryExtension (GDK_DISPLAY_XDISPLAY (data->display),
+			   "XInputExtension", &data->xi_opcode,
+			   &event_base, &error_base))
+	gdk_window_add_filter (NULL, raw_input_filter, data);
+      else
+	data->xi_opcode = -1;
+
+      data->raw_filter_installed = TRUE;
+    }
+
+  if (!data->pen_keycode)
+    data->pen_keycode = paper_shortcut_keycode (GDK_KEY_F8);
+  if (!data->text_keycode)
+    data->text_keycode = paper_shortcut_keycode (GDK_KEY_F7);
+  if (!data->arrow_keycode)
+    data->arrow_keycode = paper_shortcut_keycode (GDK_KEY_F6);
 
   /* get devices */
   GdkDeviceManager *device_manager = gdk_display_get_device_manager(data->display);
@@ -291,6 +320,28 @@ void setup_input_devices (ScreenatorData *data)
 			      gtk_widget_destroy (dialog);
 
 			  }
+		      }
+
+		      {
+			guint tool_keys[] = { data->pen_keycode,
+					      data->text_keycode,
+					      data->arrow_keycode };
+			guint k;
+
+			for (k = 0; k < G_N_ELEMENTS (tool_keys); k++)
+			  if (tool_keys[k] &&
+			      XIGrabKeycode(GDK_DISPLAY_XDISPLAY(data->display),
+					    kbd_dev_id,
+					    tool_keys[k],
+					    GDK_WINDOW_XID(data->root),
+					    GrabModeAsync,
+					    GrabModeAsync,
+					    True,
+					    &mask,
+					    nmods,
+					    modifiers) != 0)
+			    g_printerr("ERROR: Grabbing tool shortcut keycode %u from keyboard device %d failed.\n",
+				       tool_keys[k], kbd_dev_id);
 		      }
 
 		      XSync(GDK_DISPLAY_XDISPLAY(data->display), False);
@@ -475,6 +526,199 @@ paper_shortcut_keycode (guint keyval)
 
   g_free (keys);
   return keycode;
+}
+
+/* Experimental fallback for the case where another application holds the
+ * pointer grab (for example its context menu is open).  XInput2 raw events
+ * are delivered to every client that selected them, regardless of the grab;
+ * the absolute pointer position still comes from XQueryPointer.  This lets a
+ * pending tool draw while the other menu owns the pointer. */
+static GdkDevice *
+raw_master_device (ScreenatorData *data, int deviceid)
+{
+  GdkDeviceManager *manager = gdk_display_get_device_manager (data->display);
+  GdkDevice *dev = gdk_x11_device_manager_lookup (manager, deviceid);
+
+  if (dev && gdk_device_get_device_type (dev) == GDK_DEVICE_TYPE_SLAVE)
+    dev = gdk_device_get_associated_device (dev);
+
+  if (dev && gdk_device_get_source (dev) == GDK_SOURCE_KEYBOARD)
+    return NULL;
+
+  return dev;
+}
+
+static void
+raw_draw_press (ScreenatorData *data, GdkDevice *dev, gint x, gint y)
+{
+  ScreenatorDeviceData *devdata = g_hash_table_lookup (data->devdatatable, dev);
+
+  if (!devdata || !data->forced_context || data->raw_button_down)
+    return;
+
+  devdata->cur_context = data->forced_context;
+  data->maxwidth = devdata->cur_context->width;
+  data->raw_button_down = TRUE;
+  data->raw_device = dev;
+
+  snap_undo_state (data);
+  stroke_begin (data, dev);
+  draw_line (data, dev, x, y, x, y);
+  coord_list_prepend (data, dev, x, y, data->maxwidth);
+
+  devdata->lastx = x;
+  devdata->lasty = y;
+  devdata->motion_time = 0;
+  devdata->smooth_active = FALSE;
+}
+
+static void
+raw_draw_motion (ScreenatorData *data, GdkDevice *dev, gint x, gint y)
+{
+  ScreenatorDeviceData *devdata = g_hash_table_lookup (data->devdatatable, dev);
+
+  if (!devdata || !data->raw_button_down || data->raw_device != dev)
+    return;
+
+  draw_line (data, dev, devdata->lastx, devdata->lasty, x, y);
+  coord_list_prepend (data, dev, x, y, data->maxwidth);
+
+  devdata->lastx = x;
+  devdata->lasty = y;
+}
+
+static void
+raw_draw_release (ScreenatorData *data, GdkDevice *dev)
+{
+  if (!data->raw_button_down || data->raw_device != dev)
+    return;
+
+  draw_line_finish (data, dev);
+  stroke_finish (data, dev);
+  coord_list_free (data, dev);
+
+  data->raw_button_down = FALSE;
+  data->raw_device = NULL;
+}
+
+static GdkFilterReturn
+raw_input_filter (GdkXEvent *xevent, GdkEvent *event, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  XEvent *xev = (XEvent *) xevent;
+  XGenericEventCookie *cookie;
+  XIRawEvent *raw;
+  GdkDevice *dev;
+  ScreenatorDeviceData *devdata;
+  Window root_ret, child_ret;
+  int root_x, root_y, win_x, win_y;
+  unsigned int mask;
+
+  if (!data->raw_input_enabled || xev->type != GenericEvent)
+    return GDK_FILTER_CONTINUE;
+
+  cookie = &xev->xcookie;
+  if (cookie->extension != data->xi_opcode)
+    return GDK_FILTER_CONTINUE;
+
+  if (cookie->evtype != XI_RawMotion &&
+      cookie->evtype != XI_RawButtonPress &&
+      cookie->evtype != XI_RawButtonRelease)
+    return GDK_FILTER_CONTINUE;
+
+  if (!XGetEventData (GDK_DISPLAY_XDISPLAY (data->display), cookie))
+    return GDK_FILTER_CONTINUE;
+
+  raw = (XIRawEvent *) cookie->data;
+  dev = raw_master_device (data, raw->deviceid);
+  devdata = dev ? g_hash_table_lookup (data->devdatatable, dev) : NULL;
+
+  if (devdata && data->forced_context &&
+      (data->forced_context->type == SCREENATOR_PEN ||
+       data->forced_context->type == SCREENATOR_ERASER ||
+       data->forced_context->type == SCREENATOR_TEXT) &&
+      XQueryPointer (GDK_DISPLAY_XDISPLAY (data->display),
+		     GDK_WINDOW_XID (data->root),
+		     &root_ret, &child_ret,
+		     &root_x, &root_y, &win_x, &win_y, &mask))
+    {
+      if (data->forced_context->type == SCREENATOR_TEXT)
+	{
+	  if (cookie->evtype == XI_RawButtonPress && raw->detail == 1)
+	    screenator_show_text (data, dev, root_x, root_y);
+	}
+      else
+	{
+	  switch (cookie->evtype)
+	    {
+	    case XI_RawButtonPress:
+	      if (raw->detail == 1)
+		raw_draw_press (data, dev, root_x, root_y);
+	      break;
+	    case XI_RawButtonRelease:
+	      if (raw->detail == 1)
+		raw_draw_release (data, dev);
+	      break;
+	    case XI_RawMotion:
+	      raw_draw_motion (data, dev, root_x, root_y);
+	      break;
+	    }
+	}
+    }
+
+  XFreeEventData (GDK_DISPLAY_XDISPLAY (data->display), cookie);
+  return GDK_FILTER_CONTINUE;
+}
+
+static void
+raw_input_select (ScreenatorData *data, gboolean enable)
+{
+  XIEventMask mask;
+  unsigned char bits[4] = { 0, 0, 0, 0 };
+
+  if (!GDK_IS_X11_DISPLAY (data->display) || data->xi_opcode <= 0 ||
+      !data->root)
+    return;
+
+  if (enable)
+    {
+      XISetMask (bits, XI_RawMotion);
+      XISetMask (bits, XI_RawButtonPress);
+      XISetMask (bits, XI_RawButtonRelease);
+    }
+
+  mask.deviceid = XIAllMasterDevices;
+  mask.mask_len = sizeof (bits);
+  mask.mask = bits;
+
+  gdk_x11_display_error_trap_push (data->display);
+  XISelectEvents (GDK_DISPLAY_XDISPLAY (data->display),
+		  GDK_WINDOW_XID (data->root), &mask, 1);
+  XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
+  gdk_x11_display_error_trap_pop_ignored (data->display);
+}
+
+void
+screenator_raw_input_enable (ScreenatorData *data)
+{
+  if (data->raw_input_enabled)
+    return;
+
+  data->raw_input_enabled = TRUE;
+  raw_input_select (data, TRUE);
+}
+
+void
+screenator_raw_input_disable (ScreenatorData *data)
+{
+  if (!data->raw_input_enabled)
+    return;
+
+  if (data->raw_button_down && data->raw_device)
+    raw_draw_release (data, data->raw_device);
+
+  data->raw_input_enabled = FALSE;
+  raw_input_select (data, FALSE);
 }
 
 /* Escape exits the active drawing tool.  Like Ctrl+Z it is grabbed through
@@ -795,6 +1039,7 @@ void acquire_grab (ScreenatorData *data,
       indicate_active(data, TRUE);
       grab_undo_shortcut (data, TRUE);
       grab_escape_shortcut (data, TRUE);
+      screenator_raw_input_disable (data);
 
       return;
     }
@@ -845,6 +1090,7 @@ void toggle_grab (ScreenatorData *data,
       if (get_are_all_grabbed(data))
 	{
 	  screenator_marker_leave (data);
+	  screenator_clear_screenshot_paper (data);
 	  release_grab (data, NULL);
 	}
       else
@@ -932,6 +1178,30 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  screenator_exit_screen_paper (data);
 	  return TRUE;
 	}
+    }
+
+  if (event->type == GDK_KEY_PRESS &&
+      (event->hardware_keycode == data->pen_keycode ||
+       event->keyval == GDK_KEY_F8))
+    {
+      screenator_schedule_tool (data, 1, -1);
+      return TRUE;
+    }
+
+  if (event->type == GDK_KEY_PRESS &&
+      (event->hardware_keycode == data->text_keycode ||
+       event->keyval == GDK_KEY_F7))
+    {
+      screenator_schedule_tool (data, 4, -1);
+      return TRUE;
+    }
+
+  if (event->type == GDK_KEY_PRESS &&
+      (event->hardware_keycode == data->arrow_keycode ||
+       event->keyval == GDK_KEY_F6))
+    {
+      screenator_schedule_tool (data, 2, SCREENATOR_SHAPE_ARROW);
+      return TRUE;
     }
 
   if (event->type == GDK_KEY_PRESS &&
