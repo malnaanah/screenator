@@ -938,7 +938,8 @@ void release_grab (ScreenatorData *data,
       grab_escape_shortcut (data, FALSE);
 
       /* The screen paper keeps the annotation window visible. */
-      if (!data->painted && data->paper == SCREENATOR_PAPER_NONE)
+      if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
+	  !data->screenshot_paper)
 	  hide_window (data);
 
       return;
@@ -968,7 +969,8 @@ void release_grab (ScreenatorData *data,
     }
 
   /* The screen paper keeps the annotation window visible. */
-  if (!data->painted && data->paper == SCREENATOR_PAPER_NONE)
+  if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
+      !data->screenshot_paper)
     hide_window (data);
 }
 

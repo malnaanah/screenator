@@ -8844,9 +8844,6 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
     "2</span> opens the Scroll Mode menu and chooses what scrolling "
     "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
-    "The tip draws like the left mouse button; pressure is ignored."),
-    FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
     "Short press side button 1: step through the selected "
     "<b>Color</b> or <b>Thickness</b>, or the eraser size with the "
     "Eraser tool."), FALSE, FALSE, 0);
@@ -8865,12 +8862,10 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
     "<span foreground=\"#d35400\" weight=\"bold\">F8</span> selects the "
     "Pen, <span foreground=\"#d35400\" weight=\"bold\">F6</span> the "
     "Arrow and <span foreground=\"#d35400\" weight=\"bold\">F7</span> the "
-    "Text tool. With a tool active they switch immediately; otherwise they "
-    "use the delayed activation setting."), FALSE, FALSE, 0);
+    "Text tool."), FALSE, FALSE, 0);
   gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
-    "<span foreground=\"#d35400\" weight=\"bold\">F10</span> opens a "
-    "centered quick tool menu; use the arrow keys and Enter. The selected "
-    "tool activates immediately."), FALSE, FALSE, 0);
+    "<span foreground=\"#d35400\" weight=\"bold\">F10</span> opens the "
+    "centered quick tool menu with all tools."), FALSE, FALSE, 0);
 
   /* Right column: shape editing, tool tips and shortcuts. */
   gtk_box_pack_start (GTK_BOX (right),
