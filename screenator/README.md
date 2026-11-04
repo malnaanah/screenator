@@ -197,7 +197,9 @@ and you can keep using your applications while it is visible.
 - `F9` is a global shortcut that shows or hides the floating icon at any
   time. `F8` selects the Pen tool, `F6` the Arrow tool and `F7` the Text
   tool. While a tool is active these switch immediately; otherwise they honor
-  the Tool Activation Delay. The old Gromit-MPX keys (`Shift+F9`, `Ctrl+F9`,
+  the Tool Activation Delay. `F10` opens a centered quick tool menu with
+  every tool and icon; the arrow keys move and Enter selects. A tool chosen
+  from this menu activates immediately, ignoring the delay. The old Gromit-MPX keys (`Shift+F9`, `Ctrl+F9`,
   `Alt+F9`, `Shift+F8` and the old F8 undo) are no longer grabbed. While
   painting mode is active, `Ctrl+Z` undoes and `Ctrl+Shift+Z` redoes, even
   with Caps Lock or Num Lock on, and `Esc` exits the current tool like a
@@ -235,8 +237,8 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_5.6_amd64.deb`
-- `Screenator-5.6-x86_64.AppImage`
+- `screenator_5.7_amd64.deb`
+- `Screenator-5.7-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

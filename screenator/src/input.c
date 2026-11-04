@@ -233,6 +233,8 @@ void setup_input_devices (ScreenatorData *data)
     data->text_keycode = paper_shortcut_keycode (GDK_KEY_F7);
   if (!data->arrow_keycode)
     data->arrow_keycode = paper_shortcut_keycode (GDK_KEY_F6);
+  if (!data->quick_keycode)
+    data->quick_keycode = paper_shortcut_keycode (GDK_KEY_F10);
 
   /* get devices */
   GdkDeviceManager *device_manager = gdk_display_get_device_manager(data->display);
@@ -325,7 +327,8 @@ void setup_input_devices (ScreenatorData *data)
 		      {
 			guint tool_keys[] = { data->pen_keycode,
 					      data->text_keycode,
-					      data->arrow_keycode };
+					      data->arrow_keycode,
+					      data->quick_keycode };
 			guint k;
 
 			for (k = 0; k < G_N_ELEMENTS (tool_keys); k++)
@@ -1201,6 +1204,14 @@ gint snoop_key_press(GtkWidget   *grab_widget,
        event->keyval == GDK_KEY_F6))
     {
       screenator_schedule_tool (data, 2, SCREENATOR_SHAPE_ARROW);
+      return TRUE;
+    }
+
+  if (event->type == GDK_KEY_PRESS &&
+      (event->hardware_keycode == data->quick_keycode ||
+       event->keyval == GDK_KEY_F10))
+    {
+      screenator_show_quick_menu (data);
       return TRUE;
     }
 

@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="5.7" date="2026-11-04">
+      <description>
+        <p>Adds an F10 quick tool menu. It opens in the middle of the monitor containing the floating icon and lists every tool with its icon. Use the arrow keys to move and Enter to select; the chosen tool activates immediately and ignores the Tool Activation Delay. Opening the menu releases any active painting grab, which is restored if the menu is dismissed without a selection.</p>
+      </description>
+    </release>
     <release version="5.6" date="2026-11-04">
       <description>
         <p>Fixes the floating icon when Screenator is started automatically at login: the icon now rechecks the monitor work area shortly after startup, repositions when shown, rebuilds its window when the compositor starts, and reapplies its shape and size correctly after icon-size changes. The delayed context-menu fallback now defers dismissing the other menu until the frozen screenshot is visible, avoiding a one-frame flicker.</p>

@@ -1,4 +1,4 @@
-Screenator 5.6
+Screenator 5.7
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,8 +6,8 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 5.6 (amd64)
-  - Screenator-5.6-x86_64.AppImage
+  - screenator 5.7 (amd64)
+  - Screenator-5.7-x86_64.AppImage
 
 Layout:
   screenator/           Source code, data files, documentation and build script.
@@ -18,8 +18,8 @@ Layout:
   screenator/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_5.6_amd64.deb
-                          Screenator-5.6-x86_64.AppImage
+                          screenator_5.7_amd64.deb
+                          Screenator-5.7-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -213,7 +213,9 @@ Features:
   - F9 is a global shortcut that shows or hides the floating icon at any time.
     F8 selects the Pen tool, F6 the Arrow tool and F7 the Text tool.  While a
     tool is active these switch immediately; otherwise they honor the Tool
-    Activation Delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
+    Activation Delay.  F10 opens a centered quick tool menu with every tool
+    and icon; the arrow keys move and Enter selects.  A tool chosen from this
+    menu activates immediately, ignoring the delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
     Shift+F8 and the old F8 undo) are no longer grabbed.  While painting mode
     is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc exits the current
     tool like a right click outside a shape.

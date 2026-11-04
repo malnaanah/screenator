@@ -363,6 +363,8 @@ static void show_marker_menu (ScreenatorData *data,
 			      gint x, gint y);
 static void show_hints_dialog (ScreenatorData *data, gboolean startup);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
+static void activate_tool_now (ScreenatorData *data, gint pen_tool,
+			       gint shape_type);
 static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
 
@@ -8228,6 +8230,162 @@ icon_menu_show (ScreenatorData *data, GtkWidget *menu)
   return TRUE;
 }
 
+static void
+quick_menu_position_func (GtkMenu *menu, gint *x, gint *y,
+			  gboolean *push_in, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  GdkScreen *screen = gtk_widget_get_screen (GTK_WIDGET (menu));
+  GdkRectangle area;
+  GtkRequisition req;
+  gint monitor;
+
+  if (data->icon_win)
+    {
+      gint icon_x, icon_y;
+
+      gtk_window_get_position (GTK_WINDOW (data->icon_win),
+			       &icon_x, &icon_y);
+      monitor = gdk_screen_get_monitor_at_point (screen,
+						 icon_x + data->icon_size / 2,
+						 icon_y + data->icon_size / 2);
+    }
+  else
+    monitor = gdk_screen_get_primary_monitor (screen);
+
+  if (monitor < 0)
+    monitor = 0;
+
+  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+  gtk_widget_get_preferred_size (GTK_WIDGET (menu), NULL, &req);
+
+  *x = area.x + MAX (0, (area.width - req.width) / 2);
+  *y = area.y + MAX (0, (area.height - req.height) / 2);
+  *push_in = TRUE;
+}
+
+static void
+quick_menu_done (GtkMenuShell *menu, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  gboolean selected = data->quick_menu_select;
+  gboolean restore_grab = data->quick_menu_was_grabbed && !selected;
+  gint pen_tool = data->pending_pen_tool;
+  gint shape_type = data->pending_shape_type;
+
+  if (data->quick_menu == GTK_WIDGET (menu))
+    data->quick_menu = NULL;
+
+  data->quick_menu_select = FALSE;
+  data->quick_menu_was_grabbed = FALSE;
+
+  gtk_widget_destroy (GTK_WIDGET (menu));
+
+  if (selected)
+    activate_tool_now (data, pen_tool, shape_type);
+  else if (restore_grab)
+    acquire_grab (data, NULL);
+}
+
+/* F10 quick tool menu: every tool in one flat list with its icon.  GTK menu
+ * keyboard navigation provides the arrow keys and Enter. */
+void
+screenator_show_quick_menu (ScreenatorData *data)
+{
+  static const struct
+  {
+    const gchar *label;
+    const gchar *icon;
+    GCallback    callback;
+  } tools[] =
+    {
+      { "Pen",               "pen.png",              G_CALLBACK (on_icon_pen) },
+      { "Text",              "text.png",             G_CALLBACK (on_icon_text) },
+      { "Eraser",            "eraser.png",           G_CALLBACK (on_icon_eraser) },
+      { "Marker",            "marker.png",           G_CALLBACK (on_icon_marker) },
+      { "Line",              "free-line.png",        G_CALLBACK (on_icon_line) },
+      { "Spline",            "spline.png",           G_CALLBACK (on_icon_spline) },
+      { "Polygon",           "polygon.png",          G_CALLBACK (on_icon_polygon) },
+      { "Triangle",          "triangle.png",         G_CALLBACK (on_icon_triangle) },
+      { "Arrow",             "arrow.png",            G_CALLBACK (on_icon_arrow) },
+      { "Ellipse",           "ellipse.png",          G_CALLBACK (on_icon_ellipse) },
+      { "Rounded Rectangle", "rounded-rectangle.png", G_CALLBACK (on_icon_rounded_rectangle) },
+      { "Paint Bucket",      "bucket.png",           G_CALLBACK (on_icon_bucket) },
+      { "Math Function",     "math.png",             G_CALLBACK (on_icon_math) },
+      { "Parallel Lines",    "bars.png",             G_CALLBACK (on_icon_bars) },
+      { "Random Signal",     "random-signal.png",    G_CALLBACK (on_icon_random) }
+    };
+  GtkWidget *menu, *item, *heading;
+  guint i;
+
+  if (data->top_dialog)
+    return;
+
+  if (data->quick_menu)
+    return;
+
+  /* The quick menu is an immediate selection, so drop any pending delayed
+   * activation or blocked-grab fallback first. */
+  if (data->tool_delay_id)
+    {
+      g_source_remove (data->tool_delay_id);
+      data->tool_delay_id = 0;
+    }
+  if (data->tool_grab_retry_id)
+    {
+      g_source_remove (data->tool_grab_retry_id);
+      data->tool_grab_retry_id = 0;
+    }
+  screenator_raw_input_disable (data);
+
+  data->quick_menu_select = FALSE;
+  data->quick_menu_was_grabbed = screenator_any_grabbed (data);
+  if (data->quick_menu_was_grabbed)
+    release_grab (data, NULL);
+
+  menu = gtk_menu_new ();
+  heading = stylus_menu_heading ("Quick Tools");
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
+
+  for (i = 0; i < G_N_ELEMENTS (tools); i++)
+    {
+      item = gtk_image_menu_item_new_with_label (tools[i].label);
+      gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+				     gtk_image_new_from_pixbuf (
+				       load_menu_icon (tools[i].icon)));
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      g_signal_connect (item, "activate", tools[i].callback, data);
+    }
+
+  gtk_widget_show_all (menu);
+  data->quick_menu = menu;
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (quick_menu_done), data);
+
+  gtk_menu_popup (GTK_MENU (menu), NULL, NULL,
+		  quick_menu_position_func, data, 0, GDK_CURRENT_TIME);
+
+  if (!gtk_widget_get_visible (menu))
+    {
+      gboolean restore_grab = data->quick_menu_was_grabbed;
+
+      data->quick_menu = NULL;
+      data->quick_menu_was_grabbed = FALSE;
+      data->quick_menu_select = FALSE;
+      g_signal_handlers_disconnect_by_data (menu, data);
+      gtk_widget_destroy (menu);
+      if (restore_grab)
+	acquire_grab (data, NULL);
+      return;
+    }
+
+  if (gtk_widget_get_window (menu))
+    gdk_window_raise (gtk_widget_get_window (menu));
+
+  /* Start keyboard navigation on the first selectable tool. */
+  gtk_menu_shell_select_first (GTK_MENU_SHELL (menu), FALSE);
+}
+
 static gboolean
 icon_menu_retry (gpointer user_data)
 {
@@ -8709,6 +8867,10 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
     "Arrow and <span foreground=\"#d35400\" weight=\"bold\">F7</span> the "
     "Text tool. With a tool active they switch immediately; otherwise they "
     "use the delayed activation setting."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+    "<span foreground=\"#d35400\" weight=\"bold\">F10</span> opens a "
+    "centered quick tool menu; use the arrow keys and Enter. The selected "
+    "tool activates immediately."), FALSE, FALSE, 0);
 
   /* Right column: shape editing, tool tips and shortcuts. */
   gtk_box_pack_start (GTK_BOX (right),
@@ -8974,6 +9136,16 @@ schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
     {
       g_source_remove (data->tool_grab_retry_id);
       data->tool_grab_retry_id = 0;
+    }
+
+  if (data->quick_menu)
+    {
+      /* The menu is still closing; remember the choice and activate it from
+       * quick_menu_done() without applying the activation delay. */
+      data->quick_menu_select = TRUE;
+      data->pending_pen_tool = pen_tool;
+      data->pending_shape_type = shape_type;
+      return;
     }
 
   if (data->tool_delay_seconds == 0)

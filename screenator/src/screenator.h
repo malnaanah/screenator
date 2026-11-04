@@ -421,6 +421,9 @@ typedef struct
   GtkWidget   *stylus_menu;
   GtkWidget   *wheel_menu;
   GtkWidget   *marker_menu;
+  GtkWidget   *quick_menu;
+  gboolean     quick_menu_select;
+  gboolean     quick_menu_was_grabbed;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
   gboolean     hide_hints;
@@ -490,6 +493,7 @@ typedef struct
   guint        pen_keycode;
   guint        text_keycode;
   guint        arrow_keycode;
+  guint        quick_keycode;
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
@@ -637,6 +641,7 @@ void screenator_schedule_tool (ScreenatorData *data, gint pen_tool,
 			       gint shape_type);
 void screenator_show_text (ScreenatorData *data, GdkDevice *device,
 			   gint x, gint y);
+void screenator_show_quick_menu (ScreenatorData *data);
 void screenator_position_icon (ScreenatorData *data);
 void screenator_raw_input_enable (ScreenatorData *data);
 void screenator_raw_input_disable (ScreenatorData *data);

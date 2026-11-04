@@ -4205,6 +4205,7 @@ void main_do_event (GdkEventAny *event,
        keycode == data->pen_keycode ||
        keycode == data->text_keycode ||
        keycode == data->arrow_keycode ||
+       keycode == data->quick_keycode ||
        keycode == data->undo_ctrl_keycode ||
        keycode == data->escape_keycode ||
        keycode == data->paper_z_keycode ||
