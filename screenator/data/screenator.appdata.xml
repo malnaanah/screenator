@@ -41,39 +41,9 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
-    <release version="5.7" date="2026-11-04">
+    <release version="6.0" date="2026-11-04">
       <description>
-        <p>Adds an F10 quick tool menu. It opens in the middle of the monitor containing the floating icon and lists every tool with its icon. Use the arrow keys to move and Enter to select; the chosen tool activates immediately and ignores the Tool Activation Delay. Opening the menu releases any active painting grab, which is restored if the menu is dismissed without a selection.</p>
-      </description>
-    </release>
-    <release version="5.6" date="2026-11-04">
-      <description>
-        <p>Fixes the floating icon when Screenator is started automatically at login: the icon now rechecks the monitor work area shortly after startup, repositions when shown, rebuilds its window when the compositor starts, and reapplies its shape and size correctly after icon-size changes. The delayed context-menu fallback now defers dismissing the other menu until the frozen screenshot is visible, avoiding a one-frame flicker.</p>
-      </description>
-    </release>
-    <release version="5.5" date="2026-11-04">
-      <description>
-        <p>Adds a Tool Activation Delay submenu with 0, 1, 2, 3, 4, 5, 7, 9 and 11 seconds and resets the delay to 0 on every start. F8, F6 and F7 select the Pen, Arrow and Text tools globally and switch immediately when a tool is already active, updating its cursor. A delayed activation blocked by another application's context menu now freezes the screen into a temporary screenshot, accepts XInput2 raw drawing for Pen/Marker/Eraser and text-editor clicks, and closes the other menu with Escape so the real grab can resume. Adds a Floating Icon Position dialog with Top Right (default), Top Left, Bottom Right and Bottom Left, saved across restarts, and improves text-editor focus handling.</p>
-      </description>
-    </release>
-    <release version="5.4" date="2026-11-03">
-      <description>
-        <p>Makes the startup hints window a managed, non-resizable window at a fixed readable size with scrollable content, so it stays fully on screen and remains controllable. The app now always starts on the normal desktop and does not restore a saved screen paper. On resolution changes the floating icon returns to the top-right of its monitor, and changing the icon size keeps it anchored to the screen edge with a correct redraw.</p>
-      </description>
-    </release>
-    <release version="5.3" date="2026-11-03">
-      <description>
-        <p>The Marker tool now uses the current line color with its own opacity, 40% by default. Long right click or a long press of the stylus second side button opens a Marker Opacity menu with 30%, 40%, 50%, 60% and 70%; the choice is independent of the global pen opacity and is remembered across restarts. Selecting the Marker switches the line color to yellow and leaving it or exiting painting restores the previous color. The floating icon size list adds 16x16, and 32x32 is now the default size.</p>
-      </description>
-    </release>
-    <release version="5.2" date="2026-11-02">
-      <description>
-        <p>Removes the inherited Gromit-MPX global shortcuts. F9 is now a single global shortcut that shows or hides the floating icon at any time, while Shift+F9, Ctrl+F9, Alt+F9, F8 and Shift+F8 are no longer grabbed. Show Floating Icon moves directly below Toggle Visibility in the menu and is labelled with F9. Ctrl+F is removed from the screen paper shortcuts; Ctrl+T, Ctrl+Q, Ctrl+Z/Ctrl+Shift+Z and Alt+F4 remain.</p>
-      </description>
-    </release>
-    <release version="5.1" date="2026-11-02">
-      <description>
-        <p>Redesigns the stylus first side button: a short press steps through the selected Color or Thickness, and a long press activates the eraser for as long as it is held, including while hovering. The Button 1 Mode menu now lists only Color and Thickness. The per-tool messages are replaced by one colourful hints dialog shown at startup, with Show Hints below Toggle Visibility and a remembered Never show hints again option. With the Eraser tool selected, the mouse wheel changes the eraser size.</p>
+        <p>Screenator 6.0 consolidates all changes since 5.0. It adds delayed tool activation, global Pen/Arrow/Text shortcuts, an F10 quick tool menu, a saved floating-icon position, an autostart-safe floating icon, a frozen-screen fallback for context menus that own the pointer grab, a two-column hints dialog, Marker opacity controls, screen-paper shortcuts, and the redesigned stylus side-button behavior.</p>
       </description>
     </release>
     <release version="5.0" date="2026-11-02">

@@ -429,6 +429,7 @@ typedef struct
   gboolean     hide_hints;
   gboolean     hints_shown;
   guint        hints_id;
+  GtkWidget   *hints_dialog;
   guint        menu_hold_id;
   ScreenatorDeviceData *menu_hold_devdata;
   gboolean     menu_hold_is_stylus;
@@ -613,6 +614,7 @@ typedef struct
    * when another application owns the pointer grab. */
   cairo_surface_t *screenshot_paper;
   guint        screenshot_close_menu_id;
+  guint        screenshot_escape_attempts;
   /* X11 window that had the focus before a paper took it. */
   gulong       paper_prev_focus;
 

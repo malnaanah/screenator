@@ -227,6 +227,44 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
     }
 }
 
+static void
+center_managed_dialog (GtkWidget *widget)
+{
+  GdkScreen *screen = gtk_widget_get_screen (widget);
+  GtkRequisition req;
+  GdkRectangle area;
+  gint monitor, max_w, max_h;
+
+  if (!screen || !gtk_widget_get_window (widget))
+    return;
+
+  monitor = gdk_screen_get_monitor_at_window (screen,
+					      gtk_widget_get_window (widget));
+  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+
+  max_w = MAX (320, area.width - 40);
+  max_h = MAX (240, area.height - 80);
+
+  gtk_widget_get_preferred_size (widget, NULL, &req);
+  req.width = MIN (MAX (req.width, MIN (745, max_w)), max_w);
+  req.height = MIN (MAX (req.height, MIN (602, max_h)), max_h);
+  gtk_window_resize (GTK_WINDOW (widget), req.width, req.height);
+  gtk_window_move (GTK_WINDOW (widget),
+		   area.x + (area.width - req.width) / 2,
+		   area.y + (area.height - req.height) / 2);
+}
+
+static gboolean
+recenter_hints_idle (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  if (data->hints_dialog && gtk_widget_get_visible (data->hints_dialog))
+    center_managed_dialog (data->hints_dialog);
+
+  return G_SOURCE_REMOVE;
+}
+
 /* A managed dialog is placed by the window manager.  Keep it within the
  * current monitor and let it shrink when the screen is smaller than its
  * contents. */
@@ -234,32 +272,13 @@ static gboolean
 on_managed_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  GdkScreen *screen = gtk_widget_get_screen (widget);
-  GdkRectangle area;
-  GtkRequisition req;
-  gint monitor;
 
   gtk_window_present (GTK_WINDOW (widget));
+  center_managed_dialog (widget);
 
-  if (screen)
-    {
-      monitor = gdk_screen_get_monitor_at_window (screen,
-						  gtk_widget_get_window (widget));
-      gdk_screen_get_monitor_workarea (screen, monitor, &area);
-
-      gint max_w = MAX (320, area.width - 40);
-      gint max_h = MAX (240, area.height - 80);
-
-      gtk_widget_get_preferred_size (widget, NULL, &req);
-      /* Start with a readable size instead of shrinking to the preferred
-       * size of the scrollable content. */
-      req.width = MIN (MAX (req.width, MIN (745, max_w)), max_w);
-      req.height = MIN (MAX (req.height, MIN (602, max_h)), max_h);
-      gtk_window_resize (GTK_WINDOW (widget), req.width, req.height);
-      gtk_window_move (GTK_WINDOW (widget),
-		       area.x + (area.width - req.width) / 2,
-		       area.y + (area.height - req.height) / 2);
-    }
+  /* At login the panel/work area can settle after the dialog is mapped. */
+  g_timeout_add (1500, recenter_hints_idle, data);
+  g_timeout_add (4000, recenter_hints_idle, data);
 
   dialog_take_focus (data, widget);
   return FALSE;
@@ -3544,8 +3563,19 @@ close_menu_timeout (gpointer user_data)
   ScreenatorData *data = user_data;
 
   data->screenshot_close_menu_id = 0;
-  if (data->screenshot_paper)
-    send_escape_to_close_menu (data);
+
+  if (!data->screenshot_paper || data->top_dialog ||
+      screenator_any_grabbed (data) ||
+      data->screenshot_escape_attempts >= 3)
+    return G_SOURCE_REMOVE;
+
+  data->screenshot_escape_attempts++;
+  send_escape_to_close_menu (data);
+
+  /* A menu with a submenu needs more than one Escape.  Give the grab retry a
+   * chance to succeed after each one before sending the next. */
+  data->screenshot_close_menu_id =
+    g_timeout_add (350, close_menu_timeout, data);
 
   return G_SOURCE_REMOVE;
 }
@@ -3558,6 +3588,7 @@ screenator_clear_screenshot_paper (ScreenatorData *data)
       g_source_remove (data->screenshot_close_menu_id);
       data->screenshot_close_menu_id = 0;
     }
+  data->screenshot_escape_attempts = 0;
 
   if (!data->screenshot_paper)
     return;
@@ -3785,8 +3816,11 @@ screenator_take_screenshot_paper (ScreenatorData *data)
    * Otherwise the menu can disappear for one frame while the overlay is still
    * being mapped. */
   if (data->screenshot_paper)
-    data->screenshot_close_menu_id =
-      g_timeout_add (150, close_menu_timeout, data);
+    {
+      data->screenshot_escape_attempts = 0;
+      data->screenshot_close_menu_id =
+	g_timeout_add (150, close_menu_timeout, data);
+    }
 }
 
 gboolean
@@ -6633,6 +6667,27 @@ icon_startup_settle (gpointer user_data)
       !gtk_widget_get_visible (data->icon_win))
     gtk_widget_show (data->icon_win);
 
+  /* A login-time start can see the compositor before its RGBA visual is
+   * available.  Rebuild the icon window once the visual appears, so later
+   * size changes use an alpha window instead of a shaped one. */
+  if (data->icon_shaped && data->icon_win)
+    {
+      GdkScreen *icon_screen = gtk_widget_get_screen (data->icon_win);
+      GdkVisual *visual =
+	icon_screen ? gdk_screen_get_rgba_visual (icon_screen) : NULL;
+
+      if (visual && gdk_screen_is_composited (icon_screen))
+	{
+	  recreate_icon_windows_for_compositing (data);
+
+	  /* The menu may still be open; try again when it closes. */
+	  if (data->icon_shaped)
+	    g_timeout_add (2000, icon_startup_settle, data);
+
+	  return G_SOURCE_REMOVE;
+	}
+    }
+
   if (screen &&
       (gdk_screen_get_width (screen) != (gint) data->width ||
        gdk_screen_get_height (screen) != (gint) data->height))
@@ -6752,6 +6807,9 @@ static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
   if (data->icon_win)
     g_timeout_add (50, icon_reposition_timeout, data);
 
+  /* Save immediately: logging out can terminate the app before the normal
+   * exit-time keyfile write. */
+  write_keyfile (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -7376,6 +7434,7 @@ void create_icon_window (ScreenatorData *data)
   screenator_position_icon (data);
   g_timeout_add (1500, icon_startup_settle, data);
   g_timeout_add (4000, icon_startup_settle, data);
+  g_timeout_add (8000, icon_startup_settle, data);
 
   /* The annotation window is created first; make sure the icon starts above
    * it, otherwise the annotation window takes the clicks for the icon. */
@@ -8924,6 +8983,9 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   gtk_widget_set_margin_top (check, 10);
   gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
 
+  if (startup)
+    data->hints_dialog = dialog;
+
   gtk_widget_show_all (dialog);
   gtk_dialog_run (GTK_DIALOG (dialog));
 
@@ -8935,6 +8997,7 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
       changed = TRUE;
     }
 
+  data->hints_dialog = NULL;
   gtk_widget_destroy (dialog);
 
   if (changed)
