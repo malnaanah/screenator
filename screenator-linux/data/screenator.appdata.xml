@@ -43,7 +43,7 @@
   <releases>
     <release version="7.0" date="2026-11-06">
       <description>
-        <p>Screenator 7.0 adds a Windows port and updates the Linux version with 128x128 and 256x256 floating icons, larger settings rings, outside shape strokes, 10% to 90% opacity menus, a 48x48 default icon, a 60 px default eraser, new triangle and polygon placement, a single-column scrollable hints dialog with a more visible scrollbar, improved pen detection, and corrected middle-button erasing.</p>
+        <p>Screenator 7.0 adds a Windows port and updates the Linux version with 128x128 and 256x256 floating icons, larger settings rings, outside shape strokes, 10% to 90% opacity menus, a 48x48 default icon, a 60 px default eraser, new triangle and polygon placement, a single-column scrollable hints dialog with a more visible scrollbar, a grid-based F10 quick tool menu, improved pen detection, and corrected middle-button erasing.</p>
       </description>
     </release>
     <release version="6.0" date="2026-11-04">

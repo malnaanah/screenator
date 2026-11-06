@@ -22,6 +22,9 @@ native Windows port.
 - Added the stylus button configuration note to the hints dialog and
   documentation.
 - Improved pen detection under XWayland and corrected middle-button erasing.
+- The F10 quick tool menu is now a centered 5x3 grid of large icon tiles,
+  with arrow-key navigation, Home/End, Enter/Space selection and Escape to
+  close.
 
 ## Windows
 

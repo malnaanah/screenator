@@ -230,9 +230,10 @@ Features:
   - F9 is a global shortcut that shows or hides the floating icon at any time.
     F8 selects the Pen tool, F6 the Arrow tool and F7 the Text tool.  While a
     tool is active these switch immediately; otherwise they honor the Tool
-    Activation Delay.  F10 opens a centered quick tool menu with every tool
-    and icon; the arrow keys move and Enter selects.  A tool chosen from this
-    menu activates immediately, ignoring the delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
+    Activation Delay.  F10 opens a centered 5x3 grid of large tool icon
+    tiles; the arrow keys move, Home/End jump to the corners, Enter or Space
+    selects, and Escape closes the grid.  A tool chosen from this menu
+    activates immediately, ignoring the delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
     Shift+F8 and the old F8 undo) are no longer grabbed.  While painting mode
     is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc exits the current
     tool like a right click outside a shape.

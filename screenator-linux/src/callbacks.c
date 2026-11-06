@@ -385,6 +385,8 @@ static void show_hints_dialog (ScreenatorData *data, gboolean startup);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
 static void activate_tool_now (ScreenatorData *data, gint pen_tool,
 			       gint shape_type);
+static gboolean show_math_dialog (ScreenatorData *data);
+static void quick_menu_cancel (ScreenatorData *data);
 static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
 
@@ -4487,6 +4489,14 @@ gboolean on_buttonpress (GtkWidget *win,
   if (data->top_dialog)
     return TRUE;
 
+  /* A click on the drawing area outside the quick tool grid dismisses the
+   * grid and is consumed. */
+  if (data->quick_menu)
+    {
+      quick_menu_cancel (data);
+      return TRUE;
+    }
+
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
 
@@ -5986,17 +5996,21 @@ void set_tray_icon (ScreenatorData *data)
   g_free (path);
 }
 
-static GdkPixbuf *load_menu_icon (const gchar *name)
+static GdkPixbuf *load_menu_icon_at_size (const gchar *name, gint size)
 {
   const gchar *dir = icon_data_dir ();
   gchar *path = dir ? g_build_filename (dir, "screenator", name, NULL)
                     : g_build_filename ("/usr/share/screenator", name, NULL);
-  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (path, MENU_ICON_SIZE,
-                                                         MENU_ICON_SIZE, FALSE,
-                                                         NULL);
+  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (path, size, size,
+                                                         FALSE, NULL);
   g_free (path);
 
   return pixbuf;
+}
+
+static GdkPixbuf *load_menu_icon (const gchar *name)
+{
+  return load_menu_icon_at_size (name, MENU_ICON_SIZE);
 }
 
 static GdkPixbuf *load_icon_pixbuf (ScreenatorData *data, gboolean active)
@@ -8497,15 +8511,275 @@ icon_menu_show (ScreenatorData *data, GtkWidget *menu)
   return TRUE;
 }
 
-static void
-quick_menu_position_func (GtkMenu *menu, gint *x, gint *y,
-			  gboolean *push_in, gpointer user_data)
+typedef struct
 {
-  ScreenatorData *data = user_data;
-  GdkScreen *screen = gtk_widget_get_screen (GTK_WIDGET (menu));
+  const gchar *label;
+  const gchar *icon;
+  gint         pen_tool;
+  gint         shape_type;
+} QuickTool;
+
+static const QuickTool quick_tools[] =
+  {
+    { "Pen",            "pen.png",              1,  -1 },
+    { "Text",           "text.png",             4,  -1 },
+    { "Eraser",         "eraser.png",           3,  -1 },
+    { "Marker",         "marker.png",           11, -1 },
+    { "Line",           "free-line.png",        9,  SCREENATOR_SHAPE_LINE },
+    { "Spline",         "spline.png",           12, SCREENATOR_SHAPE_SPLINE },
+    { "Polygon",        "polygon.png",          14, SCREENATOR_SHAPE_STAR },
+    { "Triangle",       "triangle.png",         15, SCREENATOR_SHAPE_TRIANGLE },
+    { "Arrow",          "arrow.png",            2,  SCREENATOR_SHAPE_ARROW },
+    { "Ellipse",        "ellipse.png",          6,  SCREENATOR_SHAPE_ELLIPSE },
+    { "Rounded Rect",   "rounded-rectangle.png",7,  SCREENATOR_SHAPE_ROUNDED_RECTANGLE },
+    { "Bucket",         "bucket.png",           13, SCREENATOR_SHAPE_BUCKET },
+    { "Math",           "math.png",             16, SCREENATOR_SHAPE_MATH },
+    { "Parallel",       "bars.png",             17, SCREENATOR_SHAPE_BARS },
+    { "Random",         "random-signal.png",    18, SCREENATOR_SHAPE_RANDOM }
+  };
+
+#define QUICK_COLS      5
+#define QUICK_ROWS      3
+#define QUICK_CELL_W    108
+#define QUICK_CELL_H    100
+#define QUICK_MARGIN    12
+#define QUICK_SPACING   8
+
+typedef struct
+{
+  ScreenatorData *data;
+  GtkWidget      *window;
+  GtkWidget      *cells[G_N_ELEMENTS (quick_tools)];
+  guint           selected;
+  gboolean        was_grabbed;
+  gboolean        finished;
+} QuickMenu;
+
+static void
+quick_menu_install_style (GtkWidget *window)
+{
+  static GtkCssProvider *provider = NULL;
+  GtkStyleContext *context;
+  GdkScreen *screen;
+
+  if (!provider)
+    {
+      provider = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (provider,
+	"window.quick-menu { background-color: #fafafa; "
+	"border: 1px solid #787878; }\n"
+	"button.quick-cell { background-image: none; "
+	"background-color: #ffffff; border: 1px solid #cdcdcd; "
+	"border-radius: 2px; padding: 6px; box-shadow: none; "
+	"text-shadow: none; }\n"
+	"button.quick-cell:hover { background-color: #cde4fc; }\n"
+	"button.quick-cell:focus { background-color: #cde4fc; "
+	"border: 2px solid #3d6fa5; }\n"
+	"button.quick-cell label { color: #1e1e1e; font-size: 12px; }\n",
+	-1, NULL);
+      screen = gtk_widget_get_screen (window);
+      gtk_style_context_add_provider_for_screen (
+	screen ? screen : gdk_screen_get_default (),
+	GTK_STYLE_PROVIDER (provider),
+	GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
+  context = gtk_widget_get_style_context (window);
+  gtk_style_context_add_class (context, "quick-menu");
+}
+
+static gint
+quick_cell_index (GtkWidget *button)
+{
+  return GPOINTER_TO_INT (g_object_get_data (G_OBJECT (button),
+					     "quick-index"));
+}
+
+static void
+quick_menu_dismiss (QuickMenu *menu, gboolean restore_focus)
+{
+  ScreenatorData *data;
+
+  if (menu->finished)
+    return;
+
+  menu->finished = TRUE;
+  data = menu->data;
+  data->quick_menu = NULL;
+  gtk_widget_destroy (menu->window);
+
+  if (restore_focus)
+    dialog_restore_focus (data);
+
+  if (menu->was_grabbed)
+    acquire_grab (data, NULL);
+
+  g_free (menu);
+}
+
+static void
+quick_menu_cancel (ScreenatorData *data)
+{
+  QuickMenu *menu;
+
+  if (!data->quick_menu)
+    return;
+
+  menu = g_object_get_data (G_OBJECT (data->quick_menu), "quick-menu");
+  if (menu)
+    quick_menu_dismiss (menu, TRUE);
+}
+
+static void
+quick_menu_activate (QuickMenu *menu, guint index)
+{
+  ScreenatorData *data;
+  gint pen_tool;
+  gint shape_type;
+  gboolean was_grabbed;
+
+  if (menu->finished || index >= G_N_ELEMENTS (quick_tools))
+    return;
+
+  menu->finished = TRUE;
+  data = menu->data;
+  pen_tool = quick_tools[index].pen_tool;
+  shape_type = quick_tools[index].shape_type;
+  was_grabbed = menu->was_grabbed;
+  data->quick_menu = NULL;
+  gtk_widget_destroy (menu->window);
+  dialog_restore_focus (data);
+
+  if (pen_tool == 16)
+    {
+      if (show_math_dialog (data))
+	activate_tool_now (data, 16, SCREENATOR_SHAPE_MATH);
+      else if (was_grabbed)
+	acquire_grab (data, NULL);
+    }
+  else
+    activate_tool_now (data, pen_tool, shape_type);
+
+  g_free (menu);
+}
+
+static void
+quick_menu_destroy (GtkWidget *widget, gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+
+  if (menu->finished)
+    return;
+
+  menu->finished = TRUE;
+  menu->data->quick_menu = NULL;
+  if (menu->was_grabbed)
+    acquire_grab (menu->data, NULL);
+  g_free (menu);
+}
+
+static gboolean
+quick_menu_focus_out (GtkWidget *widget, GdkEventFocus *event,
+		      gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+
+  if (!menu->finished)
+    quick_menu_dismiss (menu, FALSE);
+  return TRUE;
+}
+
+static gboolean
+quick_menu_focus_in (GtkWidget *widget, GdkEventFocus *event,
+		     gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+
+  menu->selected = quick_cell_index (widget);
+  return FALSE;
+}
+
+static gboolean
+quick_menu_enter (GtkWidget *widget, GdkEventCrossing *event,
+		  gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+  guint index = quick_cell_index (widget);
+
+  if (menu->selected != index)
+    {
+      menu->selected = index;
+      gtk_widget_grab_focus (widget);
+    }
+  return FALSE;
+}
+
+static void
+quick_menu_clicked (GtkButton *button, gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+
+  quick_menu_activate (menu, quick_cell_index (GTK_WIDGET (button)));
+}
+
+static gboolean
+quick_menu_key_press (GtkWidget *widget, GdkEventKey *event,
+		      gpointer user_data)
+{
+  QuickMenu *menu = user_data;
+  guint sel = menu->selected;
+  guint col = sel % QUICK_COLS;
+  guint row = sel / QUICK_COLS;
+
+  switch (event->keyval)
+    {
+    case GDK_KEY_Left:
+      col = (col + QUICK_COLS - 1) % QUICK_COLS;
+      break;
+    case GDK_KEY_Right:
+      col = (col + 1) % QUICK_COLS;
+      break;
+    case GDK_KEY_Up:
+      row = (row + QUICK_ROWS - 1) % QUICK_ROWS;
+      break;
+    case GDK_KEY_Down:
+      row = (row + 1) % QUICK_ROWS;
+      break;
+    case GDK_KEY_Home:
+      row = 0;
+      col = 0;
+      break;
+    case GDK_KEY_End:
+      row = QUICK_ROWS - 1;
+      col = QUICK_COLS - 1;
+      break;
+    case GDK_KEY_Return:
+    case GDK_KEY_KP_Enter:
+    case GDK_KEY_space:
+      gtk_button_clicked (GTK_BUTTON (menu->cells[menu->selected]));
+      return TRUE;
+    case GDK_KEY_Escape:
+      quick_menu_dismiss (menu, TRUE);
+      return TRUE;
+    default:
+      return FALSE;
+    }
+
+  menu->selected = row * QUICK_COLS + col;
+  gtk_widget_grab_focus (menu->cells[menu->selected]);
+  return TRUE;
+}
+
+static void
+quick_menu_position (ScreenatorData *data, GtkWidget *window)
+{
+  GdkScreen *screen = gtk_widget_get_screen (window);
   GdkRectangle area;
   GtkRequisition req;
   gint monitor;
+
+  if (!screen)
+    return;
 
   if (data->icon_win)
     {
@@ -8513,9 +8787,9 @@ quick_menu_position_func (GtkMenu *menu, gint *x, gint *y,
 
       gtk_window_get_position (GTK_WINDOW (data->icon_win),
 			       &icon_x, &icon_y);
-      monitor = gdk_screen_get_monitor_at_point (screen,
-						 icon_x + data->icon_size / 2,
-						 icon_y + data->icon_size / 2);
+      monitor = gdk_screen_get_monitor_at_point (
+	screen, icon_x + data->icon_size / 2,
+	icon_y + data->icon_size / 2);
     }
   else
     monitor = gdk_screen_get_primary_monitor (screen);
@@ -8524,65 +8798,36 @@ quick_menu_position_func (GtkMenu *menu, gint *x, gint *y,
     monitor = 0;
 
   gdk_screen_get_monitor_workarea (screen, monitor, &area);
-  gtk_widget_get_preferred_size (GTK_WIDGET (menu), NULL, &req);
+  gtk_widget_get_preferred_size (window, NULL, &req);
 
-  *x = area.x + MAX (0, (area.width - req.width) / 2);
-  *y = area.y + MAX (0, (area.height - req.height) / 2);
-  *push_in = TRUE;
+  gtk_window_move (GTK_WINDOW (window),
+		   area.x + MAX (0, (area.width - req.width) / 2),
+		   area.y + MAX (0, (area.height - req.height) / 2));
 }
 
-static void
-quick_menu_done (GtkMenuShell *menu, gpointer user_data)
+static gboolean
+quick_menu_map (GtkWidget *window, GdkEvent *event, gpointer user_data)
 {
-  ScreenatorData *data = user_data;
-  gboolean selected = data->quick_menu_select;
-  gboolean restore_grab = data->quick_menu_was_grabbed && !selected;
-  gint pen_tool = data->pending_pen_tool;
-  gint shape_type = data->pending_shape_type;
+  QuickMenu *menu = user_data;
+  GdkWindow *gdk_window = gtk_widget_get_window (window);
 
-  if (data->quick_menu == GTK_WIDGET (menu))
-    data->quick_menu = NULL;
-
-  data->quick_menu_select = FALSE;
-  data->quick_menu_was_grabbed = FALSE;
-
-  gtk_widget_destroy (GTK_WIDGET (menu));
-
-  if (selected)
-    activate_tool_now (data, pen_tool, shape_type);
-  else if (restore_grab)
-    acquire_grab (data, NULL);
+  quick_menu_position (menu->data, window);
+  if (gdk_window)
+    gdk_window_raise (gdk_window);
+  gtk_widget_grab_focus (menu->cells[menu->selected]);
+  dialog_take_focus (menu->data, window);
+  return FALSE;
 }
 
-/* F10 quick tool menu: every tool in one flat list with its icon.  GTK menu
- * keyboard navigation provides the arrow keys and Enter. */
+/* F10 quick tool menu: a centered 5x3 grid of large icon tiles, matching the
+ * Windows version.  Arrow keys move the selection, Home/End jump to the
+ * corners, Enter/Space activate it, and Escape or clicking outside closes the
+ * grid without selecting a tool. */
 void
 screenator_show_quick_menu (ScreenatorData *data)
 {
-  static const struct
-  {
-    const gchar *label;
-    const gchar *icon;
-    GCallback    callback;
-  } tools[] =
-    {
-      { "Pen",               "pen.png",              G_CALLBACK (on_icon_pen) },
-      { "Text",              "text.png",             G_CALLBACK (on_icon_text) },
-      { "Eraser",            "eraser.png",           G_CALLBACK (on_icon_eraser) },
-      { "Marker",            "marker.png",           G_CALLBACK (on_icon_marker) },
-      { "Line",              "free-line.png",        G_CALLBACK (on_icon_line) },
-      { "Spline",            "spline.png",           G_CALLBACK (on_icon_spline) },
-      { "Polygon",           "polygon.png",          G_CALLBACK (on_icon_polygon) },
-      { "Triangle",          "triangle.png",         G_CALLBACK (on_icon_triangle) },
-      { "Arrow",             "arrow.png",            G_CALLBACK (on_icon_arrow) },
-      { "Ellipse",           "ellipse.png",          G_CALLBACK (on_icon_ellipse) },
-      { "Rounded Rectangle", "rounded-rectangle.png", G_CALLBACK (on_icon_rounded_rectangle) },
-      { "Paint Bucket",      "bucket.png",           G_CALLBACK (on_icon_bucket) },
-      { "Math Function",     "math.png",             G_CALLBACK (on_icon_math) },
-      { "Parallel Lines",    "bars.png",             G_CALLBACK (on_icon_bars) },
-      { "Random Signal",     "random-signal.png",    G_CALLBACK (on_icon_random) }
-    };
-  GtkWidget *menu, *item, *heading;
+  QuickMenu *menu;
+  GtkWidget *window, *grid;
   guint i;
 
   if (data->top_dialog)
@@ -8605,52 +8850,90 @@ screenator_show_quick_menu (ScreenatorData *data)
     }
   screenator_raw_input_disable (data);
 
-  data->quick_menu_select = FALSE;
-  data->quick_menu_was_grabbed = screenator_any_grabbed (data);
-  if (data->quick_menu_was_grabbed)
+  menu = g_new0 (QuickMenu, 1);
+  menu->data = data;
+  menu->was_grabbed = screenator_any_grabbed (data);
+  if (menu->was_grabbed)
     release_grab (data, NULL);
 
-  menu = gtk_menu_new ();
-  heading = stylus_menu_heading ("Quick Tools");
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
+  window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+  menu->window = window;
+  g_object_set_data (G_OBJECT (window), "quick-menu", menu);
+  gtk_window_set_title (GTK_WINDOW (window), "Quick Tools");
+  gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+  gtk_window_set_resizable (GTK_WINDOW (window), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_keep_above (GTK_WINDOW (window), TRUE);
+  make_dialog_popup (window);
+  quick_menu_install_style (window);
 
-  for (i = 0; i < G_N_ELEMENTS (tools); i++)
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), QUICK_SPACING);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), QUICK_SPACING);
+  gtk_grid_set_row_homogeneous (GTK_GRID (grid), TRUE);
+  gtk_grid_set_column_homogeneous (GTK_GRID (grid), TRUE);
+  gtk_container_set_border_width (GTK_CONTAINER (grid), QUICK_MARGIN);
+  gtk_container_add (GTK_CONTAINER (window), grid);
+
+  for (i = 0; i < G_N_ELEMENTS (quick_tools); i++)
     {
-      item = gtk_image_menu_item_new_with_label (tools[i].label);
-      gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-				     gtk_image_new_from_pixbuf (
-				       load_menu_icon (tools[i].icon)));
-      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-      g_signal_connect (item, "activate", tools[i].callback, data);
+      GtkWidget *button = gtk_button_new ();
+      GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+      GtkWidget *image;
+      GtkWidget *label;
+      GdkPixbuf *pixbuf;
+
+      gtk_style_context_add_class (gtk_widget_get_style_context (button),
+				   "quick-cell");
+      gtk_widget_set_size_request (button, QUICK_CELL_W, QUICK_CELL_H);
+      gtk_widget_set_can_focus (button, TRUE);
+
+      gtk_widget_set_halign (box, GTK_ALIGN_CENTER);
+      gtk_widget_set_valign (box, GTK_ALIGN_CENTER);
+
+      pixbuf = load_menu_icon_at_size (quick_tools[i].icon, 48);
+      image = pixbuf
+	? gtk_image_new_from_pixbuf (pixbuf)
+	: gtk_image_new_from_icon_name ("image-missing",
+					GTK_ICON_SIZE_DIALOG);
+      if (pixbuf)
+	g_object_unref (pixbuf);
+      gtk_box_pack_start (GTK_BOX (box), image, FALSE, FALSE, 0);
+
+      label = gtk_label_new (quick_tools[i].label);
+      gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+      gtk_label_set_max_width_chars (GTK_LABEL (label), 14);
+      gtk_label_set_justify (GTK_LABEL (label), GTK_JUSTIFY_CENTER);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.5);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+      gtk_container_add (GTK_CONTAINER (button), box);
+      g_object_set_data (G_OBJECT (button), "quick-index",
+			 GUINT_TO_POINTER (i));
+      g_signal_connect (button, "clicked",
+			G_CALLBACK (quick_menu_clicked), menu);
+      g_signal_connect (button, "focus-in-event",
+			G_CALLBACK (quick_menu_focus_in), menu);
+      g_signal_connect (button, "enter-notify-event",
+			G_CALLBACK (quick_menu_enter), menu);
+      gtk_grid_attach (GTK_GRID (grid), button,
+		       (gint) (i % QUICK_COLS), (gint) (i / QUICK_COLS),
+		       1, 1);
+      menu->cells[i] = button;
     }
 
-  gtk_widget_show_all (menu);
-  data->quick_menu = menu;
-  g_signal_connect (menu, "selection-done",
-		    G_CALLBACK (quick_menu_done), data);
+  data->quick_menu = window;
+  g_signal_connect (window, "key-press-event",
+		    G_CALLBACK (quick_menu_key_press), menu);
+  g_signal_connect (window, "focus-out-event",
+		    G_CALLBACK (quick_menu_focus_out), menu);
+  g_signal_connect (window, "destroy",
+		    G_CALLBACK (quick_menu_destroy), menu);
+  g_signal_connect (window, "map-event",
+		    G_CALLBACK (quick_menu_map), menu);
 
-  gtk_menu_popup (GTK_MENU (menu), NULL, NULL,
-		  quick_menu_position_func, data, 0, GDK_CURRENT_TIME);
-
-  if (!gtk_widget_get_visible (menu))
-    {
-      gboolean restore_grab = data->quick_menu_was_grabbed;
-
-      data->quick_menu = NULL;
-      data->quick_menu_was_grabbed = FALSE;
-      data->quick_menu_select = FALSE;
-      g_signal_handlers_disconnect_by_data (menu, data);
-      gtk_widget_destroy (menu);
-      if (restore_grab)
-	acquire_grab (data, NULL);
-      return;
-    }
-
-  if (gtk_widget_get_window (menu))
-    gdk_window_raise (gtk_widget_get_window (menu));
-
-  /* Start keyboard navigation on the first selectable tool. */
-  gtk_menu_shell_select_first (GTK_MENU_SHELL (menu), FALSE);
+  gtk_widget_show_all (window);
 }
 
 static gboolean
@@ -9481,16 +9764,6 @@ schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
     {
       g_source_remove (data->tool_grab_retry_id);
       data->tool_grab_retry_id = 0;
-    }
-
-  if (data->quick_menu)
-    {
-      /* The menu is still closing; remember the choice and activate it from
-       * quick_menu_done() without applying the activation delay. */
-      data->quick_menu_select = TRUE;
-      data->pending_pen_tool = pen_tool;
-      data->pending_shape_type = shape_type;
-      return;
     }
 
   if (data->tool_delay_seconds == 0)

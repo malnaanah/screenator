@@ -432,8 +432,6 @@ typedef struct
   GtkWidget   *wheel_menu;
   GtkWidget   *marker_menu;
   GtkWidget   *quick_menu;
-  gboolean     quick_menu_select;
-  gboolean     quick_menu_was_grabbed;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
   gboolean     hide_hints;
