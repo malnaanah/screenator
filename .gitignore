@@ -6,3 +6,13 @@ build/
 # Object files and editor backups
 *.o
 *~
+
+# Windows build output
+*.exe
+*.res
+*.zip
+dist/
+
+# Local credentials and scratch task files
+github_token.sh
+Task.txt

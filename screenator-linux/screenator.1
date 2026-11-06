@@ -33,8 +33,8 @@ floating icon is hidden.
 The Marker draws a highlighter stroke with a fixed 32 pixel width, using the
 current line colour. Its opacity is 40% by default and is independent of the
 global pen opacity. Long right click, or a long press of the stylus second side
-button, opens the Marker Opacity menu with 30%, 40%, 50%, 60% and 70%; the
-choice is remembered across restarts. Selecting the Marker switches the line
+button, opens the Marker Opacity menu with 10%, 20%, 30%, 40%, 50%, 60%, 70%,
+80% and 90%; the choice is remembered across restarts. Selecting the Marker switches the line
 colour to yellow; leaving the Marker or exiting painting restores the colour
 that was active before. The mouse wheel or the stylus first side button changes
 its colour.
@@ -71,9 +71,10 @@ round handle, and dragging the line itself moves the whole shape; clicking
 outside, double-clicking or right-clicking commits it.
 Ellipses, rounded rectangles, polygons and triangles can be filled using the
 "Shapes Fill Color" submenu; the default is no fill and green is its first
-colour. Both the line colour and the shape fill colour have a "Custom..."
-entry that opens a colour chooser; the custom colour starts as magenta and is
-remembered.
+colour. Their outlines are drawn outside the shape border, so a thick stroke
+never covers the inside of the shape. Both the line colour and the shape fill
+colour have a "Custom..." entry that opens a colour chooser; the custom colour
+starts as magenta and is remembered.
 .br
 The "Screen Paper" submenu turns the screen into paper for drawing and
 writing: None shows the normal desktop, Plain a white page, Ruled a white page
@@ -92,23 +93,27 @@ stays smooth, and holding Ctrl while dragging moves only that side, which gives
 the node a corner. Click the last node again, double-click or right-click to
 finish the curve.
 .br
-The Polygon tool places a shape with a single click and keeps it editable with
-four handles: the square handle controls the number of sides from 3 to 16
-(pressing it resets the shape to 3 sides; moving away from it in any direction
-adds sides and moving back towards it removes them, down to 3 at the handle),
-one round handle sets the radius, one sets the rotation, and one moves the
-inner vertices outwards until the shape becomes a regular polygon; that handle
-snaps to the flat edge when it gets close, so a regular polygon is easy to
-hit. Drag inside the shape to move it. Clicking empty space commits it and
-places the next one; double-click or right-click commits it.
+The Polygon tool uses the first click as its centre; dragging then sets the
+radius and rotation around that centre, while a plain click keeps a default
+size. The shape stays editable with four handles: the square handle controls
+the number of sides from 3 to 16 (pressing it resets the shape to 3 sides;
+moving away from it in any direction adds sides and moving back towards it
+removes them, down to 3 at the handle), one round handle sets the radius, one
+sets the rotation, and one moves the inner vertices outwards until the shape
+becomes a regular polygon; that handle snaps to the flat edge when it gets
+close, so a regular polygon is easy to hit. Drag inside the shape to move it.
+Clicking empty space commits it and places the next one; double-click or
+right-click commits it.
 .br
-The Triangle tool places an equilateral triangle with a single click and keeps
-it editable with three round handles, one on every vertex. Dragging a handle
-moves that vertex, so the triangle can be stretched and skewed freely; holding
-Ctrl while dragging a vertex snaps the angle at that vertex to 30, 45, 60 or
-90 degrees. Drag inside the triangle to move the whole shape. Clicking empty
-space commits it and places the next one, and a double-click or right-click
-commits it.
+The Triangle tool places the next vertex with each click. A line follows the
+pointer after the first click, and the remaining sides follow after the second
+click. Dragging does not place a point; the line keeps following the pointer
+until the next click. The third click fixes the last vertex and closes the
+triangle. The triangle keeps three round vertex handles, so it
+can be stretched and skewed freely; holding Ctrl while dragging a vertex
+snaps the angle at that vertex to 30, 45, 60 or 90 degrees. Drag inside the
+triangle to move the whole shape. Clicking empty space commits it and places
+the next one, and a double-click or right-click commits it.
 .br
 The Ellipse and Rounded Rectangle stay editable after they have been dragged
 out. Every placed shape keeps a square size handle on each of its four corners
@@ -187,7 +192,12 @@ shown.
 The "Settings" submenu holds "Save annotations on exit", "Change Font", "Show
 Settings Indicator", "Floating Icon Position..." and "Reset Settings".
 "Floating Icon Position..." opens a dialog with Top Right (the default), Top
-Left, Bottom Right and Bottom Left; the choice is saved across restarts.
+Left, Bottom Right and Bottom Left; the choice is saved across restarts. The
+floating icon size is 16x16, 32x32, 48x48 (the default), 64x64, 128x128 or
+256x256; the settings ring doubles in width at 128x128 and triples at 256x256.
+The Opacity menu offers 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80% and 90%.
+"Reset Settings" returns to red, 6 px, 100% opacity, no shape fill, Arial Bold
+24, a 60 px eraser and a 48x48 icon.
 "Show Floating Icon (F9)" sits
 directly below "Toggle Visibility" in the main menu. With "Save
 annotations on exit" on (the default), the drawings are saved to
@@ -195,13 +205,14 @@ annotations on exit" on (the default), the drawings are saved to
 when Screenator quits and restored on the next start; the screen paper follows
 its own setting. "Clear Screen" removes the saved drawing.
 .br
-A single, colourful Hints dialog appears when Screenator starts. It summarises
-the common mouse and stylus controls plus shape-editing tips, the global F9
-shortcut and the drawing-mode and screen-paper shortcuts in one place instead
+A single, colourful Hints dialog appears when Screenator starts. It is a
+750x550 scrollable column that summarises the common mouse and stylus controls
+plus shape-editing tips, the global F9 shortcut and the drawing-mode and
+screen-paper shortcuts in one place instead
 of repeating them for every tool, and it emphasises that a long right click, or a
 long press of the stylus second side button, opens the Scroll Mode menu to
-choose Color or Thickness for scrolling. It has a "Never show hints again"
-option which is remembered across restarts. "Show Hints" in the menu opens the
+choose Color or Thickness for scrolling. A "Never show hints again" option
+beside the Close button is remembered across restarts. "Show Hints" in the menu opens the
 dialog again, and Reset Settings keeps the choice.
 .br
 .SH KEYBOARD CONTROL
@@ -233,6 +244,9 @@ exits the current tool, just like right-clicking outside a shape. These keys
 are only grabbed while painting, so they keep their normal meaning in other
 applications.
 .SH STYLUS
+.B IMPORTANT:
+In your stylus configuration, set button 1 (near the tip) to Middle Click and
+button 2 to Right Click.
 The stylus tip draws like the left mouse button, using the selected line
 width; pen pressure is ignored so it draws exactly like the mouse. The first
 side button has two short-press settings chosen in the stylus menu: Color steps

@@ -23,9 +23,10 @@ https://github.com/user-attachments/assets/9b04ff90-14df-458c-ae8f-5d2038690ce3
 
 | Path | Contents |
 |---|---|
-| `screenator/` | Source code, data files, documentation and the build script |
-| `screenator/src/` | C sources (`screenator.c`, callbacks, config, input) |
-| `screenator/data/` | Icons, cursors, default tool configuration, desktop entry, AppStream metadata |
+| `screenator-linux/` | Linux source code, data files, documentation and the build script |
+| `screenator-linux/src/` | C sources (`screenator.c`, callbacks, config, input) |
+| `screenator-linux/data/` | Icons, cursors, default tool configuration, desktop entry, AppStream metadata |
+| `screenator-windows/` | Windows source code and build files, prepared separately |
 | `info.txt` | Package and feature description |
 
 ## Build
@@ -41,14 +42,18 @@ sudo apt install build-essential cmake libgtk-3-dev \
 Then:
 
 ```
-cd screenator
+cd screenator-linux
 ./build.sh
 ```
 
-The script produces both packages in `../build/`:
+The script produces the Linux packages in `../build/`:
 
-- `screenator_5.0_amd64.deb` — install with `sudo apt install ./screenator_5.0_amd64.deb`
-- `Screenator-5.0-x86_64.AppImage` — make executable and run
+- `screenator_7.0_amd64.deb` — install with `sudo apt install ./screenator_7.0_amd64.deb`
+- `screenator-7.0-1.x86_64.rpm` — install with `sudo rpm -i ./screenator-7.0-1.x86_64.rpm`
+- `Screenator-7.0-x86_64.AppImage` — make executable and run
+
+The Windows application is built separately from `screenator-windows/` with
+MSYS2; see `screenator-windows/README.md`.
 
 ## Configuration
 
@@ -56,9 +61,10 @@ The script produces both packages in `../build/`:
   opacity, font, shape fill, icon size, last tool).
 - `~/.config/screenator.cfg` — optional per-user tool/button mapping; falls
   back to the bundled (AppImage) or system-wide `/etc/screenator/screenator.cfg`.
+- `%APPDATA%\Screenator\screenator.ini` — Windows settings.
 
 ## License
 
 GNU General Public License version 2 or later. Screenator contains code from
 Gromit-MPX 1.4.2 (Copyright 2009–2022 Christian Beier) and Gromit
-(Copyright 2000 Simon Budig). See `screenator/COPYING` for the full text.
+(Copyright 2000 Simon Budig). See `screenator-linux/COPYING` for the full text.

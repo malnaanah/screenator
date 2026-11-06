@@ -41,6 +41,11 @@
   <launchable type="desktop-id">screenator.desktop</launchable>
 
   <releases>
+    <release version="7.0" date="2026-11-06">
+      <description>
+        <p>Screenator 7.0 adds a Windows port and updates the Linux version with 128x128 and 256x256 floating icons, larger settings rings, outside shape strokes, 10% to 90% opacity menus, a 48x48 default icon, a 60 px default eraser, new triangle and polygon placement, a single-column scrollable hints dialog with a more visible scrollbar, improved pen detection, and corrected middle-button erasing.</p>
+      </description>
+    </release>
     <release version="6.0" date="2026-11-04">
       <description>
         <p>Screenator 6.0 consolidates all changes since 5.0. It adds delayed tool activation, global Pen/Arrow/Text shortcuts, an F10 quick tool menu, a saved floating-icon position, an autostart-safe floating icon, a frozen-screen fallback for context menus that own the pointer grab, a two-column hints dialog, Marker opacity controls, screen-paper shortcuts, and the redesigned stylus side-button behavior.</p>

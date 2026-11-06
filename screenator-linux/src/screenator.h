@@ -36,7 +36,8 @@
 #include <libayatana-appindicator/app-indicator.h>
 #endif
 
-#define SCREENATOR_MOUSE_EVENTS ( GDK_BUTTON_MOTION_MASK | \
+#define SCREENATOR_MOUSE_EVENTS ( GDK_POINTER_MOTION_MASK | \
+                              GDK_BUTTON_MOTION_MASK | \
                               GDK_BUTTON_PRESS_MASK | \
                               GDK_BUTTON_RELEASE_MASK | \
                               GDK_SCROLL_MASK )
@@ -185,7 +186,10 @@ typedef enum
   SCREENATOR_STAR_HANDLE_INNER,
   SCREENATOR_STAR_HANDLE_ROTATION,
   SCREENATOR_STAR_HANDLE_POINTS,
-  SCREENATOR_STAR_HANDLE_CENTRE
+  SCREENATOR_STAR_HANDLE_CENTRE,
+  /* Not a visible handle: the drag that sets the radius and rotation from a
+   * newly placed centre. */
+  SCREENATOR_STAR_HANDLE_PLACEMENT
 } ScreenatorStarHandle;
 
 /* The triangle tool keeps three editable vertices.  Every vertex has its own
@@ -369,6 +373,12 @@ typedef struct
   gint                    triangle_press_x;
   gint                    triangle_press_y;
   GdkPoint                triangle_press_v[3];
+  /* How many vertices have been placed by clicking.  While this is below
+   * three, the next click places a vertex instead of grabbing a handle. */
+  guint                   triangle_vertices;
+  /* Time of the click that placed the third vertex, so the double-click event
+   * that can follow it does not commit the triangle immediately. */
+  guint32                 triangle_placed_time;
 
   /* Line and arrow tools: both end points stay editable until the shape is
    * committed. */
@@ -696,7 +706,7 @@ void star_get_bounds (const ScreenatorStar *star, gint pad,
 void star_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
 void star_finish_all (ScreenatorData *data);
 void draw_triangle (ScreenatorData *data, cairo_t *cr,
-		    const ScreenatorTriangle *triangle);
+		    const ScreenatorTriangle *triangle, guint vertices);
 void triangle_get_bounds (const ScreenatorTriangle *triangle, gint pad,
 			  GdkRectangle *bounds);
 void triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);

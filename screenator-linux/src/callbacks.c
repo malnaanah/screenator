@@ -336,7 +336,8 @@ static void spline_draw_handles (ScreenatorData *data, cairo_t *cr,
 static void star_draw_handles (ScreenatorData *data, cairo_t *cr,
 			       const ScreenatorStar *star);
 static void triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
-				   const ScreenatorTriangle *triangle);
+				   const ScreenatorTriangle *triangle,
+				   guint vertices);
 static void frame_draw_handles (ScreenatorData *data, cairo_t *cr,
 				const ScreenatorFrameShape *shape);
 static void frame_invalidate (ScreenatorData *data,
@@ -493,8 +494,10 @@ gboolean on_expose (GtkWidget *widget,
       else if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE &&
 	       devdata->triangle_active)
 	{
-	  draw_triangle (data, cr, &devdata->triangle);
-	  triangle_draw_handles (data, cr, &devdata->triangle);
+	  draw_triangle (data, cr, &devdata->triangle,
+			 devdata->triangle_vertices);
+	  triangle_draw_handles (data, cr, &devdata->triangle,
+				 devdata->triangle_vertices);
 	}
       else if (devdata->line_active)
 	{
@@ -691,7 +694,6 @@ void on_monitors_changed ( GdkScreen *screen,
   screenator_position_icon (data);
 
   setup_input_devices(data);
-
 
   gtk_widget_show_all (data->win);
 
@@ -2159,21 +2161,19 @@ spline_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
 }
 
 
-/* The Polygon tool places a star shape with a single click and keeps it
- * editable until it is committed.  Four handles control the number of sides,
- * the radius, the rotation and the inner radius, which turns the star into a
- * regular polygon as it grows.  Clicking empty space commits the current shape
- * and places a new one; a double-click or a right-click commits it and stays
- * in the tool. */
+/* The Polygon tool uses the first click as the shape's centre; dragging away
+ * from it sets the radius and rotation.  The star stays editable until it is
+ * committed.  Four handles control the number of sides, the radius, the
+ * rotation and the inner radius, which turns the star into a regular polygon
+ * as it grows.  Clicking empty space commits the current shape and places a
+ * new one; a double-click or a right-click commits it and stays in the
+ * tool. */
 
 #define STAR_DEFAULT_RADIUS 64.0
 #define STAR_DEFAULT_INNER  0.45
 #define STAR_MIN_RADIUS     8.0
 #define STAR_POINTS_HANDLE_OFFSET 28.0
 #define POLYGON_SIDES_PER_PIXEL 12.0
-
-/* Radius of the equilateral triangle placed by a single click. */
-#define TRIANGLE_DEFAULT_RADIUS 64.0
 
 /* Position of one star handle in screen coordinates.  The points handle sits
  * outside the star so it never covers the shape; the rotation handle sits at
@@ -2301,28 +2301,47 @@ star_contains (const ScreenatorStar *star, gint x, gint y)
   return inside;
 }
 
-/* Start a new shape centred on the click.  A default radius makes a single
- * click useful; the handles refine it afterwards. */
+/* Start a new shape at the click, which becomes its centre.  Dragging away
+ * from that centre sets the radius and rotation; a plain click leaves the
+ * default radius. */
 static void
 star_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
 	    gint x, gint y)
 {
   devdata->star.cx = x;
   devdata->star.cy = y;
-  devdata->star.radius = STAR_DEFAULT_RADIUS;
+  devdata->star.radius = 0.0;
   devdata->star.inner = STAR_DEFAULT_INNER;
   devdata->star.rotation = -G_PI / 2.0;
   devdata->star.points = 5;
 
   devdata->star_active = TRUE;
 
-  /* Pressing and dragging on the freshly placed star moves it, so it can be
-   * positioned without a separate centre handle. */
-  devdata->star_drag = SCREENATOR_STAR_HANDLE_CENTRE;
+  devdata->star_drag = SCREENATOR_STAR_HANDLE_PLACEMENT;
   devdata->star_press_x = x;
   devdata->star_press_y = y;
   devdata->star_press_cx = x;
   devdata->star_press_cy = y;
+
+  star_invalidate (data, &devdata->star);
+}
+
+/* Finish the initial radius/rotation drag.  A click that never moved keeps a
+ * useful default-size shape, while a real drag keeps the size and angle that
+ * the pointer selected. */
+static void
+star_finish_placement (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  if (devdata->star_drag != SCREENATOR_STAR_HANDLE_PLACEMENT)
+    return;
+
+  devdata->star_drag = SCREENATOR_STAR_HANDLE_NONE;
+
+  if (devdata->star.radius < STAR_MIN_RADIUS)
+    {
+      devdata->star.radius = STAR_DEFAULT_RADIUS;
+      devdata->star.rotation = -G_PI / 2.0;
+    }
 
   star_invalidate (data, &devdata->star);
 }
@@ -2375,6 +2394,18 @@ star_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
 
   switch (devdata->star_drag)
     {
+    case SCREENATOR_STAR_HANDLE_PLACEMENT:
+      /* The first drag sets both the radius and the rotation around the
+       * clicked centre. */
+      star->radius = CLAMP (dist, 0.0, 100000.0);
+      if (dist > 0.01)
+	{
+	  star->rotation = atan2 (dy, dx);
+
+	  if (snap)
+	    star->rotation = snap_common_rotation (star->rotation);
+	}
+      break;
     case SCREENATOR_STAR_HANDLE_RADIUS:
       star->radius = CLAMP (dist, STAR_MIN_RADIUS, 100000.0);
       break;
@@ -2589,34 +2620,61 @@ triangle_contains (const ScreenatorTriangle *triangle, gint x, gint y)
   return inside;
 }
 
-/* Start a new equilateral triangle centred on the click.  The three vertex
- * handles refine it afterwards. */
+/* Start a new triangle by placing its first vertex at the click.  The next
+ * two clicks place the other vertices; until then, handles are not active. */
 static void
 triangle_begin (ScreenatorData *data, ScreenatorDeviceData *devdata,
 		gint x, gint y)
 {
-  static const gdouble angles[3] =
-    { -G_PI / 2.0, G_PI / 6.0, 5.0 * G_PI / 6.0 };
   gint i;
 
   for (i = 0; i < 3; i++)
     {
-      devdata->triangle.v[i].x =
-	(gint) round (x + TRIANGLE_DEFAULT_RADIUS * cos (angles[i]));
-      devdata->triangle.v[i].y =
-	(gint) round (y + TRIANGLE_DEFAULT_RADIUS * sin (angles[i]));
+      devdata->triangle.v[i].x = x;
+      devdata->triangle.v[i].y = y;
       devdata->triangle_press_v[i] = devdata->triangle.v[i];
     }
 
   devdata->triangle_active = TRUE;
-
-  /* Pressing and dragging on the fresh triangle moves it, so it can be
-   * positioned without a separate centre handle. */
-  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_CENTRE;
+  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_NONE;
+  devdata->triangle_vertices = 1;
+  devdata->triangle_placed_time = 0;
   devdata->triangle_press_x = x;
   devdata->triangle_press_y = y;
 
   triangle_invalidate (data, &devdata->triangle);
+}
+
+/* Place the next vertex at the click.  Returns TRUE while the triangle is
+ * still being placed. */
+static gboolean
+triangle_place_next_vertex (ScreenatorData *data,
+			    ScreenatorDeviceData *devdata,
+			    gint x, gint y, guint32 time)
+{
+  if (!devdata->triangle_active || devdata->triangle_vertices >= 3)
+    return FALSE;
+
+  triangle_invalidate (data, &devdata->triangle);
+
+  if (devdata->triangle_vertices == 1)
+    {
+      devdata->triangle.v[1].x = x;
+      devdata->triangle.v[1].y = y;
+      devdata->triangle.v[2].x = x;
+      devdata->triangle.v[2].y = y;
+      devdata->triangle_vertices = 2;
+    }
+  else
+    {
+      devdata->triangle.v[2].x = x;
+      devdata->triangle.v[2].y = y;
+      devdata->triangle_vertices = 3;
+      devdata->triangle_placed_time = time;
+    }
+
+  triangle_invalidate (data, &devdata->triangle);
+  return TRUE;
 }
 
 /* Interior angle at P between the rays to A and B, in degrees.  A vertex that
@@ -2762,14 +2820,18 @@ triangle_move_handle (ScreenatorData *data, ScreenatorDeviceData *devdata,
   triangle_invalidate (data, triangle);
 }
 
-/* Draw the three vertex handles of the editable triangle. */
+/* Draw the handles of the triangle.  As on the Windows version, handles
+ * appear only after the third vertex has been placed. */
 static void
 triangle_draw_handles (ScreenatorData *data, cairo_t *cr,
-		       const ScreenatorTriangle *triangle)
+		       const ScreenatorTriangle *triangle, guint vertices)
 {
-  gint i;
+  guint i;
 
   (void) data;
+
+  if (vertices < 3)
+    return;
 
   for (i = 0; i < 3; i++)
     star_draw_grip (cr, triangle->v[i].x, triangle->v[i].y);
@@ -3885,20 +3947,70 @@ screenator_exit_tool (ScreenatorData *data)
   return handled;
 }
 
+/* Some XWayland setups report a pen as a generic pointer with a mouse-like
+ * source.  The device tool and the device name still identify it. */
+static gboolean
+device_name_looks_like_stylus (GdkDevice *device)
+{
+  const gchar *name;
+  gchar *lower;
+  gboolean match;
+
+  if (!device)
+    return FALSE;
+
+  name = gdk_device_get_name (device);
+  if (!name)
+    return FALSE;
+
+  lower = g_ascii_strdown (name, -1);
+  match = g_strstr_len (lower, -1, "pen") != NULL ||
+	  g_strstr_len (lower, -1, "stylus") != NULL ||
+	  g_strstr_len (lower, -1, "tablet") != NULL ||
+	  g_strstr_len (lower, -1, "wacom") != NULL ||
+	  g_strstr_len (lower, -1, "eraser") != NULL ||
+	  g_strstr_len (lower, -1, "huion") != NULL ||
+	  g_strstr_len (lower, -1, "xp-pen") != NULL ||
+	  g_strstr_len (lower, -1, "xp pen") != NULL;
+  g_free (lower);
+  return match;
+}
+
 /* TRUE when the event comes from a pen or the eraser end of a pen rather
  * than a mouse or touchpad. */
 static gboolean
 event_source_is_stylus (const GdkEvent *event)
 {
   GdkDevice *source = gdk_event_get_source_device (event);
+  GdkDevice *device = gdk_event_get_device (event);
+  GdkDeviceTool *tool = gdk_event_get_device_tool (event);
   GdkInputSource input_source;
 
-  if (!source)
-    return FALSE;
+  if (tool)
+    {
+      switch (gdk_device_tool_get_tool_type (tool))
+	{
+	case GDK_DEVICE_TOOL_TYPE_PEN:
+	case GDK_DEVICE_TOOL_TYPE_ERASER:
+	case GDK_DEVICE_TOOL_TYPE_BRUSH:
+	case GDK_DEVICE_TOOL_TYPE_PENCIL:
+	case GDK_DEVICE_TOOL_TYPE_AIRBRUSH:
+	  return TRUE;
+	default:
+	  break;
+	}
+    }
 
-  input_source = gdk_device_get_source (source);
-  return input_source == GDK_SOURCE_PEN ||
-	 input_source == GDK_SOURCE_ERASER;
+  if (source)
+    {
+      input_source = gdk_device_get_source (source);
+      if (input_source == GDK_SOURCE_PEN ||
+	  input_source == GDK_SOURCE_ERASER)
+	return TRUE;
+    }
+
+  return device_name_looks_like_stylus (source) ||
+	 device_name_looks_like_stylus (device);
 }
 
 typedef struct
@@ -4208,7 +4320,7 @@ static void
 show_marker_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
 		  gint x, gint y)
 {
-  static const guint percents[] = { 30, 40, 50, 60, 70 };
+  static const guint percents[] = { 10, 20, 30, 40, 50, 60, 70, 80, 90 };
   MarkerMenu *ctx;
   GtkWidget *menu, *heading, *item, *first = NULL;
   GtkWidget *items[G_N_ELEMENTS (percents)];
@@ -4634,9 +4746,24 @@ gboolean on_buttonpress (GtkWidget *win,
 	    {
 	      ScreenatorTriangleHandle handle;
 
-	      if (ev->type == GDK_2BUTTON_PRESS)
+	      if (ev->type == GDK_2BUTTON_PRESS ||
+		  ev->type == GDK_3BUTTON_PRESS)
 		{
-		  triangle_finish (data, devdata);
+		  /* The clicks that place the vertices can also look like a
+		   * double click.  Only commit a finished triangle that was
+		   * not placed by this same click sequence. */
+		  if (devdata->triangle_active &&
+		      devdata->triangle_vertices >= 3 &&
+		      (guint32) (ev->time - devdata->triangle_placed_time) > 300)
+		    triangle_finish (data, devdata);
+		  return TRUE;
+		}
+
+	      if (devdata->triangle_active &&
+		  devdata->triangle_vertices < 3)
+		{
+		  triangle_place_next_vertex (data, devdata, ev->x, ev->y,
+					      ev->time);
 		  return TRUE;
 		}
 
@@ -4878,8 +5005,9 @@ gboolean on_motion (GtkWidget *win,
   if(data->debug)
       g_printerr("DEBUG: Device '%s': motion to (x,y)=(%.2f : %.2f)\n", gdk_device_get_name(ev->device), ev->x, ev->y);
 
-  /* Keep the eraser selected for as long as the first side button is held. */
-  if (!devdata->stylus_eraser_active &&
+  /* Keep the eraser selected for as long as the first side button is held,
+   * and keep the middle-button eraser for as long as that button is held. */
+  if (!devdata->stylus_eraser_active && !devdata->saved_context &&
       (ev->state != devdata->state ||
        devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev)))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
@@ -4916,6 +5044,41 @@ gboolean on_motion (GtkWidget *win,
 
       if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE)
 	{
+	  /* After the first click, the first edge follows the pointer; after
+	   * the second click, the second edge follows it until the third
+	   * click fixes the last vertex. */
+	  if (devdata->triangle_active &&
+	      devdata->triangle_vertices == 1)
+	    {
+	      if (devdata->triangle.v[1].x != ev->x ||
+		  devdata->triangle.v[1].y != ev->y ||
+		  devdata->triangle.v[2].x != ev->x ||
+		  devdata->triangle.v[2].y != ev->y)
+		{
+		  triangle_invalidate (data, &devdata->triangle);
+		  devdata->triangle.v[1].x = ev->x;
+		  devdata->triangle.v[1].y = ev->y;
+		  devdata->triangle.v[2].x = ev->x;
+		  devdata->triangle.v[2].y = ev->y;
+		  triangle_invalidate (data, &devdata->triangle);
+		}
+	      return TRUE;
+	    }
+
+	  if (devdata->triangle_active &&
+	      devdata->triangle_vertices == 2)
+	    {
+	      if (devdata->triangle.v[2].x != ev->x ||
+		  devdata->triangle.v[2].y != ev->y)
+		{
+		  triangle_invalidate (data, &devdata->triangle);
+		  devdata->triangle.v[2].x = ev->x;
+		  devdata->triangle.v[2].y = ev->y;
+		  triangle_invalidate (data, &devdata->triangle);
+		}
+	      return TRUE;
+	    }
+
 	  if (devdata->triangle_active &&
 	      devdata->triangle_drag != SCREENATOR_TRIANGLE_HANDLE_NONE)
 	    triangle_move_handle (data, devdata, ev->x, ev->y,
@@ -5017,6 +5180,20 @@ gboolean on_motion (GtkWidget *win,
 	  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
 				      &dirty, 0);
 	}
+      return TRUE;
+    }
+
+  /* Pointer motion is now also delivered while no button is held, so the
+   * triangle and other shape previews can follow the pointer after a click.
+   * Outside those previews, hovering must never paint. */
+  if ((ev->state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK |
+		    GDK_BUTTON3_MASK | GDK_BUTTON4_MASK |
+		    GDK_BUTTON5_MASK)) == 0 &&
+      !devdata->stylus_eraser_active)
+    {
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
       return TRUE;
     }
 
@@ -5198,6 +5375,7 @@ gboolean on_buttonrelease (GtkWidget *win,
 	  /* Releasing a handle ends the drag; the star stays editable. */
 	  if (devdata->star_drag != SCREENATOR_STAR_HANDLE_NONE)
 	    {
+	      star_finish_placement (data, devdata);
 	      devdata->star_drag = SCREENATOR_STAR_HANDLE_NONE;
 	      return TRUE;
 	    }
@@ -5228,8 +5406,9 @@ gboolean on_buttonrelease (GtkWidget *win,
 
       if (data->shape_type == SCREENATOR_SHAPE_TRIANGLE)
 	{
-	  /* Releasing a vertex handle ends the drag; the triangle stays
-	   * editable until it is committed. */
+	  /* Releasing a placement drag does not place a point; the line keeps
+	   * following the pointer until the next click.  Releasing a vertex
+	   * handle ends the drag; the triangle stays editable. */
 	  devdata->triangle_drag = SCREENATOR_TRIANGLE_HANDLE_NONE;
 	  return TRUE;
 	}
@@ -7022,11 +7201,36 @@ static gboolean on_icon_draw (GtkWidget *widget,
 static const guint thickness_values[THICKNESS_SECTORS] =
   { 1, 2, 3, 4, 5, 6, 12, 24, 48 };
 
+/* The rings grow with the largest icon sizes so they stay readable: twice the
+ * original width at 128x128 and three times at 256x256. */
+static gdouble
+settings_indicator_ring_scale (ScreenatorData *data)
+{
+  if (data->icon_size >= 256)
+    return 3.0;
+  if (data->icon_size >= 128)
+    return 2.0;
+  return 1.0;
+}
+
+static gdouble
+settings_indicator_thickness_width (ScreenatorData *data)
+{
+  return THICKNESS_RING_WIDTH * settings_indicator_ring_scale (data);
+}
+
+static gdouble
+settings_indicator_outer_width (ScreenatorData *data)
+{
+  return OUTER_RING_WIDTH * settings_indicator_ring_scale (data);
+}
+
 static gint
 settings_indicator_size (ScreenatorData *data)
 {
   return MAX (1, (gint) data->icon_size +
-	      2 * (gint) (THICKNESS_RING_WIDTH + OUTER_RING_WIDTH) + 4);
+	      2 * (gint) (settings_indicator_thickness_width (data) +
+			  settings_indicator_outer_width (data)) + 4);
 }
 
 static gdouble
@@ -7123,10 +7327,11 @@ thickness_sector_count (ScreenatorData *data)
 
 /* Draw the indicator: a white thickness ring around the icon, made of one
  * sector per menu thickness and filled with yellow up to the selected one,
- * and an outer five pixel ring whose upper half is the line colour and whose
- * lower half is the fill colour (or twelve black and white radial stripes).
- * With mask TRUE everything is opaque white, so the same geometry can be used
- * for the window shape and its input region. */
+ * and an outer ring whose upper half is the line colour and whose lower half
+ * is the fill colour (or twelve black and white radial stripes).  Both rings
+ * grow with the largest icon sizes.  With mask TRUE everything is opaque
+ * white, so the same geometry can be used for the window shape and its input
+ * region. */
 static void
 draw_settings_indicator (ScreenatorData *data, cairo_t *cr,
 			 gdouble width, gdouble height, gboolean mask)
@@ -7137,8 +7342,8 @@ draw_settings_indicator (ScreenatorData *data, cairo_t *cr,
   gdouble cx = width / 2.0;
   gdouble cy = height / 2.0;
   gdouble r0 = settings_indicator_inner_radius (data);
-  gdouble r1 = r0 + THICKNESS_RING_WIDTH;
-  gdouble r2 = r1 + OUTER_RING_WIDTH;
+  gdouble r1 = r0 + settings_indicator_thickness_width (data);
+  gdouble r2 = r1 + settings_indicator_outer_width (data);
   gdouble step = 2.0 * G_PI / THICKNESS_SECTORS;
   guint filled = thickness_sector_count (data);
   gint i;
@@ -7844,8 +8049,10 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const gdouble opacities[] = { 1.0, 0.75, 0.5, 0.25 };
-    static const gchar * const labels[] = { "100%", "75%", "50%", "25%" };
+    static const gdouble opacities[] =
+      { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9 };
+    static const gchar * const labels[] =
+      { "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%" };
     GtkWidget *items[G_N_ELEMENTS (opacities)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -7888,8 +8095,9 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint sizes[] = { 16, 32, 48, 64 };
-    static const gchar * const labels[] = { "16x16", "32x32", "48x48", "64x64" };
+    static const guint sizes[] = { 16, 32, 48, 64, 128, 256 };
+    static const gchar * const labels[] =
+      { "16x16", "32x32", "48x48", "64x64", "128x128", "256x256" };
     GtkWidget *items[G_N_ELEMENTS (sizes)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -8762,9 +8970,58 @@ hints_bullet (const gchar *color, const gchar *markup)
   gtk_label_set_markup (GTK_LABEL (label), full);
   g_free (full);
   gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_max_width_chars (GTK_LABEL (label), 48);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 90);
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   return label;
+}
+
+/* Make the hints scrollbar easy to see: a solid trough and a wide, coloured
+ * slider instead of the thin overlay indicator. */
+static void
+install_hints_scroll_style (GtkWidget *scroll)
+{
+  static GtkCssProvider *provider = NULL;
+  GtkStyleContext *context;
+
+  if (!provider)
+    {
+      provider = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (provider,
+	".hints-scroll scrollbar { background-color: #ececec; }\n"
+	".hints-scroll scrollbar trough { min-width: 18px; "
+	"background-color: #d8d8d8; border: 1px solid #a0a0a0; "
+	"border-radius: 9px; }\n"
+	".hints-scroll scrollbar slider { min-width: 14px; "
+	"min-height: 48px; background-color: #3d6fa5; "
+	"border: 1px solid #244b73; border-radius: 7px; }\n"
+	".hints-scroll scrollbar slider:hover { background-color: #2f5b8a; }\n"
+	".hints-scroll scrollbar slider:active { background-color: #1f4063; }\n",
+	-1, NULL);
+      gtk_style_context_add_provider_for_screen (
+	gtk_widget_get_screen (scroll),
+	GTK_STYLE_PROVIDER (provider),
+	GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
+  context = gtk_widget_get_style_context (scroll);
+  gtk_style_context_add_class (context, "hints-scroll");
+}
+
+/* Opening the hints must always show their beginning rather than a scrolled
+ * position. */
+static gboolean
+hints_scroll_to_top (gpointer user_data)
+{
+  GtkWidget *scroll = user_data;
+  GtkAdjustment *adjustment =
+    gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (scroll));
+
+  if (adjustment)
+    gtk_adjustment_set_value (adjustment,
+			      gtk_adjustment_get_lower (adjustment));
+
+  g_object_unref (scroll);
+  return G_SOURCE_REMOVE;
 }
 
 /* The single, colourful hints dialog.  It replaces the per-tool messages and
@@ -8772,8 +9029,8 @@ hints_bullet (const gchar *color, const gchar *markup)
 static void
 show_hints_dialog (ScreenatorData *data, gboolean startup)
 {
-  GtkWidget *dialog, *content, *box, *columns, *left, *right;
-  GtkWidget *separator, *label, *check, *scroll = NULL;
+  GtkWidget *dialog, *content, *box, *column;
+  GtkWidget *label, *check, *scroll;
   gboolean was_grabbed;
   gboolean changed = FALSE;
   gboolean restore_window = FALSE;
@@ -8820,37 +9077,25 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
   gtk_container_set_border_width (GTK_CONTAINER (box), 14);
 
-  if (startup)
-    {
-      GdkRectangle area;
-      gint monitor, width, height;
+  scroll = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+				  GTK_POLICY_NEVER,
+				  GTK_POLICY_ALWAYS);
+  gtk_scrolled_window_set_overlay_scrolling (GTK_SCROLLED_WINDOW (scroll),
+					     FALSE);
+  install_hints_scroll_style (scroll);
+  gtk_widget_set_hexpand (scroll, TRUE);
+  gtk_widget_set_vexpand (scroll, TRUE);
+  gtk_widget_set_hexpand (box, TRUE);
+  gtk_widget_set_vexpand (box, TRUE);
 
-      monitor = gdk_screen_get_monitor_at_point (data->screen,
-						 data->width / 2,
-						 data->height / 2);
-      gdk_screen_get_monitor_workarea (data->screen, monitor, &area);
-      width = MIN (745, MAX (320, area.width - 40));
-      height = MIN (602, MAX (240, area.height - 80));
+  /* A non-resizable window sizes itself from its content, so request the
+   * intended size explicitly. */
+  gtk_widget_set_size_request (scroll, 750, 550);
+  gtk_window_set_default_size (GTK_WINDOW (dialog), 750, 550);
 
-      scroll = gtk_scrolled_window_new (NULL, NULL);
-      gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
-				      GTK_POLICY_AUTOMATIC,
-				      GTK_POLICY_AUTOMATIC);
-      gtk_widget_set_hexpand (scroll, TRUE);
-      gtk_widget_set_vexpand (scroll, TRUE);
-      gtk_widget_set_hexpand (box, TRUE);
-      gtk_widget_set_vexpand (box, TRUE);
-
-      /* A non-resizable window sizes itself from its content, so request the
-       * intended size explicitly. */
-      gtk_widget_set_size_request (scroll, width, height);
-      gtk_window_set_default_size (GTK_WINDOW (dialog), width, height);
-
-      gtk_container_add (GTK_CONTAINER (content), scroll);
-      gtk_container_add (GTK_CONTAINER (scroll), box);
-    }
-  else
-    gtk_container_add (GTK_CONTAINER (content), box);
+  gtk_container_add (GTK_CONTAINER (content), scroll);
+  gtk_container_add (GTK_CONTAINER (scroll), box);
 
   label = gtk_label_new (NULL);
   gtk_label_set_markup (GTK_LABEL (label),
@@ -8861,132 +9106,174 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
 
-  /* Two columns keep the dialog wide and short instead of very tall. */
-  columns = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 22);
-  gtk_box_pack_start (GTK_BOX (box), columns, TRUE, TRUE, 4);
+  /* One column inside the scrollable area. */
+  column = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+  gtk_box_pack_start (GTK_BOX (box), column, FALSE, FALSE, 4);
 
-  left = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
-  gtk_box_pack_start (GTK_BOX (columns), left, TRUE, TRUE, 0);
-
-  separator = gtk_separator_new (GTK_ORIENTATION_VERTICAL);
-  gtk_box_pack_start (GTK_BOX (columns), separator, FALSE, TRUE, 0);
-
-  right = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
-  gtk_box_pack_start (GTK_BOX (columns), right, TRUE, TRUE, 0);
-
-  /* Left column: mouse and stylus. */
-  gtk_box_pack_start (GTK_BOX (left),
+  /* Mouse and stylus. */
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#c0392b", "Mouse"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
     "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
     "opens the Scroll Mode menu and chooses what the <b>mouse wheel</b> "
     "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
     "Left click and drag to draw with the selected tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
     "Middle click and drag to erase."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
     "With the Eraser tool, the wheel changes the eraser size."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#c0392b",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
     "Short right click finishes the shape or exits the tool."),
     FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (left),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#8e44ad", "Stylus"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
+    "<span foreground=\"#c0392b\" weight=\"bold\">IMPORTANT:</span> In your "
+    "stylus configuration, set button 1 (near the tip) to <b>Middle Click</b> "
+    "and button 2 to <b>Right Click</b>."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
     "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
     "1</span> activates the eraser while it is held, even while "
     "hovering."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
     "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
     "2</span> opens the Scroll Mode menu and chooses what scrolling "
     "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
     "Short press side button 1: step through the selected "
     "<b>Color</b> or <b>Thickness</b>, or the eraser size with the "
     "Eraser tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#8e44ad",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
     "Short click side button 2: finish the shape or exit the tool. With "
     "the Eraser tool, a long press does not open the menu."),
     FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (left),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#d35400", "Global Shortcut"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
     "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
     "hides the floating icon at any time."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
     "<span foreground=\"#d35400\" weight=\"bold\">F8</span> selects the "
     "Pen, <span foreground=\"#d35400\" weight=\"bold\">F6</span> the "
     "Arrow and <span foreground=\"#d35400\" weight=\"bold\">F7</span> the "
     "Text tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (left), hints_bullet ("#d35400",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
     "<span foreground=\"#d35400\" weight=\"bold\">F10</span> opens the "
     "centered quick tool menu with all tools."), FALSE, FALSE, 0);
 
-  /* Right column: shape editing, tool tips and shortcuts. */
-  gtk_box_pack_start (GTK_BOX (right),
+  /* Shape editing, tool tips and shortcuts. */
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#2980b9", "Shape Editing"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "Hold <b>Ctrl</b> while rotating a shape to snap to 0, 30, 45, 60, "
     "90 degrees, and so on."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "Spline: hold <b>Ctrl</b> while dragging a handle to move each control "
     "point separately."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
+    "Polygon: the first click sets the centre; drag to set the radius and "
+    "rotation."), FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
+    "Triangle: each click places the next vertex; lines follow the pointer, "
+    "even while dragging. Dragging does not set a point; the next click does."),
+    FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (right),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#e67e22", "Text Tool"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#e67e22",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#e67e22",
     "After typing, press <b>Enter</b> to accept the text and re-enable the "
     "mouse."), FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (right),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#b9770e", "Marker Tool"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#b9770e",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#b9770e",
     "The wheel or stylus side button 1 changes its color."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#b9770e",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#b9770e",
     "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
     "or <span foreground=\"#d35400\" weight=\"bold\">Long press side "
-    "button 2</span> opens the Marker Opacity menu (30%, 40%, 50%, 60% or "
-    "70%)."), FALSE, FALSE, 0);
+    "button 2</span> opens the Marker Opacity menu (10% to 90% in steps of "
+    "10%)."), FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (right),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#16a085", "Drawing Mode Shortcuts"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#16a085",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#16a085",
     "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#16a085",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#16a085",
     "<b>Escape</b> finishes the shape or exits the tool."),
     FALSE, FALSE, 0);
 
-  gtk_box_pack_start (GTK_BOX (right),
+  gtk_box_pack_start (GTK_BOX (column),
 		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
 		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
     FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "<b>Ctrl+T</b> shows or hides the drawings."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "<b>Ctrl+Q</b> exits the screen paper."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (right), hints_bullet ("#2980b9",
+  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
     "<b>Alt+F4</b> quits."), FALSE, FALSE, 0);
 
   check = gtk_check_button_new_with_label ("Never show hints again");
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), data->hide_hints);
-  gtk_widget_set_margin_top (check, 10);
-  gtk_box_pack_start (GTK_BOX (box), check, FALSE, FALSE, 0);
+  {
+    GtkWidget *action_area;
+    GtkWidget *close_button;
+
+    /* A check button must not be added with gtk_dialog_add_action_widget(),
+     * because that would close the dialog when it is toggled.  Pack it into
+     * the action area directly, then put the check at the left edge and the
+     * Close button at the right edge. */
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    action_area = gtk_dialog_get_action_area (GTK_DIALOG (dialog));
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    close_button =
+      gtk_dialog_get_widget_for_response (GTK_DIALOG (dialog),
+					  GTK_RESPONSE_CLOSE);
+
+    gtk_box_pack_start (GTK_BOX (action_area), check, FALSE, FALSE, 0);
+    gtk_box_reorder_child (GTK_BOX (action_area), check, 0);
+    if (close_button)
+      gtk_box_reorder_child (GTK_BOX (action_area), close_button, 1);
+
+    gtk_button_box_set_layout (GTK_BUTTON_BOX (action_area),
+			       GTK_BUTTONBOX_EDGE);
+  }
 
   if (startup)
     data->hints_dialog = dialog;
 
   gtk_widget_show_all (dialog);
+  {
+    GtkAdjustment *adjustment =
+      gtk_scrolled_window_get_vadjustment (GTK_SCROLLED_WINDOW (scroll));
+    GtkWidget *close_button =
+      gtk_dialog_get_widget_for_response (GTK_DIALOG (dialog),
+					  GTK_RESPONSE_CLOSE);
+
+    /* Keep the focus outside the scroll area. */
+    if (close_button)
+      gtk_widget_grab_focus (close_button);
+
+    if (adjustment)
+      gtk_adjustment_set_value (adjustment,
+				gtk_adjustment_get_lower (adjustment));
+
+    /* Focus is assigned after the dialog is shown; put the viewport back at
+     * the top afterwards. */
+    g_timeout_add (50, hints_scroll_to_top, g_object_ref (scroll));
+  }
   gtk_dialog_run (GTK_DIALOG (dialog));
 
   if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (check)) !=

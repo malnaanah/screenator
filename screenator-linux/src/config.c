@@ -555,7 +555,7 @@ void read_keyfile(ScreenatorData *data)
 	    gdouble opacity =
 		g_key_file_get_double (key_file, "Drawing", "MarkerOpacity", NULL);
 
-	    if (opacity >= 0.30 && opacity <= 0.70)
+	    if (opacity >= 0.10 && opacity <= 0.90)
 		data->marker_opacity = opacity;
 	}
 

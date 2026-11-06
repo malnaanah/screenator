@@ -16,6 +16,7 @@ void release_grab (ScreenatorData *data, GdkDevice *dev);
 void acquire_grab (ScreenatorData *data, GdkDevice *dev);
 void toggle_grab  (ScreenatorData *data, GdkDevice *dev);
 gboolean screenator_any_grabbed (ScreenatorData *data);
+gboolean screenator_is_wayland_session (void);
 gint snoop_key_press (GtkWidget *grab_widget, GdkEventKey *event, gpointer func_data);
 
 #endif

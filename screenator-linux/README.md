@@ -24,14 +24,18 @@ and you can keep using your applications while it is visible.
 - **Floating Icon Position...** in Settings opens a dialog with Top Right
   (default), Top Left, Bottom Right and Bottom Left. The chosen corner is
   saved and restored on the next start.
+- **Floating Icon Size** offers 16x16, 32x32, 48x48, 64x64, 128x128 and
+  256x256; the default is 48x48. The settings ring doubles in width at
+  128x128 and triples at 256x256.
+- The **Opacity** menu offers 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80% and 90%.
 - Marker draws a translucent highlighter stroke with a fixed 32 px width,
   using the current line colour. Its opacity is 40% by default and is
   independent of the global pen opacity. Long right click, or a long press of
-  the stylus second side button, opens the **Marker Opacity** menu with 30%,
-  40%, 50%, 60% and 70%; the choice is remembered across restarts. Selecting
-  the Marker switches the line colour to yellow; leaving the Marker or
-  exiting painting restores the colour that was active before. The mouse wheel
-  or the stylus first side button changes its colour.
+  the stylus second side button, opens the **Marker Opacity** menu with 10%,
+  20%, 30%, 40%, 50%, 60%, 70%, 80% and 90%; the choice is remembered across
+  restarts. Selecting the Marker switches the line colour to yellow; leaving
+  the Marker or exiting painting restores the colour that was active before.
+  The mouse wheel or the stylus first side button changes its colour.
 - Tool Activation Delay can delay a newly selected tool by 0, 1, 2, 3, 4, 5,
   7, 9 or 11 seconds. The delay is always 0 when the application starts; it is
   not remembered across restarts. During the delay the previously selected
@@ -61,7 +65,9 @@ and you can keep using your applications while it is visible.
   handle, and dragging the line itself moves the whole shape. Clicking outside,
   double-clicking or right-clicking commits it. The ellipse, rounded rectangle,
   polygon and triangle can optionally be filled using the Shapes Fill Color
-  submenu; the default is no fill and green is its first colour. Line Color
+  submenu; the default is no fill and green is its first colour. Their outlines
+  are drawn outside the shape border, so a thick stroke never covers the
+  inside of the shape. Line Color
   and Shapes Fill Color also have a Custom... entry. It opens a colour
   chooser; the custom colour starts as magenta and the last choice is
   remembered.
@@ -72,22 +78,27 @@ and you can keep using your applications while it is visible.
   Drag a square node to move it. Click the last node again, double-click or
   right-click to finish the curve. A single node does not create an
   annotation.
-- Polygon is placed with a single click and stays editable until it is
-  committed. Four handles shape it: the square handle controls the number of
-  sides (3 to 16); pressing it resets the shape to 3 sides. Moving away from
-  the handle in any direction adds sides, and moving back towards it removes
-  them again, down to 3 at the handle. One round handle sets the radius, one
-  sets the rotation, and one moves the inner vertices outwards until the shape
-  becomes a regular polygon; that handle snaps to the flat edge when it gets
-  close, so a regular polygon is easy to hit. Drag inside the shape to move it.
-  Clicking empty space commits it and places the next one; double-click or
-  right-click commits it.
-- Triangle is placed with a single click and stays editable until it is
-  committed. Each of its three vertices has its own round handle, so the shape
-  can be stretched and skewed freely; holding `Ctrl` while dragging a vertex
-  snaps the angle at that vertex to 30, 45, 60 or 90 degrees. Drag inside the
-  triangle to move it. Clicking empty space commits it and places the next one,
-  and a double-click or right-click commits it.
+- Polygon: the first click sets its centre, and dragging sets the radius and
+  rotation around that centre; a plain click keeps a default size. The shape
+  stays editable until it is committed. Four handles shape it: the square
+  handle controls the number of sides (3 to 16); pressing it resets the shape
+  to 3 sides. Moving away from the handle in any direction adds sides, and
+  moving back towards it removes them again, down to 3 at the handle. One
+  round handle sets the radius, one sets the rotation, and one moves the inner
+  vertices outwards until the shape becomes a regular polygon; that handle
+  snaps to the flat edge when it gets close, so a regular polygon is easy to
+  hit. Drag inside the shape to move it. Clicking empty space commits it and
+  places the next one; double-click or right-click commits it.
+- Triangle: each click places the next vertex. A line follows the pointer after
+  the first click, and the remaining sides follow after the second click.
+  Dragging does not place a point; the line keeps following the pointer until
+  the next click. The third click fixes the last vertex and closes the
+  triangle. It stays editable until it is committed: each of
+  its three vertices has its own round handle, so the shape can be stretched
+  and skewed freely; holding `Ctrl` while dragging a vertex snaps the angle at
+  that vertex to 30, 45, 60 or 90 degrees. Drag inside the triangle to move
+  it. Clicking empty space commits it and places the next one, and a
+  double-click or right-click commits it.
 - The ellipse and rounded rectangle stay editable after the drag. Every placed
   shape has a square size handle on each of its four corners, a round rotation
   handle above it and can be moved by dragging inside it. Rotation is free;
@@ -179,20 +190,21 @@ and you can keep using your applications while it is visible.
   saved paper is not restored. While a paper is active, Ctrl+Z and
   Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper,
   Ctrl+T shows or hides the drawings and Alt+F4 quits.
-- A single, colourful **Hints** dialog appears when Screenator starts. It
-  summarises the common mouse and stylus controls plus Shape Editing tips, the
-  global **F9** shortcut and the Drawing Mode and Screen Paper shortcuts in
+- A single, colourful **Hints** dialog appears when Screenator starts. It is a
+  750x550 scrollable column that summarises the common mouse and stylus
+  controls plus Shape Editing tips, the global **F9** shortcut and the Drawing
+  Mode and Screen Paper shortcuts in
   one place instead of repeating them for every tool, and it emphasises that
   a long right click — or a long press of the stylus second side button —
   opens the **Scroll Mode** menu to choose **Color** or **Thickness** for
-  scrolling. It has a "Never show hints again" option which is remembered
-  across restarts.
+  scrolling. A "Never show hints again" option beside the Close button is
+  remembered across restarts.
   **Show Hints** in the menu opens the dialog again, and Reset Settings keeps
   the choice.
 - Pen, marker, font, eraser, shape and screen paper settings are saved in
   `~/.config/screenator.ini` and restored on the next start, together with the
   floating icon and settings indicator visibility. `Reset Settings` restores red, 6 px, 100%
-  opacity, no shape fill, Arial Bold 24, a 40 px eraser, a 32x32 icon and no
+  opacity, no shape fill, Arial Bold 24, a 60 px eraser, a 48x48 icon and no
   screen paper.
 - `F9` is a global shortcut that shows or hides the floating icon at any
   time. `F8` selects the Pen tool, `F6` the Arrow tool and `F7` the Text
@@ -204,7 +216,9 @@ and you can keep using your applications while it is visible.
   painting mode is active, `Ctrl+Z` undoes and `Ctrl+Shift+Z` redoes, even
   with Caps Lock or Num Lock on, and `Esc` exits the current tool like a
   right click outside a shape.
-- Stylus: the tip draws like the left mouse button, using the selected line
+- Stylus: **IMPORTANT:** In your stylus configuration, set button 1 (near the
+  tip) to **Middle Click** and button 2 to **Right Click**. The tip draws like
+  the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
   first side button has two short-press settings, chosen in the stylus menu:
   **Color** steps the line colour (or the fill colour over the Paint Bucket)
@@ -237,8 +251,9 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_6.0_amd64.deb`
-- `Screenator-6.0-x86_64.AppImage`
+- `screenator_7.0_amd64.deb`
+- `screenator-7.0-1.x86_64.rpm`
+- `Screenator-7.0-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

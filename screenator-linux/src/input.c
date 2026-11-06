@@ -20,6 +20,22 @@
 
 #include "input.h"
 
+/* TRUE when the desktop session is Wayland.  Screenator itself uses XWayland,
+ * but pointer grabs and input shapes behave differently there, so the input
+ * code needs to know the session type.  WAYLAND_DISPLAY is a fallback for
+ * launches where XDG_SESSION_TYPE is missing. */
+gboolean
+screenator_is_wayland_session (void)
+{
+  const gchar *session = g_getenv ("XDG_SESSION_TYPE");
+  const gchar *display;
+
+  if (session && g_ascii_strcasecmp (session, "wayland") == 0)
+    return TRUE;
+
+  display = g_getenv ("WAYLAND_DISPLAY");
+  return display && *display;
+}
 
 static gboolean get_are_all_grabbed(ScreenatorData *data)
 {
@@ -50,6 +66,10 @@ static gboolean get_are_some_grabbed(ScreenatorData *data)
     GHashTableIter it;
     gpointer value;
     ScreenatorDeviceData* devdata = NULL;
+
+    if (!data->devdatatable)
+	return FALSE;
+
     g_hash_table_iter_init (&it, data->devdatatable);
     while (g_hash_table_iter_next(&it, NULL, &value)) {
 	devdata = value;
@@ -362,8 +382,7 @@ void setup_input_devices (ScreenatorData *data)
 	    When running under XWayland, hotkey grabbing does not work and we
 	    have to register shortcuts with the compositor.
 	   */
-	  char *xdg_session_type = getenv("XDG_SESSION_TYPE");
-	  if (xdg_session_type && strcmp(xdg_session_type, "wayland") == 0) {
+	  if (screenator_is_wayland_session ()) {
 	      remove_hotkeys_from_compositor(data);
 	      add_hotkeys_to_compositor(data);
           }
@@ -383,8 +402,7 @@ void setup_input_devices (ScreenatorData *data)
 void shutdown_input_devices(ScreenatorData *data)
 {
     release_grab(data, NULL); /* ungrab all */
-    char *xdg_session_type = getenv("XDG_SESSION_TYPE");
-    if (xdg_session_type && strcmp(xdg_session_type, "wayland") == 0)
+    if (screenator_is_wayland_session ())
 	remove_hotkeys_from_compositor(data);
 }
 
@@ -891,8 +909,8 @@ void release_grab (ScreenatorData *data,
   /* An unfinished spline is not committed; drop its preview as well. */
   spline_cancel_all (data);
 
-  char *xdg_session_type = getenv("XDG_SESSION_TYPE");
-  if (xdg_session_type && strcmp(xdg_session_type, "wayland") == 0) {
+  if (screenator_is_wayland_session ())
+    {
       /*
 	When running under Wayland (XWayland in our case),
 	make the whole transparent window transparent to input.
@@ -904,7 +922,7 @@ void release_grab (ScreenatorData *data,
       // force a redraw, otherwise input shape is not applied,
       // at least on newer GNOME versions
       gdk_window_invalidate_rect(gtk_widget_get_window(data->win), NULL, 0);
-  }
+    }
 
 
   if(!dev) /* this means release all grabs */
@@ -981,8 +999,7 @@ void acquire_grab (ScreenatorData *data,
   screenator_marker_prepare (data);
   show_window (data);
 
-  char *xdg_session_type = getenv("XDG_SESSION_TYPE");
-  if (xdg_session_type && strcmp(xdg_session_type, "wayland") == 0) {
+  if (screenator_is_wayland_session ()) {
       /*
 	When running under Wayland (XWayland in our case), make the whole transparent window react to input.
 	Otherwise, no draw-cursor is shown over Wayland-only windows.
@@ -1018,7 +1035,6 @@ void acquire_grab (ScreenatorData *data,
 
 	  cursor = get_tool_cursor (data, devdata->cur_context);
 
-	
 	  if(gdk_device_grab(devdata->device,
 			     gtk_widget_get_window(data->win),
 			     GDK_OWNERSHIP_NONE,
@@ -1027,14 +1043,14 @@ void acquire_grab (ScreenatorData *data,
 			     cursor,
 			     GDK_CURRENT_TIME) != GDK_GRAB_SUCCESS)
 	    {
-	      /* this probably means the device table is outdated, 
+	      /* this probably means the device table is outdated,
 		 e.g. this device doesn't exist anymore */
-	      g_printerr("Error grabbing Device '%s' while grabbing all, ignoring.\n", 
+	      g_printerr("Error grabbing Device '%s' while grabbing all, ignoring.\n",
 			 gdk_device_get_name(devdata->device));
 	      continue;
 
 	    }
-	   
+
           devdata->is_grabbed = 1;
         }
 
@@ -1067,7 +1083,7 @@ void acquire_grab (ScreenatorData *data,
 	{
 	  /* this probably means the device table is outdated,
 	     e.g. this device doesn't exist anymore */
-	  g_printerr("Error grabbing device '%s', rescanning device list.\n", 
+	  g_printerr("Error grabbing device '%s', rescanning device list.\n",
 		     gdk_device_get_name(devdata->device));
 	  setup_input_devices(data);
 	  return;

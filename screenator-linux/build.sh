@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# build.sh - Build Screenator and package it as a .deb and an AppImage.
+# build.sh - Build Screenator and package it as .deb, .rpm and AppImage.
 #
 # The development headers are staged under
 # /tmp/opencode/screenator-build-stage, so neither root nor installed -dev
@@ -14,8 +14,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_6.0_amd64.deb"
-APPIMAGE="$BUILD/Screenator-6.0-x86_64.AppImage"
+DEB="$BUILD/screenator_7.0_amd64.deb"
+RPM="$BUILD/screenator-7.0-1.x86_64.rpm"
+APPIMAGE="$BUILD/Screenator-7.0-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -142,7 +143,7 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 6.0
+Version: 7.0
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -184,7 +185,118 @@ dpkg-deb --root-owner-group --build "$PKROOT" "$DEB" >/dev/null
 echo "==> Built: $DEB"
 
 # ---------------------------------------------------------------------------
-# 4. Build the AppImage
+# 4. Build the RPM
+# ---------------------------------------------------------------------------
+echo "==> Preparing RPM packaging tools ..."
+RPMTOOLS="$STAGE/rpmtools"
+RPM_DL="$STAGE/rpmdl"
+RPM_PKGS="rpm librpm9 librpmio9 librpmbuild9 librpmsign9 rpm-common rpm2cpio debugedit"
+RPMBUILD=""
+
+if command -v rpmbuild >/dev/null 2>&1; then
+  RPMBUILD="$(command -v rpmbuild)"
+else
+  if [ ! -x "$RPMTOOLS/usr/bin/rpmbuild" ]; then
+    mkdir -p "$RPM_DL" "$RPMTOOLS"
+    for pkg in $RPM_PKGS; do
+      if ! ls "$RPM_DL"/${pkg}_*.deb >/dev/null 2>&1; then
+        ( cd "$RPM_DL" && apt-get download "$pkg" >/dev/null 2>&1 \
+          || echo "WARNING: could not download $pkg" )
+      fi
+    done
+    for deb in "$RPM_DL"/*.deb; do
+      dpkg-deb -x "$deb" "$RPMTOOLS"
+    done
+  fi
+  if [ -x "$RPMTOOLS/usr/bin/rpmbuild" ]; then
+    RPMBUILD="$RPMTOOLS/usr/bin/rpmbuild"
+  fi
+fi
+
+if [ -z "$RPMBUILD" ]; then
+  echo "ERROR: rpmbuild is not available; cannot create the RPM package." >&2
+  exit 1
+fi
+
+RPMTOP="$STAGE/rpmbuild"
+rm -rf "$RPMTOP"
+mkdir -p "$RPMTOP/BUILD" "$RPMTOP/BUILDROOT" "$RPMTOP/RPMS" \
+         "$RPMTOP/SOURCES" "$RPMTOP/SPECS" "$RPMTOP/SRPMS"
+
+cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
+%global debug_package %{nil}
+%define _build_id_links none
+Name:           screenator
+Version:        7.0
+Release:        1
+Summary:        Vibe-coded screen annotation tool based on Gromit-MPX
+License:        GPL-2.0-or-later
+URL:            https://github.com/malnaanah/screenator
+BuildArch:      x86_64
+AutoReqProv:    yes
+
+%description
+Screenator is an on-screen annotation tool for X11.  Draw over any running
+application with a pen, marker, arrow, text, shapes or eraser, change the line
+colour, thickness, eraser size and opacity, and keep the annotations visible
+for as long as you need them.
+
+%install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}
+cp -a "$PKROOT"/. %{buildroot}/
+rm -rf %{buildroot}/DEBIAN
+
+%files
+/usr/bin/screenator
+/usr/share/applications/screenator.desktop
+/usr/share/pixmaps/screenator.png
+/usr/share/icons/hicolor/256x256/apps/screenator.png
+/usr/share/icons/hicolor/scalable/apps/screenator.svg
+/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
+/usr/share/screenator
+/usr/share/man/man1/screenator.1.gz
+/usr/share/metainfo/screenator.appdata.xml
+/etc/screenator/screenator.cfg
+/usr/share/doc/screenator
+
+%post
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || :
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || :
+fi
+
+%postun
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications || :
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || :
+fi
+
+%changelog
+* Fri Nov 06 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 7.0-1
+- Screenator 7.0
+EOF
+
+echo "==> Building the RPM ..."
+rm -f "$RPM"
+if [ "$RPMBUILD" = "$RPMTOOLS/usr/bin/rpmbuild" ]; then
+  (
+    export LD_LIBRARY_PATH="$RPMTOOLS/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export RPM_CONFIGDIR="$RPMTOOLS/usr/lib/rpm"
+    "$RPMBUILD" -bb --define "_topdir $RPMTOP" "$RPMTOP/SPECS/screenator.spec"
+  )
+else
+  "$RPMBUILD" -bb --define "_topdir $RPMTOP" "$RPMTOP/SPECS/screenator.spec"
+fi
+cp "$RPMTOP/RPMS/x86_64/screenator-7.0-1.x86_64.rpm" "$RPM"
+echo "==> Built: $RPM"
+
+# ---------------------------------------------------------------------------
+# 5. Build the AppImage
 # ---------------------------------------------------------------------------
 echo "==> Preparing AppImage tooling ..."
 TOOLS="/tmp/opencode/screenator-appimage-tools"
@@ -242,7 +354,7 @@ done
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=6.0
+export LINUXDEPLOY_OUTPUT_VERSION=7.0
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.
@@ -296,4 +408,4 @@ echo "==> Built: $APPIMAGE"
 
 echo
 echo "==> Result:"
-ls -lh "$DEB" "$APPIMAGE"
+ls -lh "$DEB" "$RPM" "$APPIMAGE"

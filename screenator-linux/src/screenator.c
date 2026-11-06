@@ -468,7 +468,7 @@ void hide_window (ScreenatorData *data)
       data->hidden = 1;
       release_grab (data, NULL); /* release all */
       gtk_widget_hide (data->win);
-      
+
       if(data->debug)
         g_printerr ("DEBUG: Hiding window.\n");
     }
@@ -1608,6 +1608,40 @@ shape_draw_arrow_heads (cairo_t *cr, gint line_width,
   cairo_restore (cr);
 }
 
+/* Build an ellipse path centred on (cx, cy). */
+static void
+ellipse_build_path (cairo_t *cr, gdouble cx, gdouble cy,
+		    gdouble rx, gdouble ry)
+{
+  cairo_save (cr);
+  cairo_translate (cr, cx, cy);
+  cairo_scale (cr, rx, ry);
+  cairo_arc (cr, 0, 0, 1, 0, 2 * G_PI);
+  cairo_restore (cr);
+}
+
+/* Stroke an ellipse but keep only the part outside its border.  Clipping the
+ * centred stroke to the region outside the original path gives an exact
+ * outside stroke for thin and thick pens alike. */
+static void
+ellipse_stroke_outside (cairo_t *cr, gdouble cx, gdouble cy,
+			gdouble rx, gdouble ry, gint line_width)
+{
+  gdouble pad = line_width + 8.0;
+
+  cairo_save (cr);
+  cairo_new_path (cr);
+  cairo_rectangle (cr, cx - rx - pad, cy - ry - pad,
+		   2.0 * (rx + pad), 2.0 * (ry + pad));
+  ellipse_build_path (cr, cx, cy, rx, ry);
+  cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_clip (cr);
+  cairo_new_path (cr);
+  ellipse_build_path (cr, cx, cy, rx, ry);
+  cairo_stroke (cr);
+  cairo_restore (cr);
+}
+
 /* Draw a shape with the current pen width, colour and opacity on the given
  * cairo context.  Used both for the live preview and for committing the
  * shape to the backbuffer. */
@@ -1658,28 +1692,29 @@ draw_shape (ScreenatorData *data, cairo_t *cr, ScreenatorShapeType type,
 
   if (type == SCREENATOR_SHAPE_ELLIPSE)
     {
+      gdouble rx = w / 2.0;
+      gdouble ry = h / 2.0;
+
       if (w < 1 || h < 1)
 	return;
-      cairo_save (cr);
-      cairo_translate (cr, x + w / 2.0, y + h / 2.0);
-      cairo_scale (cr, w / 2.0, h / 2.0);
-      cairo_arc (cr, 0, 0, 1, 0, 2 * G_PI);
-      cairo_restore (cr);
-    }
-  else
-    return;
 
-  if (data->shape_fill_enabled)
-    {
-      GdkRGBA fill = data->shape_fill_color;
+      if (data->shape_fill_enabled)
+	{
+	  GdkRGBA fill = data->shape_fill_color;
 
-      fill.alpha = data->opacity;
-      gdk_cairo_set_source_rgba (cr, &fill);
-      cairo_fill_preserve (cr);
-      gdk_cairo_set_source_rgba (cr, &color);
+	  ellipse_build_path (cr, x + rx, y + ry, rx, ry);
+
+	  fill.alpha = data->opacity;
+	  gdk_cairo_set_source_rgba (cr, &fill);
+	  cairo_fill (cr);
+	  gdk_cairo_set_source_rgba (cr, &color);
+	}
+
+      ellipse_stroke_outside (cr, x + rx, y + ry, rx, ry, line_width);
+      return;
     }
 
-  cairo_stroke (cr);
+  return;
 }
 
 
@@ -1792,13 +1827,13 @@ line_finish_all (ScreenatorData *data)
  * rectangle; the radius is clamped to half the shorter side, where the shape
  * becomes a stadium. */
 static void
-rounded_rect_path (cairo_t *cr, gint x0, gint y0, gint x1, gint y1,
+rounded_rect_path (cairo_t *cr, gdouble x0, gdouble y0, gdouble x1, gdouble y1,
 		   gdouble radius)
 {
-  gint x = MIN (x0, x1);
-  gint y = MIN (y0, y1);
-  gint w = ABS (x1 - x0);
-  gint h = ABS (y1 - y0);
+  gdouble x = MIN (x0, x1);
+  gdouble y = MIN (y0, y1);
+  gdouble w = ABS (x1 - x0);
+  gdouble h = ABS (y1 - y0);
   gdouble max_radius = MIN (w, h) / 2.0;
 
   radius = CLAMP (radius, 0.0, max_radius);
@@ -1815,6 +1850,31 @@ rounded_rect_path (cairo_t *cr, gint x0, gint y0, gint x1, gint y1,
   cairo_arc (cr, x + radius, y + h - radius, radius, G_PI_2, G_PI);
   cairo_arc (cr, x + radius, y + radius, radius, G_PI, 3 * G_PI_2);
   cairo_close_path (cr);
+}
+
+
+/* Stroke a rounded rectangle with only the outside half of the stroke. */
+static void
+rounded_rect_stroke_outside (cairo_t *cr, gdouble x0, gdouble y0,
+			     gdouble x1, gdouble y1, gdouble radius,
+			     gint line_width)
+{
+  gdouble pad = line_width + 8.0;
+  gdouble x = MIN (x0, x1);
+  gdouble y = MIN (y0, y1);
+  gdouble w = ABS (x1 - x0);
+  gdouble h = ABS (y1 - y0);
+
+  cairo_save (cr);
+  cairo_new_path (cr);
+  cairo_rectangle (cr, x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad);
+  rounded_rect_path (cr, x0, y0, x1, y1, radius);
+  cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_clip (cr);
+  cairo_new_path (cr);
+  rounded_rect_path (cr, x0, y0, x1, y1, radius);
+  cairo_stroke (cr);
+  cairo_restore (cr);
 }
 
 
@@ -1838,19 +1898,19 @@ draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
   cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
 
-  rounded_rect_path (cr, x0, y0, x1, y1, radius);
-
   if (data->shape_fill_enabled)
     {
       GdkRGBA fill = data->shape_fill_color;
 
+      rounded_rect_path (cr, x0, y0, x1, y1, radius);
+
       fill.alpha = data->opacity;
       gdk_cairo_set_source_rgba (cr, &fill);
-      cairo_fill_preserve (cr);
+      cairo_fill (cr);
       gdk_cairo_set_source_rgba (cr, &color);
     }
 
-  cairo_stroke (cr);
+  rounded_rect_stroke_outside (cr, x0, y0, x1, y1, radius, line_width);
 }
 
 
@@ -3319,35 +3379,49 @@ draw_frame_shape (ScreenatorData *data, cairo_t *cr,
 
   if (shape->type == SCREENATOR_SHAPE_ELLIPSE)
     {
-      cairo_save (cr);
-      cairo_scale (cr, frame->w / 2.0, frame->h / 2.0);
-      cairo_arc (cr, 0, 0, 1, 0, 2 * G_PI);
-      cairo_restore (cr);
+      if (data->shape_fill_enabled)
+	{
+	  GdkRGBA fill = data->shape_fill_color;
+
+	  ellipse_build_path (cr, 0.0, 0.0,
+			      frame->w / 2.0, frame->h / 2.0);
+
+	  fill.alpha = data->opacity;
+	  gdk_cairo_set_source_rgba (cr, &fill);
+	  cairo_fill (cr);
+	  gdk_cairo_set_source_rgba (cr, &color);
+	}
+
+      ellipse_stroke_outside (cr, 0.0, 0.0,
+			      frame->w / 2.0, frame->h / 2.0, line_width);
     }
   else if (shape->type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE)
-    rounded_rect_path (cr,
-		       (gint) round (-frame->w / 2.0),
-		       (gint) round (-frame->h / 2.0),
-		       (gint) round (frame->w / 2.0),
-		       (gint) round (frame->h / 2.0),
-		       shape->extra);
+    {
+      if (data->shape_fill_enabled)
+	{
+	  GdkRGBA fill = data->shape_fill_color;
+
+	  rounded_rect_path (cr, -frame->w / 2.0, -frame->h / 2.0,
+			     frame->w / 2.0, frame->h / 2.0,
+			     shape->extra);
+
+	  fill.alpha = data->opacity;
+	  gdk_cairo_set_source_rgba (cr, &fill);
+	  cairo_fill (cr);
+	  gdk_cairo_set_source_rgba (cr, &color);
+	}
+
+      rounded_rect_stroke_outside (cr,
+				   -frame->w / 2.0, -frame->h / 2.0,
+				   frame->w / 2.0, frame->h / 2.0,
+				   shape->extra, line_width);
+    }
   else
     {
       cairo_restore (cr);
       return;
     }
 
-  if (data->shape_fill_enabled)
-    {
-      GdkRGBA fill = data->shape_fill_color;
-
-      fill.alpha = data->opacity;
-      gdk_cairo_set_source_rgba (cr, &fill);
-      cairo_fill_preserve (cr);
-      gdk_cairo_set_source_rgba (cr, &color);
-    }
-
-  cairo_stroke (cr);
   cairo_restore (cr);
 }
 
@@ -3673,6 +3747,26 @@ star_build_path (cairo_t *cr, const ScreenatorStar *star)
 }
 
 
+/* Stroke the star but keep only the part outside its border. */
+static void
+star_stroke_outside (cairo_t *cr, const ScreenatorStar *star,
+		     gint line_width)
+{
+  gdouble r = MAX (star->radius, 1.0) + line_width + 8.0;
+
+  cairo_save (cr);
+  cairo_new_path (cr);
+  cairo_rectangle (cr, star->cx - r, star->cy - r, 2.0 * r, 2.0 * r);
+  star_build_path (cr, star);
+  cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_clip (cr);
+  cairo_new_path (cr);
+  star_build_path (cr, star);
+  cairo_stroke (cr);
+  cairo_restore (cr);
+}
+
+
 /* Draw the star with the current pen colour and, when shape filling is on,
  * the shape fill colour. */
 void
@@ -3690,19 +3784,19 @@ draw_star (ScreenatorData *data, cairo_t *cr, const ScreenatorStar *star)
   cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
 
-  star_build_path (cr, star);
-
   if (data->shape_fill_enabled)
     {
       GdkRGBA fill = data->shape_fill_color;
 
+      star_build_path (cr, star);
+
       fill.alpha = data->opacity;
       gdk_cairo_set_source_rgba (cr, &fill);
-      cairo_fill_preserve (cr);
+      cairo_fill (cr);
       gdk_cairo_set_source_rgba (cr, &color);
     }
 
-  cairo_stroke (cr);
+  star_stroke_outside (cr, star, line_width);
 }
 
 
@@ -3791,12 +3885,56 @@ triangle_build_path (cairo_t *cr, const ScreenatorTriangle *triangle)
   cairo_close_path (cr);
 }
 
+/* Build the open polyline drawn while the triangle is being placed.  One
+ * placed vertex draws a single edge to the pointer; two placed vertices draw
+ * both edges to the pointer. */
+static void
+triangle_build_partial_path (cairo_t *cr,
+			     const ScreenatorTriangle *triangle,
+			     guint vertices)
+{
+  cairo_move_to (cr, triangle->v[0].x, triangle->v[0].y);
+  cairo_line_to (cr, triangle->v[1].x, triangle->v[1].y);
+
+  if (vertices >= 2)
+    cairo_line_to (cr, triangle->v[2].x, triangle->v[2].y);
+}
+
+/* Stroke the triangle but keep only the part outside its border. */
+static void
+triangle_stroke_outside (cairo_t *cr, const ScreenatorTriangle *triangle,
+			 gint line_width)
+{
+  gdouble pad = line_width + 8.0;
+  gdouble minx = MIN (triangle->v[0].x,
+		      MIN (triangle->v[1].x, triangle->v[2].x));
+  gdouble miny = MIN (triangle->v[0].y,
+		      MIN (triangle->v[1].y, triangle->v[2].y));
+  gdouble maxx = MAX (triangle->v[0].x,
+		      MAX (triangle->v[1].x, triangle->v[2].x));
+  gdouble maxy = MAX (triangle->v[0].y,
+		      MAX (triangle->v[1].y, triangle->v[2].y));
+
+  cairo_save (cr);
+  cairo_new_path (cr);
+  cairo_rectangle (cr, minx - pad, miny - pad,
+		   maxx - minx + 2.0 * pad, maxy - miny + 2.0 * pad);
+  triangle_build_path (cr, triangle);
+  cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
+  cairo_clip (cr);
+  cairo_new_path (cr);
+  triangle_build_path (cr, triangle);
+  cairo_stroke (cr);
+  cairo_restore (cr);
+}
+
 
 /* Draw the triangle with the current pen colour and, when shape filling is
- * on, the shape fill colour. */
+ * on, the shape fill colour.  While it is being placed, only the lines fixed
+ * by the clicks are drawn. */
 void
 draw_triangle (ScreenatorData *data, cairo_t *cr,
-	       const ScreenatorTriangle *triangle)
+	       const ScreenatorTriangle *triangle, guint vertices)
 {
   GdkRGBA color = data->pen_color;
   gint line_width = MAX (1, (gint) data->pen_width);
@@ -3810,18 +3948,41 @@ draw_triangle (ScreenatorData *data, cairo_t *cr,
   cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
   cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
 
-  triangle_build_path (cr, triangle);
-
-  if (data->shape_fill_enabled)
+  if (vertices >= 2)
     {
-      GdkRGBA fill = data->shape_fill_color;
+      gdouble ax = triangle->v[1].x - triangle->v[0].x;
+      gdouble ay = triangle->v[1].y - triangle->v[0].y;
+      gdouble bx = triangle->v[2].x - triangle->v[0].x;
+      gdouble by = triangle->v[2].y - triangle->v[0].y;
+      gdouble area2 = fabs (ax * by - ay * bx);
 
-      fill.alpha = data->opacity;
-      gdk_cairo_set_source_rgba (cr, &fill);
-      cairo_fill_preserve (cr);
-      gdk_cairo_set_source_rgba (cr, &color);
+      /* A collinear preview has no inside to clip against; draw its lines
+       * once instead of stroking overlapping closed-path segments. */
+      if (area2 < 1.0)
+	{
+	  triangle_build_partial_path (cr, triangle, 2);
+	  cairo_stroke (cr);
+	  return;
+	}
+
+      if (vertices >= 3 && data->shape_fill_enabled)
+	{
+	  GdkRGBA fill = data->shape_fill_color;
+
+	  triangle_build_path (cr, triangle);
+
+	  fill.alpha = data->opacity;
+	  gdk_cairo_set_source_rgba (cr, &fill);
+	  cairo_fill (cr);
+	  gdk_cairo_set_source_rgba (cr, &color);
+	}
+
+      /* With two vertices placed the closing lines form a preview triangle. */
+      triangle_stroke_outside (cr, triangle, line_width);
+      return;
     }
 
+  triangle_build_partial_path (cr, triangle, vertices);
   cairo_stroke (cr);
 }
 
@@ -3893,7 +4054,7 @@ triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
 
       snap_undo_state (data);
       cr = cairo_create (data->backbuffer);
-      draw_triangle (data, cr, &devdata->triangle);
+      draw_triangle (data, cr, &devdata->triangle, 3);
       cairo_destroy (cr);
 
       data->modified = 1;
@@ -4754,7 +4915,7 @@ int main (int argc, char **argv)
   // this trys to set an alpha channel
   on_screen_changed(data->win, NULL, data);
 
-  gtk_window_fullscreen(GTK_WINDOW(data->win)); 
+  gtk_window_fullscreen(GTK_WINDOW(data->win));
   gtk_window_set_skip_taskbar_hint(GTK_WINDOW(data->win), TRUE);
   gtk_widget_set_app_paintable (data->win, TRUE);
   gtk_window_set_decorated (GTK_WINDOW (data->win), FALSE);

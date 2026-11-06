@@ -1,4 +1,4 @@
-Screenator 6.0
+Screenator 7.0
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,20 +6,25 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 6.0 (amd64)
-  - Screenator-6.0-x86_64.AppImage
+  - screenator 7.0 (amd64) .deb
+  - screenator 7.0 (x86_64) .rpm
+  - Screenator-7.0-x86_64.AppImage
+  - Screenator-7.0-win64.zip (Windows, built separately)
 
 Layout:
-  screenator/           Source code, data files, documentation and build script.
-  screenator/src/       C sources (screenator.c/h, callbacks, config, input).
-  screenator/data/      Icons, cursors, default tool configuration, desktop and
+  screenator-windows/   Windows source code and build files (prepared separately).
+  screenator-linux/     Linux source code, data files, documentation and build script.
+  screenator-linux/src/ C sources (screenator.c/h, callbacks, config, input).
+  screenator-linux/data/ Icons, cursors, default tool configuration, desktop and
                         AppStream metadata.
-  screenator/build.sh   Builds the .deb and the AppImage.
-  screenator/CMakeLists.txt
+  screenator-linux/build.sh
+                        Builds the .deb and the AppImage.
+  screenator-linux/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_6.0_amd64.deb
-                          Screenator-6.0-x86_64.AppImage
+                          screenator_7.0_amd64.deb
+                          screenator-7.0-1.x86_64.rpm
+                          Screenator-7.0-x86_64.AppImage
   info.txt              This file.
 
 Features:
@@ -59,21 +64,28 @@ Features:
     the curve stays smooth, and holding Ctrl while dragging moves only that
     side to give the node a corner.  Click the last node again, double-click or
     right-click to finish the curve.
-    Polygon is placed with a single click and stays editable with four handles:
-    the square handle controls the number of sides from 3 to 16 (pressing it
-    resets the shape to 3 sides; moving away from the handle in any direction
-    adds sides and moving back towards it removes them, down to 3 at the
-    handle), one round handle sets the radius, one sets the rotation, and one
-    moves the inner vertices outwards until the shape becomes a regular
-    polygon; that handle snaps to the flat edge when it gets close, so a
-    regular polygon is easy to hit.  Drag inside the shape to move it; clicking
-    empty space commits it and places the next one, and a double-click or
-    right-click commits it.
-    Triangle is placed with a single click and keeps three round vertex
-    handles, so it can be stretched and skewed freely; holding Ctrl while
-    dragging a vertex snaps the angle at that vertex to 30, 45, 60 or 90
-    degrees.  Drag inside it to move it, click empty space to commit it and
-    place the next one, and double-click or right-click to commit it.
+    Polygon: the first click sets its centre, and dragging sets the radius and
+    rotation around that centre; a plain click keeps a default size.  The
+    shape stays editable with four handles: the square handle controls the
+    number of sides from 3 to 16 (pressing it resets the shape to 3 sides;
+    moving away from the handle in any direction adds sides and moving back
+    towards it removes them, down to 3 at the handle), one round handle sets
+    the radius, one sets the rotation, and one moves the inner vertices
+    outwards until the shape becomes a regular polygon; that handle snaps to
+    the flat edge when it gets close, so a regular polygon is easy to hit.
+    Drag inside the shape to move it; clicking empty space commits it and
+    places the next one, and a double-click or right-click commits it.
+    Triangle: each click places the next vertex.  A line follows the pointer
+    after the first click, and the remaining sides follow after the second
+    click.  Dragging does not place a point; the line keeps following the
+    pointer until the next click.  The third click fixes the last vertex and
+    closes the triangle.  The triangle keeps three round vertex handles, so
+    it can be stretched and skewed freely; holding Ctrl while dragging a
+    vertex snaps the angle at that vertex to 30, 45, 60 or 90 degrees.  Drag
+    inside it to move it, click empty space to commit it and place the next
+    one, and double-click or right-click to commit it.
+    The outlines of these closed shapes are drawn outside their border, so a
+    thick stroke never covers the inside of the shape.
     The Ellipse and Rounded Rectangle stay editable after the drag.  Every
     placed shape keeps a square handle on each of its four corners and a round
     rotation handle above it, and dragging inside the shape moves it; rotation
@@ -126,13 +138,14 @@ Features:
   - The Marker draws a highlighter stroke with a fixed 32 px width, using the
     current line colour.  Its opacity is 40% by default and is independent of
     the global pen opacity.  Long right click, or a long press of the stylus
-    second side button, opens the Marker Opacity menu with 30%, 40%, 50%, 60%
-    and 70%; the choice is remembered across restarts.  Selecting the Marker
+    second side button, opens the Marker Opacity menu with 10%, 20%, 30%, 40%,
+    50%, 60%, 70%, 80% and 90%; the choice is remembered across restarts.  Selecting the Marker
     switches the line colour to yellow; leaving the Marker or exiting painting
     restores the colour that was active before.  The mouse wheel or the stylus
     first side button changes its colour.
   - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
     entry closest to the current width.
+  - Opacity offers 10%, 20%, 30%, 40%, 50%, 60%, 70%, 80% and 90%.
   - A Shapes Fill Color submenu fills ellipses, rounded rectangles, polygons
     and triangles with one of the line colours, or leaves them unfilled (the
     default).  After None, the colours are listed Green, Blue, Yellow, Black,
@@ -181,20 +194,24 @@ Features:
     normal desktop; a saved paper is not restored.  While a paper is active,
     Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper, Ctrl+T
     shows or hides the drawings and Alt+F4 quits.
-  - A single, colourful Hints dialog appears when Screenator starts.  It
-    summarises the common mouse and stylus controls plus Shape Editing tips,
-    the global F9 shortcut and the Drawing Mode and Screen Paper shortcuts in
+  - A single, colourful Hints dialog appears when Screenator starts.  It is a
+    750x550 scrollable column that summarises the common mouse and stylus
+    controls plus Shape Editing tips, the global F9 shortcut and the Drawing
+    Mode and Screen Paper shortcuts in
     one place instead of repeating them for every tool, and it emphasises that
     a long right click, or a long press of the stylus second side button,
     opens the Scroll Mode menu to choose Color or Thickness for scrolling.  It
-    has a "Never show hints again" option which is remembered across restarts.
+    has a "Never show hints again" option beside the Close button, which is
+    remembered across restarts.
     "Show Hints" in the menu opens the dialog again, and Reset Settings keeps
     the choice.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
     across restarts, together with whether the floating icon and the settings
-    indicator are shown.  The eraser cursor is drawn as a circle that matches the
-    selected eraser size.
+    indicator are shown.  The floating icon size is 16x16, 32x32, 48x48,
+    64x64, 128x128 or 256x256 (48x48 by default); the settings ring doubles in
+    width at 128x128 and triples at 256x256.  The eraser cursor is drawn as a
+    circle that matches the selected eraser size.
   - While painting mode is active, the mouse wheel changes the setting selected
     in the Scroll Mode menu: Color steps the line colours (including the custom
     colour), or the shape fill colours over the Paint Bucket; Thickness steps
@@ -207,7 +224,7 @@ Features:
   - Pen strokes are smoothed with curved segments, and motion event
     compression is disabled so fast strokes stay smooth.
   - Reset Settings restores red, 6 px, 100% opacity, no shape fill, Arial Bold
-    24, a 40 px eraser and a 32x32 icon.
+    24, a 60 px eraser and a 48x48 icon.
   - Undo/redo, clear screen, show/hide drawing, show/hide floating icon and
     show hints.
   - F9 is a global shortcut that shows or hides the floating icon at any time.
@@ -220,7 +237,9 @@ Features:
     is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc exits the current
     tool like a right click outside a shape.
   - Multi-pointer support inherited from Gromit-MPX.
-  - Stylus support: the tip draws like the left mouse button, using the
+  - Stylus support: IMPORTANT: In your stylus configuration, set button 1
+    (near the tip) to Middle Click and button 2 to Right Click.  The tip draws
+    like the left mouse button, using the
     selected line width; pen pressure is ignored so it draws exactly like the
     mouse.  The first side button has two short-press settings chosen in the
     stylus menu: Color steps the line colour (or the fill colour over the Paint
@@ -365,6 +384,6 @@ Build:
   not installed and the GUI is not tested by the build script.
 
 License:
-  GNU General Public License version 2.  See screenator/COPYING.  Screenator
+  GNU General Public License version 2.  See screenator-linux/COPYING.  Screenator
   contains code from Gromit-MPX 1.4.2 (Copyright 2009-2022 Christian Beier)
   and from Gromit (Copyright 2000 Simon Budig).
