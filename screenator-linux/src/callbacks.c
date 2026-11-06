@@ -7688,14 +7688,14 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   GtkWidget *item;
   GtkWidget *submenu;
 
-  item = gtk_image_menu_item_new_with_label ("Pen");
+  item = gtk_image_menu_item_new_with_label ("Pen (F8)");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("pen.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_pen), data);
 
-  item = gtk_image_menu_item_new_with_label ("Text");
+  item = gtk_image_menu_item_new_with_label ("Text (F7)");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("text.png")));
@@ -7728,7 +7728,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	{ "Spline",             "spline.png",             G_CALLBACK (on_icon_spline) },
 	{ "Polygon",            "polygon.png",            G_CALLBACK (on_icon_polygon) },
 	{ "Triangle",           "triangle.png",           G_CALLBACK (on_icon_triangle) },
-	{ "Arrow",              "arrow.png",              G_CALLBACK (on_icon_arrow) },
+	{ "Arrow (F6)",         "arrow.png",              G_CALLBACK (on_icon_arrow) },
 	{ "Ellipse",            "ellipse.png",            G_CALLBACK (on_icon_ellipse) },
 	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
 	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) },

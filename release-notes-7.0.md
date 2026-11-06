@@ -25,6 +25,7 @@ native Windows port.
 - The F10 quick tool menu is now a centered 5x3 grid of large icon tiles,
   with arrow-key navigation, Home/End, Enter/Space selection and Escape to
   close.
+- The app menu shows F8 beside Pen, F7 beside Text and F6 beside Arrow.
 
 ## Windows
 
