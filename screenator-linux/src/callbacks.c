@@ -643,6 +643,8 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "insert_before", "Insert Page Before",  "add_before.png" },
   { "delete_page",   "Delete Page",         "delete-page.png" },
   { "insert_after",  "Insert Page After",   "add_after.png" },
+  { "page_number",   "Current Page",        NULL },
+  { "goto_page",     "Go to Page",          "goto-page.png" },
   { "clear",         "Clear Screen",        "trash.png" },
   { "visibility",    "Toggle Visibility",   "hide.png" },
   { "eraser_size",   "Eraser Size",         NULL },
@@ -9217,6 +9219,7 @@ paper_pdf_prepare_active (ScreenatorData *data, ScreenatorPaperDocument *doc)
 
   paper_ensure_background (data, doc, index, page);
   paper_load_continuous_view (data, doc);
+  paper_top_bar_update_active_tool (data);
 }
 
 static void
@@ -9266,6 +9269,7 @@ paper_pdf_set_scroll (ScreenatorData *data, gint scroll)
 	page->view_y = -(top - doc->pdf_scroll_y);
 	paper_ensure_background (data, doc, new_first, page);
       }
+    paper_top_bar_update_active_tool (data);
 
     if (delta != 0 && paper_shift_backbuffer (data, delta))
       {
@@ -9319,6 +9323,7 @@ paper_pdf_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
   paper_ensure_background (data, doc, index, page);
   paper_load_continuous_view (data, doc);
   reset_undo_history (data);
+  paper_top_bar_update_active_tool (data);
   paper_repaint (data);
   schedule_tray_menu_refresh (data);
 }
@@ -9408,6 +9413,7 @@ paper_pdf_pick_page (ScreenatorData *data, gint screen_y)
   top = g_array_index (doc->pdf_page_tops, gint, index);
   page->view_x = 0;
   page->view_y = -(top - doc->pdf_scroll_y);
+  paper_top_bar_update_active_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -12132,6 +12138,7 @@ paper_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
   if (!page)
     return;
 
+  paper_top_bar_update_active_tool (data);
   paper_page_view_limits (data, doc, index, page, &max_x, &max_y);
   page->view_x = CLAMP (view_x, 0, max_x);
   page->view_y = CLAMP (view_y, 0, max_y);
@@ -12187,6 +12194,66 @@ screenator_paper_goto_page (ScreenatorData *data, gint index)
     paper_pdf_show_page (data, doc, (guint) index);
   else
     paper_show_page (data, doc, (guint) index, 0, 0);
+}
+
+/* Ask for a page number and jump there.  Used by the Paper menu and the tool
+ * bar for PDF and multi-page Plain/Ruled/Graph documents. */
+static void
+paper_show_goto_page_dialog (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  GtkWidget *dialog, *content, *box, *label, *spin;
+  gint response;
+  guint count;
+
+  if (!doc || !doc->pages)
+    return;
+
+  count = doc->pages->len;
+  if (count < 2)
+    return;
+
+  dialog = gtk_dialog_new_with_buttons (
+    "Go to Page", NULL,
+    GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+    "Cancel", GTK_RESPONSE_CANCEL,
+    "Go", GTK_RESPONSE_ACCEPT, NULL);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_ACCEPT);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 16);
+  gtk_container_add (GTK_CONTAINER (content), box);
+
+  label = gtk_label_new (NULL);
+  {
+    gchar *text = g_strdup_printf ("Go to page (1-%u):", count);
+
+    gtk_label_set_text (GTK_LABEL (label), text);
+    g_free (text);
+  }
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  spin = gtk_spin_button_new_with_range (1.0, (gdouble) count, 1.0);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (spin),
+			     (gdouble) MIN (doc->page + 1, count));
+  gtk_spin_button_set_numeric (GTK_SPIN_BUTTON (spin), TRUE);
+  gtk_entry_set_activates_default (GTK_ENTRY (spin), TRUE);
+  gtk_box_pack_start (GTK_BOX (box), spin, FALSE, FALSE, 0);
+
+  gtk_widget_show_all (dialog);
+  show_dialog_above_drawings (data, dialog);
+  gtk_widget_grab_focus (spin);
+  response = gtk_dialog_run (GTK_DIALOG (dialog));
+
+  if (response == GTK_RESPONSE_ACCEPT)
+    screenator_paper_goto_page (
+      data, gtk_spin_button_get_value_as_int (GTK_SPIN_BUTTON (spin)) - 1);
+
+  gtk_widget_destroy (dialog);
 }
 
 /* Scroll the active page.  A PDF page in Continuous scrolling moves smoothly
@@ -12659,6 +12726,92 @@ toolbar_settings_add_item (SettingsDialog *sd, const ToolbarItemInfo *info,
     g_object_unref (icon);
 }
 
+/* Build a complete toolbar item order.  A saved full order wins so hidden
+ * rows keep their position; older configurations derive it from the visible
+ * items.  Any known item that is missing is appended in default order, and
+ * unknown ids are ignored. */
+static gchar *
+toolbar_full_order (ScreenatorData *data)
+{
+  GString *out = g_string_new (NULL);
+  const gchar *source;
+  gchar **tokens, **defaults;
+  gboolean added[G_N_ELEMENTS (toolbar_item_info)] = { FALSE };
+  guint i, t;
+
+  if (data->paper_toolbar_order && *data->paper_toolbar_order)
+    source = data->paper_toolbar_order;
+  else if (data->paper_toolbar_items && *data->paper_toolbar_items)
+    source = data->paper_toolbar_items;
+  else
+    source = PAPER_TOOLBAR_DEFAULT_ITEMS;
+
+  tokens = g_strsplit (source, ",", -1);
+  for (t = 0; tokens[t]; t++)
+    {
+      gchar *id = g_strstrip (tokens[t]);
+      const gchar *canonical;
+
+      if (!*id)
+	continue;
+
+      canonical = toolbar_item_id (id);
+      for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
+	{
+	  if (added[i] ||
+	      g_strcmp0 (canonical, toolbar_item_info[i].id) != 0)
+	    continue;
+
+	  if (out->len > 0)
+	    g_string_append_c (out, ',');
+	  g_string_append (out, toolbar_item_info[i].id);
+	  added[i] = TRUE;
+	  break;
+	}
+    }
+  g_strfreev (tokens);
+
+  /* Append items that are missing from the saved order, keeping every
+   * existing row where it is. */
+  defaults = g_strsplit (PAPER_TOOLBAR_DEFAULT_ITEMS, ",", -1);
+  for (t = 0; defaults[t]; t++)
+    {
+      gchar *id = g_strstrip (defaults[t]);
+      const gchar *canonical;
+
+      if (!*id)
+	continue;
+
+      canonical = toolbar_item_id (id);
+      for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
+	{
+	  if (added[i] ||
+	      g_strcmp0 (canonical, toolbar_item_info[i].id) != 0)
+	    continue;
+
+	  if (out->len > 0)
+	    g_string_append_c (out, ',');
+	  g_string_append (out, toolbar_item_info[i].id);
+	  added[i] = TRUE;
+	  break;
+	}
+    }
+  g_strfreev (defaults);
+
+  for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
+    {
+      if (added[i])
+	continue;
+
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+      g_string_append (out, toolbar_item_info[i].id);
+      added[i] = TRUE;
+    }
+
+  return g_string_free (out, FALSE);
+}
+
 static GtkWidget *
 build_toolbar_settings_page (SettingsDialog *sd)
 {
@@ -12666,9 +12819,10 @@ build_toolbar_settings_page (SettingsDialog *sd)
   GtkWidget *box, *scroll, *view, *note;
   GtkCellRenderer *renderer;
   GtkTreeViewColumn *column;
-  gchar **tokens;
-  gboolean used[G_N_ELEMENTS (toolbar_item_info)] = { FALSE };
-  guint i;
+  gchar **tokens, **visible_tokens;
+  gboolean visible[G_N_ELEMENTS (toolbar_item_info)] = { FALSE };
+  gchar *order;
+  guint i, j;
 
   box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_container_set_border_width (GTK_CONTAINER (box), 12);
@@ -12704,7 +12858,8 @@ build_toolbar_settings_page (SettingsDialog *sd)
 
   note = gtk_label_new ("Each row shows its tool bar icon. Checked items "
 			"appear on the tool bar; drag the ☰ handle of a row to "
-			"change its position.");
+			"change its position. Hidden items keep their place in "
+			"the list.");
   gtk_label_set_xalign (GTK_LABEL (note), 0.0);
   gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
   gtk_label_set_max_width_chars (GTK_LABEL (note), 52);
@@ -12760,44 +12915,60 @@ build_toolbar_settings_page (SettingsDialog *sd)
   gtk_container_add (GTK_CONTAINER (scroll), view);
   gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
 
-  tokens = g_strsplit (data->paper_toolbar_items
-		       ? data->paper_toolbar_items
-		       : PAPER_TOOLBAR_DEFAULT_ITEMS, ",", -1);
-
-  for (i = 0; tokens[i]; i++)
+  visible_tokens = g_strsplit (data->paper_toolbar_items
+			       ? data->paper_toolbar_items
+			       : PAPER_TOOLBAR_DEFAULT_ITEMS, ",", -1);
+  for (i = 0; visible_tokens[i]; i++)
     {
-      gchar *id = g_strstrip (tokens[i]);
-      guint j;
+      gchar *id = g_strstrip (visible_tokens[i]);
+      const gchar *canonical;
 
       if (!*id)
 	continue;
 
+      canonical = toolbar_item_id (id);
       for (j = 0; j < G_N_ELEMENTS (toolbar_item_info); j++)
-	{
-	  if (!used[j] &&
-	      g_strcmp0 (toolbar_item_id (id), toolbar_item_info[j].id) == 0)
-	    {
-	      toolbar_settings_add_item (sd, &toolbar_item_info[j], TRUE);
-	      used[j] = TRUE;
-	      break;
-	    }
-	}
+	if (g_strcmp0 (canonical, toolbar_item_info[j].id) == 0)
+	  {
+	    visible[j] = TRUE;
+	    break;
+	  }
+    }
+  g_strfreev (visible_tokens);
+
+  order = toolbar_full_order (data);
+  tokens = g_strsplit (order, ",", -1);
+  for (i = 0; tokens[i]; i++)
+    {
+      gchar *id = g_strstrip (tokens[i]);
+      const gchar *canonical;
+
+      if (!*id)
+	continue;
+
+      canonical = toolbar_item_id (id);
+      for (j = 0; j < G_N_ELEMENTS (toolbar_item_info); j++)
+	if (g_strcmp0 (canonical, toolbar_item_info[j].id) == 0)
+	  {
+	    toolbar_settings_add_item (sd, &toolbar_item_info[j], visible[j]);
+	    break;
+	  }
     }
   g_strfreev (tokens);
-
-  /* Items that are currently hidden stay in the list, unchecked, at the
-   * end so they can be enabled again. */
-  for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
-    if (!used[i])
-      toolbar_settings_add_item (sd, &toolbar_item_info[i], FALSE);
+  g_free (order);
 
   return box;
 }
 
-static gchar *
-settings_collect_toolbar_items (SettingsDialog *sd)
+/* Collect both the visible items and the full settings-list order.  Keeping
+ * the full order means a hidden item returns to its old place when it is
+ * shown again. */
+static void
+settings_collect_toolbar_items (SettingsDialog *sd, gchar **visible_out,
+				gchar **order_out)
 {
-  GString *result = g_string_new (NULL);
+  GString *visible = g_string_new (NULL);
+  GString *order = g_string_new (NULL);
   GtkTreeModel *model = GTK_TREE_MODEL (sd->toolbar_items_store);
   GtkTreeIter iter;
 
@@ -12805,19 +12976,29 @@ settings_collect_toolbar_items (SettingsDialog *sd)
     {
       do
 	{
-	  gboolean visible;
+	  gboolean shown;
 	  gchar *id = NULL;
+	  const gchar *canonical;
 
 	  gtk_tree_model_get (model, &iter,
-			      TOOLBAR_COL_VISIBLE, &visible,
+			      TOOLBAR_COL_VISIBLE, &shown,
 			      TOOLBAR_COL_ID, &id,
 			      -1);
 
-	  if (visible && id)
+	  if (id && *id)
 	    {
-	      if (result->len > 0)
-		g_string_append_c (result, ',');
-	      g_string_append (result, id);
+	      canonical = toolbar_item_id (id);
+
+	      if (order->len > 0)
+		g_string_append_c (order, ',');
+	      g_string_append (order, canonical);
+
+	      if (shown)
+		{
+		  if (visible->len > 0)
+		    g_string_append_c (visible, ',');
+		  g_string_append (visible, canonical);
+		}
 	    }
 
 	  g_free (id);
@@ -12825,7 +13006,8 @@ settings_collect_toolbar_items (SettingsDialog *sd)
       while (gtk_tree_model_iter_next (model, &iter));
     }
 
-  return g_string_free (result, FALSE);
+  *visible_out = g_string_free (visible, FALSE);
+  *order_out = g_string_free (order, FALSE);
 }
 
 static GtkWidget *
@@ -13264,16 +13446,33 @@ show_settings_dialog (ScreenatorData *data)
 	}
 
       {
-	gchar *new_items = settings_collect_toolbar_items (sd);
+	gchar *new_items = NULL;
+	gchar *new_order = NULL;
+	gboolean changed = FALSE;
+
+	settings_collect_toolbar_items (sd, &new_items, &new_order);
 
 	if (g_strcmp0 (new_items, data->paper_toolbar_items) != 0)
 	  {
 	    g_free (data->paper_toolbar_items);
 	    data->paper_toolbar_items = new_items;
-	    paper_top_bar_rebuild (data);
+	    new_items = NULL;
+	    changed = TRUE;
 	  }
-	else
-	  g_free (new_items);
+
+	if (g_strcmp0 (new_order, data->paper_toolbar_order) != 0)
+	  {
+	    g_free (data->paper_toolbar_order);
+	    data->paper_toolbar_order = new_order;
+	    new_order = NULL;
+	    changed = TRUE;
+	  }
+
+	g_free (new_items);
+	g_free (new_order);
+
+	if (changed)
+	  paper_top_bar_rebuild (data);
       }
 
       {
@@ -13541,6 +13740,12 @@ static void on_icon_paper_delete (GtkMenuItem *menuitem, gpointer user_data)
 {
   (void) menuitem;
   screenator_paper_delete_page ((ScreenatorData *) user_data);
+}
+
+static void on_icon_paper_goto (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  paper_show_goto_page_dialog ((ScreenatorData *) user_data);
 }
 
 static void on_icon_paper_save (GtkMenuItem *menuitem, gpointer user_data)
@@ -14936,6 +15141,16 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
     gtk_widget_show (widget);
 
+    widget = gtk_image_menu_item_new_with_label ("Go to Page...");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("goto-page.png")));
+    gtk_widget_set_sensitive (widget, active && page_count > 1);
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_paper_goto), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
     widget = gtk_separator_menu_item_new ();
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
     gtk_widget_show (widget);
@@ -15730,6 +15945,9 @@ typedef struct
   GtkWidget      *add_before_button;
   GtkWidget      *delete_page_button;
   GtkWidget      *add_after_button;
+  GtkWidget      *page_number_button;
+  GtkWidget      *page_number_label;
+  GtkWidget      *goto_page_button;
   GtkWidget      *line_image;
   GtkWidget      *fill_image;
   GtkWidget      *thickness_image;
@@ -15979,6 +16197,54 @@ paper_toolbar_tooltip_leave (GtkWidget *widget, GdkEventCrossing *event,
   return FALSE;
 }
 
+/* Disabled buttons do not receive enter events, so the custom tooltip never
+ * starts for them.  The toolbar window supplies a native tooltip fallback for
+ * insensitive children only; active children keep the anchored tooltip. */
+static gboolean
+paper_toolbar_query_tooltip (GtkWidget *widget, gint x, gint y,
+			     gboolean keyboard_mode, GtkTooltip *tooltip,
+			     gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+  GList *children, *l;
+
+  (void) keyboard_mode;
+
+  if (!bar || !bar->box)
+    return FALSE;
+
+  children = gtk_container_get_children (GTK_CONTAINER (bar->box));
+  for (l = children; l; l = l->next)
+    {
+      GtkWidget *child = l->data;
+      GtkAllocation allocation;
+      const gchar *text;
+      gint cx = 0, cy = 0;
+
+      if (!gtk_widget_get_visible (child) ||
+	  gtk_widget_get_sensitive (child))
+	continue;
+
+      gtk_widget_get_allocation (child, &allocation);
+      gtk_widget_translate_coordinates (child, widget, 0, 0, &cx, &cy);
+
+      if (x < cx || y < cy ||
+	  x >= cx + allocation.width || y >= cy + allocation.height)
+	continue;
+
+      text = g_object_get_data (G_OBJECT (child), "paper-tooltip-text");
+      if (text && *text)
+	{
+	  gtk_tooltip_set_text (tooltip, text);
+	  g_list_free (children);
+	  return TRUE;
+	}
+    }
+
+  g_list_free (children);
+  return FALSE;
+}
+
 static void paper_top_bar_update_images (ScreenatorData *data);
 static void paper_top_bar_destroy (ScreenatorData *data);
 
@@ -16192,6 +16458,34 @@ paper_top_bar_icon_button (ScreenatorData *data, const gchar *icon,
 
   if (pixbuf)
     g_object_unref (pixbuf);
+  return button;
+}
+
+/* A compact toolbar indicator showing the active page number.  It uses the
+ * same button style as the icons but contains a text label. */
+static GtkWidget *
+paper_top_bar_page_number_button (ScreenatorData *data)
+{
+  GtkWidget *button = gtk_button_new ();
+  GtkWidget *label = gtk_label_new ("1");
+
+  gtk_style_context_add_class (gtk_widget_get_style_context (button),
+			       "paper-toolbar-button");
+  gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
+  gtk_widget_set_can_focus (button, FALSE);
+  paper_toolbar_set_tooltip_text (button, "Current page");
+  gtk_widget_add_events (button,
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+  g_signal_connect (button, "enter-notify-event",
+		    G_CALLBACK (paper_toolbar_tooltip_enter), data);
+  g_signal_connect (button, "leave-notify-event",
+		    G_CALLBACK (paper_toolbar_tooltip_leave), data);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.5);
+  gtk_label_set_yalign (GTK_LABEL (label), 0.5);
+  gtk_widget_set_size_request (button,
+			       MAX (paper_top_bar_icon_size (data) + 2, 34),
+			       -1);
+  gtk_container_add (GTK_CONTAINER (button), label);
   return button;
 }
 
@@ -16914,6 +17208,13 @@ paper_top_bar_delete_page_clicked (GtkButton *button, gpointer user_data)
   screenator_paper_delete_page ((ScreenatorData *) user_data);
 }
 
+static void
+paper_top_bar_goto_page_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  paper_show_goto_page_dialog ((ScreenatorData *) user_data);
+}
+
 static GtkWidget *
 paper_top_bar_menu_button (ScreenatorData *data, GdkPixbuf *pixbuf,
 			   const gchar *tooltip, GtkWidget *menu)
@@ -17106,6 +17407,10 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
 
   paper_toolbar_set_visible (bar->delete_page_button,
 			     data->paper != SCREENATOR_PAPER_NONE);
+  paper_toolbar_set_visible (bar->goto_page_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
+  paper_toolbar_set_visible (bar->page_number_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
 
   /* Pages can only be inserted/deleted in an active Plain, Ruled or Graph
    * paper. */
@@ -17123,6 +17428,35 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
 				can_insert && page_count > 1);
     if (bar->add_after_button)
       gtk_widget_set_sensitive (bar->add_after_button, can_insert);
+    if (bar->goto_page_button)
+      gtk_widget_set_sensitive (bar->goto_page_button,
+				data->paper != SCREENATOR_PAPER_NONE &&
+				page_count > 1);
+    if (bar->page_number_button && bar->page_number_label)
+      {
+	gchar *text;
+	gchar *tip;
+
+	if (data->paper != SCREENATOR_PAPER_NONE && doc && page_count > 0)
+	  {
+	    text = g_strdup_printf ("%u", doc->page + 1);
+	    tip = g_strdup_printf ("Current page: %u of %u",
+				   doc->page + 1, page_count);
+	  }
+	else
+	  {
+	    text = g_strdup ("-");
+	    tip = g_strdup ("Current page");
+	  }
+
+	gtk_label_set_text (GTK_LABEL (bar->page_number_label), text);
+	paper_toolbar_set_tooltip_text (bar->page_number_button, tip);
+	gtk_widget_set_sensitive (bar->page_number_button,
+				  data->paper != SCREENATOR_PAPER_NONE &&
+				  page_count > 1);
+	g_free (text);
+	g_free (tip);
+      }
   }
 
   if (bar->save_button && bar->save_image)
@@ -17698,6 +18032,23 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_add_after_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
+  button = paper_top_bar_page_number_button (data);
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "page_number");
+  bar->page_number_button = button;
+  bar->page_number_label = gtk_bin_get_child (GTK_BIN (button));
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_goto_page_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "goto-page.png", "Go to Page");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "goto_page");
+  bar->goto_page_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_goto_page_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
   /* Clear Screen and Toggle Visibility, after Shapes. */
   button = paper_top_bar_icon_button (data, "trash.png", "Clear Screen");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
@@ -17839,6 +18190,9 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_map), bar);
   g_signal_connect (window, "destroy",
 		    G_CALLBACK (paper_top_bar_destroyed), bar);
+  gtk_widget_set_has_tooltip (window, TRUE);
+  g_signal_connect (window, "query-tooltip",
+		    G_CALLBACK (paper_toolbar_query_tooltip), bar);
 
   /* Dragging any icon (or the gaps between them) moves the bar.  A short
    * click still reaches the button, because the drag starts only after the

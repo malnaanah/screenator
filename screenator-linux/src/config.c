@@ -691,11 +691,11 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
-#define PAPER_TOOLBAR_ITEMS_VERSION 2
+#define PAPER_TOOLBAR_ITEMS_VERSION 4
 
-/* Older saved toolbars predate Delete Page and Show Hints.  Add them once,
- * then record the migration version so hiding them in Settings stays
- * respected on later starts. */
+/* Older saved toolbars predate Delete Page, Show Hints, Go to Page and the
+ * current-page indicator.  Add them once, then record the migration version
+ * so hiding them in Settings stays respected on later starts. */
 static gchar *
 toolbar_items_migrate (const gchar *items, gint version)
 {
@@ -704,8 +704,12 @@ toolbar_items_migrate (const gchar *items, gint version)
   gboolean any = FALSE;
   gboolean has_delete = FALSE;
   gboolean has_hints = FALSE;
+  gboolean has_goto = FALSE;
+  gboolean has_page_number = FALSE;
   gboolean add_delete;
   gboolean add_hints;
+  gboolean add_goto;
+  gboolean add_page_number;
   guint i;
 
   if (!items || !*items || version >= PAPER_TOOLBAR_ITEMS_VERSION)
@@ -723,6 +727,10 @@ toolbar_items_migrate (const gchar *items, gint version)
 	has_delete = TRUE;
       if (g_strcmp0 (id, "hints") == 0)
 	has_hints = TRUE;
+      if (g_strcmp0 (id, "goto_page") == 0)
+	has_goto = TRUE;
+      if (g_strcmp0 (id, "page_number") == 0)
+	has_page_number = TRUE;
     }
 
   if (!any)
@@ -733,6 +741,8 @@ toolbar_items_migrate (const gchar *items, gint version)
 
   add_delete = !has_delete;
   add_hints = !has_hints;
+  add_goto = !has_goto;
+  add_page_number = !has_page_number;
   out = g_string_new (NULL);
 
   for (i = 0; tokens[i]; i++)
@@ -747,6 +757,19 @@ toolbar_items_migrate (const gchar *items, gint version)
 
       g_string_append (out, id);
 
+      if (add_page_number && g_strcmp0 (id, "insert_after") == 0)
+	{
+	  g_string_append (out, ",page_number");
+	  add_page_number = FALSE;
+	}
+      else if (add_page_number && g_strcmp0 (id, "goto_page") == 0)
+	{
+	  /* No Insert Page After in this saved layout: keep the indicator
+	   * immediately before Go to Page. */
+	  g_string_append (out, ",page_number");
+	  add_page_number = FALSE;
+	}
+
       if (add_delete && g_strcmp0 (id, "insert_before") == 0)
 	{
 	  g_string_append (out, ",delete_page");
@@ -757,6 +780,12 @@ toolbar_items_migrate (const gchar *items, gint version)
 	{
 	  g_string_append (out, ",hints");
 	  add_hints = FALSE;
+	}
+
+      if (add_goto && g_strcmp0 (id, "insert_after") == 0)
+	{
+	  g_string_append (out, ",goto_page");
+	  add_goto = FALSE;
 	}
     }
 
@@ -772,6 +801,20 @@ toolbar_items_migrate (const gchar *items, gint version)
       if (out->len > 0)
 	g_string_append_c (out, ',');
       g_string_append (out, "hints");
+    }
+
+  if (add_goto)
+    {
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+      g_string_append (out, "goto_page");
+    }
+
+  if (add_page_number)
+    {
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+      g_string_append (out, "page_number");
     }
 
   g_strfreev (tokens);
@@ -815,6 +858,8 @@ void read_keyfile(ScreenatorData *data)
     data->paper_toolbar_vertical = FALSE;
     g_free (data->paper_toolbar_items);
     data->paper_toolbar_items = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
+    g_free (data->paper_toolbar_order);
+    data->paper_toolbar_order = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
     {
       guint i;
 
@@ -1133,6 +1178,24 @@ void read_keyfile(ScreenatorData *data)
 	  g_free (data->paper_toolbar_items);
 	  data->paper_toolbar_items = toolbar_items_migrate (items, items_version);
 	  g_free (items);
+
+	  if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarOrder",
+				  NULL))
+	    {
+	      gchar *order = g_key_file_get_string (
+		key_file, "Drawing", "PaperToolbarOrder", NULL);
+
+	      g_free (data->paper_toolbar_order);
+	      data->paper_toolbar_order = order ? order : g_strdup ("");
+	    }
+	  else
+	    {
+	      /* Let the settings page derive a full order from the visible
+	       * items and the default order; hidden items keep a sensible
+	       * position instead of being forced to the end. */
+	      g_free (data->paper_toolbar_order);
+	      data->paper_toolbar_order = NULL;
+	    }
 	}
 
     if (g_key_file_has_key (key_file, "Drawing", "MathExpression", NULL))
@@ -1391,6 +1454,12 @@ void write_keyfile(ScreenatorData *data)
 			   data->paper_toolbar_items
 			   ? data->paper_toolbar_items
 			   : PAPER_TOOLBAR_DEFAULT_ITEMS);
+    g_key_file_set_string (key_file, "Drawing", "PaperToolbarOrder",
+			   data->paper_toolbar_order
+			   ? data->paper_toolbar_order
+			   : (data->paper_toolbar_items
+			      ? data->paper_toolbar_items
+			      : PAPER_TOOLBAR_DEFAULT_ITEMS));
     g_key_file_set_integer (key_file, "Drawing", "PaperToolbarItemsVersion",
 			    PAPER_TOOLBAR_ITEMS_VERSION);
     {

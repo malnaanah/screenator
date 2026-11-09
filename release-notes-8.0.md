@@ -72,6 +72,10 @@ Scope: Linux application (Screenator 8.0)
   deleted page with its drawings.  Drawing undo takes precedence while drawing
   history exists.
 - The Delete Page button becomes sensitive immediately after a page is added.
+- A Go to Page action is available in the Paper menu and tool bar for PDF and
+  multi-page Plain, Ruled and Graph documents, using goto-page.png.  A
+  current-page indicator sits directly before it, and inactive tool-bar
+  buttons now show their tooltips.
 - The tool-bar tooltip is anchored next to the hovered icon, so it stays
   aligned in both horizontal and vertical tool bars.
 - The Timer tool is hidden and disabled in Paper Drawing; it remains available
@@ -140,6 +144,8 @@ Scope: Linux application (Screenator 8.0)
 - The Toolbar list shows the actual icons, including generated colour,
   thickness and eraser-size samples.
 - Tool bar rows can be reordered by dragging the ☰ handle.
+- Hiding and showing a tool bar item keeps its row in place instead of moving
+  it to the end of the list.
 - The tool bar can be dragged with the pointer and snaps/clamps to screen edges.
 - Tool bar visibility and icon order are remembered across restarts.
 - Removed the special extra spacing around Switch Mode and Quit; all buttons now
@@ -161,6 +167,8 @@ Tool bar actions added or updated:
 - Insert Page Before
 - Delete Page
 - Insert Page After
+- Current Page
+- Go to Page
 - Clear Screen
 - Toggle Visibility
 - Eraser Size

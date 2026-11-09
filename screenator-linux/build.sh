@@ -146,7 +146,7 @@ install -m 0644 "$SRC"/data/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after actions save screenshot opacity marker_opacity cursor; do
+            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
 done
 install -m 0644 "$SRC"/data/hints.html "$PKROOT"/usr/share/screenator/hints.html
@@ -365,7 +365,7 @@ install -m 0644 "$SRC"/data/hints.html \
    "$APPDIR"/usr/share/screenator/hints.html
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after actions save screenshot opacity marker_opacity cursor; do
+            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
 done
 

@@ -269,8 +269,9 @@ and you can keep using your applications while it is visible.
   It contains **Switch Mode** first, then **Cursor**, **Pen**, **Text**,
   **Eraser**, **Arrow**, **Timer**, **Shapes**, **Undo**, **Redo**, **Save**,
   **Paper Type**, **Insert Page Before**, **Delete Page**, **Insert Page
-  After**, **Clear Screen**, **Toggle Visibility**, **Eraser Size**, **Line
-  Color**,
+  After**, **Current Page**, **Go to Page**, **Clear Screen**,
+  **Toggle Visibility**,
+  **Eraser Size**, **Line Color**,
   **Thickness**, **Fill Color**, **Opacity**, **Marker Opacity**, **Settings**,
   **Show Hints** and **Quit** last.
   **Paper Type**

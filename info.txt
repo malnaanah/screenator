@@ -270,8 +270,8 @@ Features:
     vertically on the right edge, and Settings > Toolbar chooses the visible
     icons and their order.  It contains Switch Mode first, then Cursor, Pen,
     Text, Eraser, Arrow, Timer, Shapes, Undo, Redo, Save, Paper Type, Insert
-    Page Before, Delete Page, Insert Page After, Clear Screen, Toggle
-    Visibility, Eraser
+    Page Before, Delete Page, Insert Page After, Current Page, Go to Page,
+    Clear Screen, Toggle Visibility, Eraser
     Size, Line Color, Thickness, Fill Color, Opacity, Marker Opacity,
     Settings, Show Hints and Quit last.  The Timer icon appears only in Screen mode, and
     Toggle Visibility is hidden from the tool bar in Paper mode.  Paper Type

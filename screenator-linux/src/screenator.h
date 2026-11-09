@@ -40,7 +40,8 @@
  * Settings > Toolbar page and by the tool bar builder. */
 #define PAPER_TOOLBAR_DEFAULT_ITEMS \
   "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,save," \
-  "paper,insert_before,delete_page,insert_after,clear,visibility,eraser_size," \
+  "paper,insert_before,delete_page,insert_after,page_number,goto_page,clear," \
+  "visibility,eraser_size," \
   "line_color,thickness,fill_color,opacity,marker_opacity,settings,hints,quit"
 
 #define SCREENATOR_MOUSE_EVENTS ( GDK_POINTER_MOTION_MASK | \
@@ -831,6 +832,7 @@ typedef struct
   gboolean     paper_toolbar_open;
   gboolean     paper_toolbar_vertical;  /* else horizontal */
   gchar       *paper_toolbar_items;     /* visible ids, comma separated */
+  gchar       *paper_toolbar_order;     /* all ids in settings-list order */
 
   /* A desktop file chooser is open; ignore overlay input while it is. */
   gboolean     native_dialog_open;

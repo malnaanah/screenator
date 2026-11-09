@@ -116,6 +116,7 @@ install(FILES
     data/add_before.png
     data/delete-page.png
     data/add_after.png
+    data/goto-page.png
     data/actions.png
     data/hints.html
     data/save.png
