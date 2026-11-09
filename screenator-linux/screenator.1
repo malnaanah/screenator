@@ -26,7 +26,8 @@ selected thickness are filled magenta. The outer six pixel ring has the
 line colour in its upper half and the shape fill colour in its lower half; when
 shapes are not filled, the lower half shows twelve black and white radial
 stripes. Both halves have a one pixel black stroke. Left or right click on the
-ring opens the same menu as the floating icon. "Show settings indicator" in
+ring opens the same menu as the floating icon. "Show settings indicator on
+Floating Icon" in
 Settings
 the menu turns it off and on; it is on by default and is disabled while the
 floating icon is hidden.
@@ -145,8 +146,8 @@ Escape while a shape or text is unfinished; after it is committed, the same
 button is a temporary eraser and keeps the selected tool. The mouse wheel
 scrolls the pages, except while a placed shape or text shows its handles: then
 the wheel and stylus button 1 change its colour. While text is being typed, the
-wheel and stylus side button 1 change the text colour, and right click cancels
-the text. F10 shows or hides a tool bar in both Screen and Paper modes; by
+wheel and stylus side button 1 change the text colour. Right click, stylus side
+button 2 or mouse button 2 accepts the text like Enter. F10 shows or hides a tool bar in both Screen and Paper modes; by
 default it is horizontal along the top edge, and Settings > General can make
 it vertical along the right edge instead. Settings > Toolbar chooses the
 visible icons and their order. The bar has Switch Mode first, then
@@ -291,7 +292,8 @@ Every dialog has a title bar with a close button and a visible border, and is
 shown above the drawings.
 .br
 The "Settings" item opens a tabbed dialog. Its General tab holds "Save
-annotations on exit", "Change Font", "Show settings indicator", timer delay
+annotations on exit", "Change Font", "Show settings indicator on Floating
+Icon", timer delay
 and "Reset app settings and drawings"; its Paper tab holds continuous
 scrolling and paper size; its Toolbar tab sets the tool bar direction, icon
 size, visible icons and their order; its Floating Icon tab sets the floating
@@ -333,7 +335,8 @@ text is loaded from an HTML file each time the dialog opens. Copy
 /usr/share/screenator/hints.html to ~/.config/Screenator/hints.html to
 customise it, or set SCREENATOR_HINTS_FILE to another HTML file. Headings,
 paragraphs, lists, bold/italic/underline text, links and coloured spans are
-supported.
+supported. Simple <style> rules such as h2 { color: #008800; } and
+span { color: #0000aa; } also work.
 .br
 .SH KEYBOARD CONTROL
 By default, Screenator grabs the "F9" key globally (this can be changed using

@@ -718,6 +718,9 @@ typedef struct
   gboolean     text_editor_rtl;    /* editor width was sized for RTL text */
   guint        text_focus_id;
   guint        text_focus_attempts;
+  gboolean     text_focus_committed;   /* next paper click follows focus-out commit */
+  guint        text_focus_commit_id;
+  guint        text_commit_suppress_button;
   /* The text being typed is previewed in the annotation window, above the
    * annotations, because the editor window itself can be hidden behind them.
    * The caret is drawn there too, so it is never hidden by a drawing or the

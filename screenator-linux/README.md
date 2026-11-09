@@ -259,8 +259,9 @@ and you can keep using your applications while it is visible.
   button is a temporary eraser and keeps the selected tool. The mouse wheel
   scrolls the pages, except while a placed shape or text shows its handles:
   then the wheel and stylus button 1 change its colour. While text is being
-  typed, the wheel and stylus side button 1 also change the text colour, and
-  a right click cancels the text. **F10** shows
+  typed, the wheel and stylus side button 1 also change the text colour.
+  Right click, stylus side button 2 or mouse button 2 accepts the text like
+  Enter. **F10** shows
   or hides the tool bar in both **Screen** and **Paper** modes.
   By default the bar is horizontal along the top edge; **Settings > General**
   can make it vertical along the right edge, and **Settings > Toolbar** chooses
@@ -311,6 +312,9 @@ and you can keep using your applications while it is visible.
   `~/.config/Screenator/hints.html` to customise it, or set
   `SCREENATOR_HINTS_FILE` to another HTML file. Headings, paragraphs, lists,
   bold/italic/underline text, links and coloured spans are supported.
+  Simple `<style>` rules such as `h2 { color: #008800; }` and
+  `span { color: #0000aa; }` also work, and the hints window shows the file
+  path at the bottom.
 - Pen, marker, font, eraser, shape and **Paper** mode settings are saved in
   `~/.config/Screenator/screenator.ini` and restored on the next start, together with the
   floating icon and settings indicator visibility, the selected paper type,

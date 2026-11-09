@@ -263,7 +263,8 @@ Features:
     tool.  The mouse wheel scrolls the pages, except while a placed shape or
     text shows its handles: then the wheel and stylus button 1 change its
     colour.  While text is being typed, the wheel and stylus side button 1
-    change the text colour, and right click cancels the text.
+    change the text colour.  Right click, stylus side button 2 or mouse
+    button 2 accepts the text like Enter.
     F10 shows or hides the tool bar in both Screen and Paper modes.  It is
     horizontal on the top edge by default; Settings > General can place it
     vertically on the right edge, and Settings > Toolbar chooses the visible
@@ -311,6 +312,9 @@ Features:
     ~/.config/Screenator/hints.html to customise it, or set
     SCREENATOR_HINTS_FILE to another HTML file.  Headings, paragraphs, lists,
     bold/italic/underline text, links and coloured spans are supported.
+    Simple <style> rules such as h2 { color: #008800; } and
+    span { color: #0000aa; } also work, and the hints window shows the file
+    path at the bottom.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
     across restarts, together with whether the floating icon and the settings

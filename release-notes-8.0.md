@@ -255,7 +255,8 @@ Tool bar actions added or updated:
 - After the object is committed, the same button becomes the temporary eraser
   and keeps the selected tool.
 - While typing text, the mouse wheel and stylus side button 1 change the text
-  colour; right click cancels the text like Escape.
+  colour.  Right click, stylus side button 2 or mouse button 2 accepts the text
+  like Enter; Escape still cancels it.
 - While a placed shape or text shows its handles, the wheel and stylus side
   button 1 change its colour instead of scrolling.
 - Added Page Up/Page Down/Home/End page navigation in Paper mode.
@@ -289,9 +290,10 @@ Tool bar actions added or updated:
 - Annotation strokes, lines, arrows, frames, stars, triangles and splines are
   recorded as vector drawing operations for PDF export.
 - Text is recorded through Pango and exported as text rather than bitmap.
-- Paint-bucket fills use the raster annotation layer as a fallback.  A click
-  that does not actually fill anything no longer discards the page's vector
-  layer, and undoing a completed fill restores it.
+- PDF export is vector-only: annotations are never written from the raster
+  annotation layer.  Paint-bucket fills remain a screen-layer operation and
+  are not included in the exported vector page; they no longer force the rest
+  of the page to export as a bitmap.
 - Undo and redo keep a parallel snapshot of the page's vector layer, so
   strokes stay vector paths and text stays text after undoing or redoing
   them.

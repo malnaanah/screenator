@@ -55,7 +55,7 @@ static void paper_record_star (ScreenatorData *data,
 static void paper_record_triangle (ScreenatorData *data,
 				   const ScreenatorTriangle *triangle);
 static void paper_record_spline (ScreenatorData *data, GArray *nodes);
-static void paper_invalidate_active_vector (ScreenatorData *data);
+
 static void paper_clear_active_vector (ScreenatorData *data);
 
 /* Build the eraser cursor from the configured eraser width.  The ring is a
@@ -527,7 +527,8 @@ paper_vector_context (ScreenatorData *data, ScreenatorPaperDocument *doc,
 	{
 	  cairo_surface_destroy (page->vector);
 	  page->vector = NULL;
-	  page->vector_valid = FALSE;
+	  /* Leave the page eligible for another recording attempt; a transient
+	   * Cairo failure must not force bitmap export for the rest of the page. */
 	  return NULL;
 	}
     }
@@ -4861,7 +4862,6 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
    * open or unchanged region must not discard the vector drawing.  Taking the
    * undo snapshot first also lets undoing the fill restore the vector layer. */
   snap_undo_state (data);
-  paper_invalidate_active_vector (data);
 
   for (i = 0; i < (guint) height; i++)
     {
@@ -5034,29 +5034,6 @@ void
 screenator_paper_record_spline (ScreenatorData *data, GArray *nodes)
 {
   paper_record_spline (data, nodes);
-}
-
-static void
-paper_invalidate_active_vector (ScreenatorData *data)
-{
-  ScreenatorPaperDocument *doc;
-  ScreenatorPaperPage *page;
-
-  if (!data || data->paper == SCREENATOR_PAPER_NONE)
-    return;
-
-  doc = data->paper_docs[data->paper];
-  if (!doc || !doc->pages || !doc->pages->len)
-    return;
-
-  page = &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
-  if (g_getenv ("SCREENATOR_VECTOR_DEBUG"))
-    g_printerr ("VECTOR: invalidate page %u style %d\n",
-		doc->page, page->style);
-  if (page->vector)
-    cairo_surface_destroy (page->vector);
-  page->vector = NULL;
-  page->vector_valid = FALSE;
 }
 
 static void

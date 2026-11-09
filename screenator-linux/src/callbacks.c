@@ -301,6 +301,29 @@ paper_raise_over_panel (ScreenatorData *data)
     gdk_window_raise (window);
 }
 
+/* Selecting a tool while the Paper window is behind another application must
+ * make the paper usable immediately, with the tool bar still above it. */
+static void
+paper_bring_to_front (ScreenatorData *data)
+{
+  GdkWindow *window;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE || !data->paper_win)
+    return;
+
+  gtk_window_deiconify (GTK_WINDOW (data->paper_win));
+  gtk_window_present_with_time (GTK_WINDOW (data->paper_win),
+				gtk_get_current_event_time ());
+  paper_raise_over_panel (data);
+
+  window = gtk_widget_get_window (data->paper_win);
+  if (window)
+    gdk_window_raise (window);
+
+  paper_take_focus (data);
+  raise_icon_window (data);
+}
+
 static gboolean
 on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
@@ -2183,13 +2206,38 @@ on_text_editor_destroy (GtkWidget *widget, gpointer user_data)
 }
 
 static gboolean
+clear_text_focus_commit (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->text_focus_commit_id = 0;
+  data->text_focus_committed = FALSE;
+  return G_SOURCE_REMOVE;
+}
+
+static void
+mark_text_focus_commit (ScreenatorData *data)
+{
+  data->text_focus_committed = TRUE;
+  if (data->text_focus_commit_id)
+    g_source_remove (data->text_focus_commit_id);
+  data->text_focus_commit_id =
+    g_timeout_add (500, clear_text_focus_commit, data);
+}
+
+static gboolean
 on_text_editor_focus_out (GtkWidget *widget, GdkEventFocus *event,
 			  gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
 
   if (data->text_editor_active && data->text_editor)
-    close_text_editor (data, TRUE);
+    {
+      /* The click that removed focus must not also act as Escape or as the
+       * temporary eraser.  Consume it once it reaches the paper window. */
+      mark_text_focus_commit (data);
+      close_text_editor (data, TRUE);
+    }
 
   return FALSE;
 }
@@ -2258,6 +2306,13 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   data->text_editor_positioned = FALSE;
   data->text_editor_sized = FALSE;
   data->text_editor_rtl = FALSE;
+  data->text_focus_committed = FALSE;
+  data->text_commit_suppress_button = 0;
+  if (data->text_focus_commit_id)
+    {
+      g_source_remove (data->text_focus_commit_id);
+      data->text_focus_commit_id = 0;
+    }
   data->text_preview_valid = FALSE;
   memset (&data->text_preview_bounds, 0, sizeof (data->text_preview_bounds));
 
@@ -5316,6 +5371,26 @@ gboolean on_buttonpress (GtkWidget *win,
       return TRUE;
     }
 
+  /* Committing the text closed the editor on focus-out.  The same click must
+   * not close the new text handles or start the paper eraser, in either
+   * mode.  Button 1 is allowed through so it can start a new text. */
+  if (data->text_focus_committed)
+    {
+      if (data->text_focus_commit_id)
+	{
+	  g_source_remove (data->text_focus_commit_id);
+	  data->text_focus_commit_id = 0;
+	}
+      data->text_focus_committed = FALSE;
+
+      if (ev->button == 2 || ev->button == 3)
+	{
+	  data->text_commit_suppress_button = ev->button;
+	  data->text_pressed = FALSE;
+	  return TRUE;
+	}
+    }
+
   /* Crossing events can be stale after using the controls; pick the correct
    * pointer for this press before an eraser cursor is chosen. */
   paper_refresh_controls_hover (data);
@@ -5328,10 +5403,9 @@ gboolean on_buttonpress (GtkWidget *win,
 	       gdk_device_get_name(ev->device), ev->button, ev->state, ev->x, ev->y);
 
   /* The text editor disables the mouse: every button is swallowed until the
-   * typed text is accepted with Enter (or cancelled with Escape).  The click
-   * must not commit the text and must not reach the application below.
-   * The stylus first side button changes the text colour, and a right click
-   * cancels the text like Escape. */
+   * typed text is accepted.  Right click, stylus side button 2 and mouse
+   * button 2 accept the text exactly like Enter; Escape still cancels it.
+   * The stylus first side button keeps changing the text colour. */
   if (data->text_editor)
     {
       if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2)
@@ -5340,9 +5414,10 @@ gboolean on_buttonpress (GtkWidget *win,
 	  return TRUE;
 	}
 
-      if (ev->button == 3)
+      if (ev->button == 2 || ev->button == 3)
 	{
-	  close_text_editor (data, FALSE);
+	  data->text_commit_suppress_button = ev->button;
+	  close_text_editor (data, TRUE);
 	  return TRUE;
 	}
 
@@ -6246,6 +6321,15 @@ gboolean on_buttonrelease (GtkWidget *win,
   if(devdata->cur_context)
     width = devdata->cur_context->arrowsize * devdata->cur_context->width / 2;
    
+
+  /* The press that committed the text is consumed here as well, so the
+   * paper never treats it as a finished handle or a temporary eraser. */
+  if (data->text_commit_suppress_button == ev->button)
+    {
+      data->text_commit_suppress_button = 0;
+      data->text_pressed = FALSE;
+      return TRUE;
+    }
 
   /* The text editor disables the mouse; ignore every button until the typed
    * text is accepted with Enter. */
@@ -10424,11 +10508,11 @@ paper_write_pdf_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
 	    }
 #endif
 
-	  if (!rendered && page->background)
+	  /* Vector-only export: never fall back to the rendered bitmap of the
+	   * source PDF page. */
+	  if (!rendered)
 	    {
 	      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
-	      cairo_paint (cr);
-	      cairo_set_source_surface (cr, page->background, 0, 0);
 	      cairo_paint (cr);
 	    }
 	}
@@ -10456,14 +10540,11 @@ paper_write_pdf_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
 		    page->vector ? (gint) cairo_surface_get_type (page->vector)
 		    : -1, (void *) page->annotations);
 
-      if (page->vector_valid && page->vector)
+      /* Vector-only export.  The annotation raster is never written to the
+       * PDF; text and graphics must remain text and vector paths. */
+      if (page->vector)
 	{
 	  cairo_set_source_surface (cr, page->vector, 0, 0);
-	  cairo_paint (cr);
-	}
-      else if (page->annotations)
-	{
-	  cairo_set_source_surface (cr, page->annotations, 0, 0);
 	  cairo_paint (cr);
 	}
       cairo_restore (cr);
@@ -11393,6 +11474,11 @@ screenator_exit_paper_drawing (ScreenatorData *data)
   screenator_paper_pan_end (data);
   reset_undo_history (data);
   screenator_use_paper_window (data, FALSE);
+
+  /* The toolbar still shows the Paper tool after returning to Screen mode.
+   * Activate that tool again so the icon and the actual input agree. */
+  if (data->forced_context && !screenator_any_grabbed (data))
+    acquire_grab (data, NULL);
 
   update_paper_shortcuts (data, FALSE);
   paper_restore_focus (data);
@@ -12767,7 +12853,7 @@ build_general_settings_page (SettingsDialog *sd)
   gtk_grid_attach (GTK_GRID (grid), sd->save_check, 0, 0, 2, 1);
 
   sd->indicator_check = gtk_check_button_new_with_label (
-    "Show settings indicator");
+    "Show settings indicator on Floating Icon");
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->indicator_check),
 				data->show_settings_indicator);
   gtk_widget_set_sensitive (sd->indicator_check, data->show_floating_icon);
@@ -13769,7 +13855,6 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   ScreenatorData *data = (ScreenatorData *) user_data;
   GHashTableIter it;
   gpointer value;
-  gchar *config_path;
   ScreenatorPaperType type;
 
   (void) menuitem;
@@ -13803,17 +13888,18 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
     }
 
   screenator_page_history_clear (data);
+  if (data->pdf_page_memory)
+    g_hash_table_remove_all (data->pdf_page_memory);
 
   g_free (data->paper_pdf_path);
   data->paper_pdf_path = NULL;
   data->paper_pdf_page = 0;
   data->start_paper = FALSE;
 
-  /* Delete the saved drawing and the configuration file. */
-  remove_saved_annotations ();
-  config_path = screenator_config_path ("screenator.ini");
-  g_remove (config_path);
-  g_free (config_path);
+  /* Remove every configuration file before read_keyfile() so it loads the
+   * built-in defaults instead of the old settings.  The directory is removed
+   * again at the end, after the reset helpers have finished writing. */
+  screenator_config_remove_all ();
 
   /* Rebuild every setting from the defaults. */
   g_free (data->font);
@@ -13858,6 +13944,10 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
     hide_window (data);
 
   write_keyfile (data);
+  /* Reset means forget every configuration file, including hints, user tool
+   * configuration and saved annotations.  Do this last because some of the
+   * reset helpers write the default keyfile. */
+  screenator_config_remove_all ();
   schedule_tray_menu_refresh (data);
 }
 
@@ -16249,6 +16339,13 @@ paper_top_bar_hints_clicked (GtkButton *button, gpointer user_data)
 }
 
 static void
+on_hints_about (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  on_about (NULL, user_data);
+}
+
+static void
 paper_top_bar_quit_clicked (GtkButton *button, gpointer user_data)
 {
   (void) button;
@@ -16306,6 +16403,7 @@ paper_top_bar_cursor_clicked (GtkButton *button, gpointer user_data)
    * handles was just committed. */
   screenator_exit_tool (data);
   screenator_activate_cursor_state (data);
+  paper_bring_to_front (data);
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
@@ -18303,16 +18401,203 @@ hints_cleanup_markup (GString *out)
   return g_string_free (clean, FALSE);
 }
 
+typedef enum
+{
+  HINTS_TAG_B = 0,
+  HINTS_TAG_I,
+  HINTS_TAG_U,
+  HINTS_TAG_TT,
+  HINTS_TAG_SPAN
+} HintsMarkupTag;
+
+static const gchar * const hints_markup_open[] = {
+  "<b>", "<i>", "<u>", "<tt>", "<span>"
+};
+static const gchar * const hints_markup_close[] = {
+  "</b>", "</i>", "</u>", "</tt>", "</span>"
+};
+
+static void
+hints_markup_push (GArray *stack, HintsMarkupTag tag, GString *out)
+{
+  HintsMarkupTag value = tag;
+
+  g_array_append_val (stack, value);
+  g_string_append (out, hints_markup_open[tag]);
+}
+
+/* Close only a tag that is actually open and is the innermost element.  This
+ * keeps the result valid even when the hand-edited HTML has an extra closing
+ * tag or crossed nesting. */
+static void
+hints_markup_pop (GArray *stack, HintsMarkupTag tag, GString *out)
+{
+  if (!stack || stack->len == 0)
+    return;
+
+  if (g_array_index (stack, HintsMarkupTag, stack->len - 1) != tag)
+    return;
+
+  g_string_append (out, hints_markup_close[tag]);
+  g_array_set_size (stack, stack->len - 1);
+}
+
+static gchar *
+hints_css_color_from_declarations (const gchar *declarations)
+{
+  gchar **parts = g_strsplit (declarations, ";", -1);
+  gchar *result = NULL;
+  guint i;
+
+  for (i = 0; parts[i] && !result; i++)
+    {
+      gchar *colon = strchr (parts[i], ':');
+      gchar *property;
+      gchar *value;
+      gchar *hash;
+
+      if (!colon)
+	continue;
+
+      *colon = '\0';
+      property = g_strstrip (parts[i]);
+      if (g_ascii_strcasecmp (property, "color") != 0)
+	continue;
+
+      value = g_strstrip (colon + 1);
+      hash = strchr (value, '#');
+      if (hash)
+	{
+	  gchar color[16];
+	  gsize n = 0;
+
+	  color[n++] = '#';
+	  for (hash++; *hash && g_ascii_isxdigit (*hash) && n + 1 < sizeof color;
+	       hash++)
+	    color[n++] = *hash;
+	  color[n] = '\0';
+
+	  if (hints_safe_color (color))
+	    result = g_strdup (color);
+	}
+    }
+
+  g_strfreev (parts);
+  return result;
+}
+
+static const gchar *
+hints_strcasestr (const gchar *haystack, const gchar *needle)
+{
+  gchar *lower_haystack = g_ascii_strdown (haystack, -1);
+  gchar *lower_needle = g_ascii_strdown (needle, -1);
+  gchar *match = g_strstr_len (lower_haystack, -1, lower_needle);
+  const gchar *result = match
+    ? haystack + (match - lower_haystack) : NULL;
+
+  g_free (lower_haystack);
+  g_free (lower_needle);
+  return result;
+}
+
+/* Read simple <style> rules.  The hints file is meant to be hand-edited, so a
+ * tiny tag-selector/color parser is enough and avoids a CSS dependency. */
+static void
+hints_parse_styles (const gchar *html, GHashTable *css)
+{
+  const gchar *p = html;
+
+  while (p && (p = hints_strcasestr (p, "<style")))
+    {
+      const gchar *open = strchr (p, '>');
+      const gchar *close;
+      gchar *text;
+      gchar **rules;
+      guint i;
+
+      if (!open)
+	break;
+
+      close = hints_strcasestr (open + 1, "</style>");
+      if (!close)
+	break;
+
+      text = g_strndup (open + 1, (gsize) (close - (open + 1)));
+      rules = g_strsplit (text, "}", -1);
+
+      for (i = 0; rules[i]; i++)
+	{
+	  gchar *brace = strchr (rules[i], '{');
+	  gchar *selectors;
+	  gchar *declarations;
+	  gchar *color;
+	  gchar **sels;
+	  guint j;
+
+	  if (!brace)
+	    continue;
+
+	  *brace = '\0';
+	  selectors = g_strstrip (rules[i]);
+	  declarations = g_strstrip (brace + 1);
+	  color = hints_css_color_from_declarations (declarations);
+	  if (!color)
+	    continue;
+
+	  sels = g_strsplit (selectors, ",", -1);
+	  for (j = 0; sels[j]; j++)
+	    {
+	      gchar *selector = g_strstrip (sels[j]);
+	      gchar *space;
+	      gchar *q;
+	      gchar *key;
+	      gboolean valid = TRUE;
+
+	      if (!*selector || selector[0] == '.' || selector[0] == '#')
+		continue;
+
+	      space = strrchr (selector, ' ');
+	      if (space)
+		selector = space + 1;
+
+	      for (q = selector; *q; q++)
+		if (!g_ascii_isalnum (*q) && *q != '-' && *q != '_')
+		  {
+		    valid = FALSE;
+		    break;
+		  }
+
+	      if (!valid || !*selector)
+		continue;
+
+	      key = g_ascii_strdown (selector, -1);
+	      g_hash_table_replace (css, key, g_strdup (color));
+	    }
+
+	  g_strfreev (sels);
+	  g_free (color);
+	}
+
+      g_strfreev (rules);
+      g_free (text);
+      p = close + 8;
+    }
+}
+
 static gchar *
 hints_html_to_markup (const gchar *html)
 {
   GString *out = g_string_new (NULL);
   const gchar *p = html;
   gchar list_color[16];
+  GArray *open_tags = g_array_new (FALSE, FALSE, sizeof (HintsMarkupTag));
+  GHashTable *css_colors = g_hash_table_new_full (g_str_hash, g_str_equal,
+						  g_free, g_free);
   gboolean in_space = TRUE;
   gboolean skip_content = FALSE;
 
   g_strlcpy (list_color, HINTS_DEFAULT_COLOR, sizeof list_color);
+  hints_parse_styles (html, css_colors);
 
   while (p && *p)
     {
@@ -18380,21 +18665,31 @@ hints_html_to_markup (const gchar *html)
 	      continue;
 	    }
 
-	  if (!closing &&
-	      hints_tag_color (tag, color, sizeof color) &&
-	      hints_safe_color (color))
+	  color[0] = '\0';
+	  if (!closing)
 	    {
-	      /* The heading or span branch below uses this colour. */
+	      if (hints_tag_color (tag, color, sizeof color) &&
+		  hints_safe_color (color))
+		{
+		  /* Inline style colour wins over the stylesheet. */
+		}
+	      else
+		{
+		  const gchar *css_color =
+		    g_hash_table_lookup (css_colors, name);
+
+		  if (css_color)
+		    g_strlcpy (color, css_color, sizeof color);
+		}
 	    }
-	  else
-	    color[0] = '\0';
 
 	  if (strcmp (name, "h1") == 0 || strcmp (name, "h2") == 0 ||
 	      strcmp (name, "h3") == 0)
 	    {
 	      if (closing)
 		{
-		  g_string_append (out, "</span>\n");
+		  hints_markup_pop (open_tags, HINTS_TAG_SPAN, out);
+		  g_string_append (out, "\n");
 		  g_strlcpy (list_color, HINTS_DEFAULT_COLOR,
 			     sizeof list_color);
 		}
@@ -18402,10 +18697,12 @@ hints_html_to_markup (const gchar *html)
 		{
 		  const gchar *size = strcmp (name, "h1") == 0 ? "xx-large"
 		    : strcmp (name, "h2") == 0 ? "large" : "medium";
+		  HintsMarkupTag tag = HINTS_TAG_SPAN;
 
 		  if (color[0])
 		    g_strlcpy (list_color, color, sizeof list_color);
 
+		  g_array_append_val (open_tags, tag);
 		  g_string_append_printf (
 		    out, "\n<span foreground=\"%s\" weight=\"bold\" "
 		    "size=\"%s\">", list_color, size);
@@ -18439,29 +18736,66 @@ hints_html_to_markup (const gchar *html)
 	    }
 	  else if (strcmp (name, "b") == 0 ||
 		   strcmp (name, "strong") == 0)
-	    g_string_append (out, closing ? "</b>" : "<b>");
+	    {
+	      if (closing)
+		hints_markup_pop (open_tags, HINTS_TAG_B, out);
+	      else
+		hints_markup_push (open_tags, HINTS_TAG_B, out);
+	    }
 	  else if (strcmp (name, "i") == 0 ||
 		   strcmp (name, "em") == 0)
-	    g_string_append (out, closing ? "</i>" : "<i>");
+	    {
+	      if (closing)
+		hints_markup_pop (open_tags, HINTS_TAG_I, out);
+	      else
+		hints_markup_push (open_tags, HINTS_TAG_I, out);
+	    }
 	  else if (strcmp (name, "u") == 0)
-	    g_string_append (out, closing ? "</u>" : "<u>");
+	    {
+	      if (closing)
+		hints_markup_pop (open_tags, HINTS_TAG_U, out);
+	      else
+		hints_markup_push (open_tags, HINTS_TAG_U, out);
+	    }
 	  else if (strcmp (name, "code") == 0 ||
 		   strcmp (name, "tt") == 0)
-	    g_string_append (out, closing ? "</tt>" : "<tt>");
+	    {
+	      if (closing)
+		hints_markup_pop (open_tags, HINTS_TAG_TT, out);
+	      else
+		hints_markup_push (open_tags, HINTS_TAG_TT, out);
+	    }
 	  else if (strcmp (name, "a") == 0)
-	    g_string_append (out, closing ? "</span>"
-			     : "<span underline=\"single\" "
-			     "foreground=\"#2980b9\">");
+	    {
+	      if (closing)
+		hints_markup_pop (open_tags, HINTS_TAG_SPAN, out);
+	      else
+		{
+		  HintsMarkupTag tag = HINTS_TAG_SPAN;
+
+		  g_array_append_val (open_tags, tag);
+		  g_string_append_printf (
+		    out, "<span underline=\"single\" foreground=\"%s\">",
+		    color[0] ? color : "#2980b9");
+		}
+	    }
 	  else if (strcmp (name, "span") == 0 ||
 		   strcmp (name, "font") == 0)
 	    {
 	      if (closing)
-		g_string_append (out, "</span>");
-	      else if (color[0])
-		g_string_append_printf (out, "<span foreground=\"%s\">",
-					color);
+		hints_markup_pop (open_tags, HINTS_TAG_SPAN, out);
 	      else
-		g_string_append (out, "<span>");
+		{
+		  HintsMarkupTag tag = HINTS_TAG_SPAN;
+
+		  g_array_append_val (open_tags, tag);
+		  if (color[0])
+		    g_string_append_printf (out,
+					    "<span foreground=\"%s\">",
+					    color);
+		  else
+		    g_string_append (out, "<span>");
+		}
 	    }
 
 	  g_free (tag);
@@ -18512,6 +18846,19 @@ hints_html_to_markup (const gchar *html)
       }
     }
 
+  /* Auto-close anything the hand-edited HTML left open, so the resulting
+   * Pango markup is always valid. */
+  while (open_tags->len > 0)
+    {
+      HintsMarkupTag tag =
+	g_array_index (open_tags, HintsMarkupTag, open_tags->len - 1);
+
+      g_string_append (out, hints_markup_close[tag]);
+      g_array_set_size (open_tags, open_tags->len - 1);
+    }
+  g_array_free (open_tags, TRUE);
+  g_hash_table_destroy (css_colors);
+
   return hints_cleanup_markup (out);
 }
 
@@ -18550,6 +18897,12 @@ hints_load_html (void)
       g_free (contents);
       contents = NULL;
     }
+
+  /* Make the user copy the canonical editable file.  Once it exists, later
+   * edits there are what the hints window reads. */
+  if (contents && !g_file_test (path, G_FILE_TEST_EXISTS))
+    g_file_set_contents (path, contents, -1, NULL);
+
   g_free (path);
 
   if (!contents)
@@ -18687,6 +19040,26 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   gtk_container_add (GTK_CONTAINER (content), scroll);
   gtk_container_add (GTK_CONTAINER (scroll), box);
 
+  {
+    gchar *user_path = screenator_config_path ("hints.html");
+    gchar *escaped = g_markup_escape_text (user_path, -1);
+    gchar *path_markup = g_strdup_printf (
+      "<span size=\"small\" foreground=\"#7f8c8d\">Edit hints: %s</span>",
+      escaped);
+    GtkWidget *path_label = gtk_label_new (NULL);
+
+    gtk_label_set_markup (GTK_LABEL (path_label), path_markup);
+    gtk_label_set_xalign (GTK_LABEL (path_label), 0.0);
+    gtk_widget_set_margin_start (path_label, 14);
+    gtk_widget_set_margin_end (path_label, 14);
+    gtk_widget_set_margin_bottom (path_label, 4);
+    gtk_box_pack_start (GTK_BOX (content), path_label, FALSE, FALSE, 0);
+
+    g_free (user_path);
+    g_free (escaped);
+    g_free (path_markup);
+  }
+
   hints_html = hints_load_html ();
   hints_markup = hints_html_to_markup (hints_html);
   g_free (hints_html);
@@ -18706,11 +19079,12 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   {
     GtkWidget *action_area;
     GtkWidget *close_button;
+    GtkWidget *about_button;
 
     /* A check button must not be added with gtk_dialog_add_action_widget(),
      * because that would close the dialog when it is toggled.  Pack it into
-     * the action area directly, then put the check at the left edge and the
-     * Close button at the right edge. */
+     * the action area directly, then put the check at the left edge, About
+     * before Close, and the Close button at the right edge. */
     G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     action_area = gtk_dialog_get_action_area (GTK_DIALOG (dialog));
     G_GNUC_END_IGNORE_DEPRECATIONS
@@ -18718,13 +19092,19 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
       gtk_dialog_get_widget_for_response (GTK_DIALOG (dialog),
 					  GTK_RESPONSE_CLOSE);
 
+    about_button = gtk_button_new_with_label ("About");
+    g_signal_connect (about_button, "clicked",
+		      G_CALLBACK (on_hints_about), data);
+    gtk_box_pack_start (GTK_BOX (action_area), about_button, FALSE, FALSE, 0);
+
     gtk_box_pack_start (GTK_BOX (action_area), check, FALSE, FALSE, 0);
     gtk_box_reorder_child (GTK_BOX (action_area), check, 0);
+    gtk_box_reorder_child (GTK_BOX (action_area), about_button, 1);
     if (close_button)
-      gtk_box_reorder_child (GTK_BOX (action_area), close_button, 1);
+      gtk_box_reorder_child (GTK_BOX (action_area), close_button, 2);
 
     gtk_button_box_set_layout (GTK_BUTTON_BOX (action_area),
-			       GTK_BUTTONBOX_EDGE);
+			       GTK_BUTTONBOX_END);
   }
 
   if (startup)
@@ -18940,6 +19320,7 @@ activate_tool_immediately (ScreenatorData *data, gint pen_tool,
   acquire_grab (data, NULL);
   ensure_tool_grab (data);
   paper_top_bar_update_active_tool (data);
+  paper_bring_to_front (data);
   paper_update_hover_cursor (data);
 }
 

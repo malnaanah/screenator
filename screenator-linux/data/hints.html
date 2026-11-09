@@ -6,7 +6,9 @@
 
   The hints window reloads the file each time it opens.  Supported HTML tags:
   h1, h2, h3, p, ul, ol, li, br, b, strong, i, em, u, tt, code, a, span, font.
-  Inline colours work as style="color:#c0392b" on headings and spans.
+  Inline colors work as style="color:#c0392b" on headings and spans.
+  Simple <style> rules such as "h2 { color: #008800; }" and
+  "span { color: #0000aa; }" are also supported.
 -->
 <!DOCTYPE html>
 <html>
@@ -23,10 +25,10 @@
 
   <h1><span><i>Screenator</i></span> Hints</h1>
 
-  <h2> Introduction</h2>
+  <h2>Introduction</h2>
   <ul>
-    <li>Screenator has a <span><b>Screen</b></span> and a <span><b>Paper</b></span> annotion modes.</li>
-    <li>Tools can be selected from <span><b> Floating Icon</b></span>, <span><b>Tool Bar</b></span>, and <span><b>System Try Icon</b></span></li>
+    <li>Screenator has two annotation modes: <span><b>Screen</b></span> and <span><b>Paper</b></span>.</li>
+    <li>Tools can be selected from the <span><b>Floating Icon</b></span>, <span><b>Tool Bar</b></span>, and <span><b>System Tray Icon</b></span>.</li>
   </ul>
 
   <h2>Global Shortcuts</h2>
@@ -34,60 +36,62 @@
     <li><span><b>F3</b></span> switches between <b>Screen</b> and <b>Paper</b> annotation mode.</li>
     <li><span><b>F9</b></span> shows or hides the <b>floating icon</b>.</li>
     <li><span><b>F10</b></span> shows or hides the <b>toolbar</b>.</li>
-    <li><b>Tool selection</b>: <span><b>F8</b></span> Pen, <span><b>F</b></span> Text, <span><b>F6</b></span> Arrow, <span><b>F12</b></span> Timer</li>
-    <li><span><b>F4</b></span> saves a screenshot in the <b>Picture</b> folder</b>.</li>
-    <li><span><b>ESC</b></span> key exit shape handles and exit current tool in <b>Screen</b> mode.</li>
-
+    <li><b>Tool selection</b>: <span><b>F8</b></span> Pen, <span><b>F7</b></span> Text, <span><b>F6</b></span> Arrow,  <span><b>F12</b></span> Timer.</li>
+    <li><span><b>F4</b></span> saves a screenshot in the <b>Pictures</b> folder.</li>
+    <li><span><b>Esc</b></span> closes shape handles and exits the current tool in <b>Screen</b> mode.</li>
   </ul>
 
   <h2>Paper Mode Shortcuts</h2>
   <ul>
-    <li><span><b>CTRL+Z</b></span> undo, <span><b>CTRL+SHIFT+Z</b></span>  redo.</li>
-    <li><span><b>CTRL+t</b></span> Toggle Visibility.</li>
-    <li><span><b>CTRL+q</b></span> exit Paper Mode.</li>
-    <li><span><b>ALT-F4</b></span> Close Screenator.</li>
-    <li><span><b>CTRL-w</b></span> Show paper as window.</li>
-    <li><span><b>CTRL-d</b></span> Show desktop panel.</li>
+    <li><span><b>Ctrl+Z</b></span> undo,
+      <span><b>Ctrl+Shift+Z</b></span> redo.</li>
+    <li><span><b>Ctrl+T</b></span> toggles visibility.</li>
+    <li><span><b>Ctrl+Q</b></span> exits Paper mode.</li>
+    <li><span><b>Alt+F4</b></span> closes Screenator.</li>
+    <li><span><b>Ctrl+W</b></span> shows the paper as a window.</li>
+    <li><span><b>Ctrl+D</b></span> shows the desktop panel.</li>
   </ul>
 
-  <h2>Mouse in <span>Screen Mode></span></h2>
+  <h2>Mouse in <span>Screen Mode</span></h2>
   <ul>
-    <li><span><b>Left click</b></span> draw using active tool.</li>
-    <li><span><b>Long midel click</b></span> activate erasor.</li>
-    <li><span><b>Long right click</b></span> opens the Scroll Mode menu and chooses  <b>Color</b> or <b>Thickness</b>.</li>
-    <li><span><b>Right click</b></span> escapes shape handles,and exit current tool</li>
+    <li><span><b>Left Button</b></span> draws using the active tool.</li>
+    <li><span><b>Middle Buttonk</b></span> activates the eraser.</li>
+    <li><span><b>Short Right click</b></span> closes shape handles and exits the current tool.</li>
+    <li><span><b>Long Right Click</b></span> opens the Scroll Mode menu and chooses <b>Color</b> or <b>Thickness</b>.</li>
+    <li><span><b>Mouse wheel</b></span> changes color or thickness.</li>
   </ul>
 
-  <h2>Mouse in <span>Paper Mode></span></h2>
+  <h2>Mouse in <span>Paper Mode</span></h2>
   <ul>
-    <li><span><b>Left click</b></span> draw using active tool.</li>
-    <li><span><b>Midel click</b></span> activate erasor.</li>
-    <li><span><b>Right click</b></span> escapes shape handles, and activate erasor, it does not exit current tool.</li>
+    <li><span><b>Left click</b></span> draws using the active tool.</li>
+    <li><span><b>Middle click</b></span> activates the eraser.</li>
+    <li><span><b>Right click</b></span> closes shape handles, then acts as eraser without exiting the current tool.</li>
   </ul>
 
-  <h2> Stylus</h2>
+  <h2>Stylus</h2>
   <ul>
-    <li>In stylus configuration (of your operating system), set <span><b>Button 1</b></span> (The one near stylus tip) to <b>middle mouse click</b>, and <span><b>Button 2</b></span> to <b>right mouse click</b>.</li>
-    <li> Short pressing <b>Button 1</b> acts as mouse scroll and long pressing acts as long pressing the middle mouse button</li>
-    <li> Short pressing <b>Button 2</b> acts as right mouse click adn long pressing acts as long pressing the right mouse button</li>
+    <li>In your stylus configuration, set <span><b>Button 1</b></span>  (the one nearest the tip) to <b>Middle Click</b>, and <span><b>Button 2</b></span> to <b>Right Click</b>.</li>
+    <li>A short press of <b>Button 1</b> acts as the mouse wheel in  <b>Screen</b> mode and as a middle click in <b>Paper</b> mode.</li>
+    <li>A long press of <b>Button 1</b> acts as a middle click in  <b>Screen</b> mode.</li>
+    <li>A short press of <b>Button 2</b> acts as a right click; a long press  in <b>Screen</b> mode opens the Scroll Mode menu.</li>
+    <li><b>Button 1</b> also changes the active text or shape color.</li>
   </ul>
-
 
   <h2>Text Tool</h2>
   <ul>
-    <li>After typing, press <b>Enter</b> to accept the text and re-enable the
-    mouse. While typing, the mouse wheel and stylus side button 1 change the text colour, and right click cancels the text like Escape.</li>
+    <li>After typing, press <b>Enter</b>, right-click, or stylus <b>Button 2</b> to accept the text and re-enable the mouse. <b>Esc</b> cancels the text.</li>
   </ul>
 
   <h2>Marker Tool</h2>
   <ul>
-    <li>The wheel or stylus side button 1 changes its color.</li>
-    <li><span><b>Long right click</b></span> or
-    <span><b>Long press side button 2</b></span> opens the
-    Marker Opacity menu.</li>
+    <li><span><b>Long right click</b></span> or  <span><b>Long press Button 2</b></span> opens the Marker Opacity  menu.</li>
   </ul>
 
-
+  <h2>Saving</h2>
+  <ul>
+    <li>Screenshots are saved automatically in the <b>Pictures</b> folder with the current date-time stamp.</li>
+    <li>Paper PDFs are saved automatically in the <b>Documents</b> folder with the current date-time stamp.</li>
+  </ul>
 
 </body>
 </html>

@@ -60,4 +60,7 @@ void write_keyfile(ScreenatorData *data);
  * created, and old ~/.config/screenator.* files are migrated once. */
 gchar *screenator_config_path (const gchar *name);
 
+/* Remove ~/.config/Screenator and the old flat configuration files. */
+void screenator_config_remove_all (void);
+
 #endif

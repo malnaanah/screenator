@@ -99,6 +99,66 @@ config_migrate_legacy_files (const gchar *config_dir)
   g_free (new_hints);
 }
 
+static void
+config_remove_tree (const gchar *path)
+{
+  GDir *dir = g_dir_open (path, 0, NULL);
+
+  if (dir)
+    {
+      const gchar *name;
+
+      while ((name = g_dir_read_name (dir)) != NULL)
+	{
+	  gchar *child = g_build_filename (path, name, NULL);
+
+	  if (g_file_test (child, G_FILE_TEST_IS_DIR) &&
+	      !g_file_test (child, G_FILE_TEST_IS_SYMLINK))
+	    config_remove_tree (child);
+	  else
+	    g_remove (child);
+
+	  g_free (child);
+	}
+
+      g_dir_close (dir);
+    }
+
+  g_rmdir (path);
+}
+
+void
+screenator_config_remove_all (void)
+{
+  static const gchar * const old_files[] = {
+    "screenator.ini",
+    "screenator.cfg",
+    "screenator-annotations.png"
+  };
+  gchar *dir;
+  gchar *old_dir;
+  guint i;
+
+  dir = g_build_filename (g_get_user_config_dir (), "Screenator", NULL);
+  config_remove_tree (dir);
+  g_free (dir);
+
+  /* Also remove the pre-8.0 flat files and hints directory so the next start
+   * cannot migrate old settings back in. */
+  for (i = 0; i < G_N_ELEMENTS (old_files); i++)
+    {
+      gchar *path = g_build_filename (g_get_user_config_dir (),
+				      old_files[i], NULL);
+
+      g_remove (path);
+      g_free (path);
+    }
+
+  old_dir = g_build_filename (g_get_user_config_dir (), "screenator", NULL);
+  config_remove_tree (old_dir);
+  g_free (old_dir);
+}
+
 gchar *
 screenator_config_path (const gchar *name)
 {
