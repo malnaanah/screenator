@@ -41,7 +41,22 @@
 #include "../data/text_cursor.xpm"
 #include "../data/bucket_cursor.xpm"
 
-
+static cairo_t *paper_vector_context (ScreenatorData *data,
+				      ScreenatorPaperDocument *doc,
+				      guint index, ScreenatorPaperPage *page);
+static void paper_record_stroke (ScreenatorData *data,
+				 ScreenatorDeviceData *devdata);
+static void paper_record_line_shape (ScreenatorData *data,
+				     const ScreenatorLine *line);
+static void paper_record_frame_shape (ScreenatorData *data,
+				      const ScreenatorFrameShape *shape);
+static void paper_record_star (ScreenatorData *data,
+			       const ScreenatorStar *star);
+static void paper_record_triangle (ScreenatorData *data,
+				   const ScreenatorTriangle *triangle);
+static void paper_record_spline (ScreenatorData *data, GArray *nodes);
+static void paper_invalidate_active_vector (ScreenatorData *data);
+static void paper_clear_active_vector (ScreenatorData *data);
 
 /* Build the eraser cursor from the configured eraser width.  The ring is a
  * little larger than the erasing circle so it stays visible, and the hotspot
@@ -50,7 +65,9 @@
 void update_eraser_cursor (ScreenatorData *data)
 {
   guint width = CLAMP (data->eraser_width, 4, 128);
-  gint dim = (gint) width + 2;
+  gdouble scale = screenator_paper_window_scale (data);
+  gint effective_width;
+  gint dim;
   cairo_surface_t *surface;
   cairo_t *cr;
   GdkPixbuf *pixbuf;
@@ -59,18 +76,28 @@ void update_eraser_cursor (ScreenatorData *data)
   if (!data->display)
     return;
 
+  if (scale < 0.05)
+    scale = 1.0;
+
+  /* Window mode scales the erased area with the paper.  The cursor must use
+   * the same scale or it no longer matches the eraser. */
+  effective_width = MAX (4, (gint) round (width * scale));
+  effective_width = MIN (effective_width, 256);
+  dim = effective_width + 2;
+  data->eraser_cursor_scale = scale;
+
   surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, dim, dim);
   cr = cairo_create (surface);
 
   /* White ring below a thin black ring, so the cursor is visible on both
    * light and dark backgrounds. */
-  cairo_set_line_width (cr, 2.0);
+  cairo_set_line_width (cr, MAX (1.0, 2.0 * scale));
   cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.9);
-  cairo_arc (cr, dim / 2.0, dim / 2.0, width / 2.0, 0, 2 * G_PI);
+  cairo_arc (cr, dim / 2.0, dim / 2.0, effective_width / 2.0, 0, 2 * G_PI);
   cairo_stroke (cr);
-  cairo_set_line_width (cr, 1.0);
+  cairo_set_line_width (cr, MAX (1.0, scale));
   cairo_set_source_rgba (cr, 0.0, 0.0, 0.0, 0.9);
-  cairo_arc (cr, dim / 2.0, dim / 2.0, width / 2.0, 0, 2 * G_PI);
+  cairo_arc (cr, dim / 2.0, dim / 2.0, effective_width / 2.0, 0, 2 * G_PI);
   cairo_stroke (cr);
 
   cairo_destroy (cr);
@@ -129,6 +156,97 @@ ScreenatorPaintContext *paint_context_new (ScreenatorData *data,
   return context;
 }
 
+
+/* Rebind one paint context to the current backbuffer after it was resized. */
+static void
+paint_context_rebind (ScreenatorData *data, ScreenatorPaintContext *context)
+{
+  if (!context)
+    return;
+
+  if (context->paint_ctx)
+    cairo_destroy (context->paint_ctx);
+
+  context->paint_ctx = cairo_create (data->backbuffer);
+  gdk_cairo_set_source_rgba (context->paint_ctx, context->paint_color);
+  if (!data->composited)
+    cairo_set_antialias (context->paint_ctx, CAIRO_ANTIALIAS_NONE);
+  cairo_set_line_width (context->paint_ctx, context->width);
+  cairo_set_line_cap (context->paint_ctx, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (context->paint_ctx, CAIRO_LINE_JOIN_ROUND);
+
+  if (context->type == SCREENATOR_ERASER)
+    cairo_set_operator (context->paint_ctx, CAIRO_OPERATOR_CLEAR);
+  else if (context->type == SCREENATOR_RECOLOR)
+    cairo_set_operator (context->paint_ctx, CAIRO_OPERATOR_ATOP);
+  else
+    cairo_set_operator (context->paint_ctx, CAIRO_OPERATOR_OVER);
+}
+
+/* Window mode can be taller than the screen.  Extend the drawing buffer so
+ * the whole window is a real paper viewport, not a fixed screen rectangle. */
+void
+screenator_resize_drawing_buffer (ScreenatorData *data, gint width, gint height)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  GHashTableIter it;
+  gpointer value;
+  gint i;
+
+  if (!data || width <= 0 || height <= 0 || !data->backbuffer)
+    return;
+
+  if (cairo_image_surface_get_width (data->backbuffer) == width &&
+      cairo_image_surface_get_height (data->backbuffer) == height)
+    return;
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, width, height);
+  if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (surface);
+      return;
+    }
+
+  cr = cairo_create (surface);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+
+  cairo_surface_destroy (data->backbuffer);
+  data->backbuffer = surface;
+
+  for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+    {
+      if (data->undobuffer[i])
+	cairo_surface_destroy (data->undobuffer[i]);
+      data->undobuffer[i] =
+	cairo_image_surface_create (CAIRO_FORMAT_ARGB32, width, height);
+    }
+
+  reset_undo_history (data);
+
+  paint_context_rebind (data, data->default_pen);
+  paint_context_rebind (data, data->default_eraser);
+  paint_context_rebind (data, data->default_text);
+  paint_context_rebind (data, data->default_shape);
+  paint_context_rebind (data, data->default_marker);
+
+  if (data->tool_config)
+    {
+      g_hash_table_iter_init (&it, data->tool_config);
+      while (g_hash_table_iter_next (&it, NULL, &value))
+	{
+	  if (value == data->default_pen || value == data->default_eraser ||
+	      value == data->default_text || value == data->default_shape ||
+	      value == data->default_marker)
+	    continue;
+
+	  paint_context_rebind (data, (ScreenatorPaintContext *) value);
+	}
+    }
+}
 
 /*
  * Apply the pen settings chosen in the icon menu (thickness, colour and
@@ -358,6 +476,167 @@ void paint_context_free (ScreenatorPaintContext *context)
 }
 
 
+/* Context for recording vector annotations on one paper page.  Drawing uses
+ * screen coordinates; the context translates them to page coordinates. */
+static cairo_t *
+paper_vector_context (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		      guint index, ScreenatorPaperPage *page)
+{
+  cairo_rectangle_t extents;
+  cairo_t *cr;
+  gint origin_x, origin_y, page_y;
+  gboolean continuous;
+
+  if (!data || !doc || !page || !page->vector_valid)
+    return NULL;
+
+  if (!page->canvas_width || !page->canvas_height)
+    {
+      /* A PDF page can be drawn on before its first background render has
+       * established the page pixel size.  Seed the canvas so the operation is
+       * still recorded as vector; the render completion path scales the
+       * recording to the final page size. */
+      if (page->style == SCREENATOR_PAPER_PDF)
+	{
+	  page->canvas_width = MAX (1, (gint) data->width);
+	  page->canvas_height = MAX (1, (gint) data->height);
+	  page->pdf_width = page->canvas_width;
+	  page->pdf_height = page->canvas_height;
+	}
+      else
+	{
+	  paper_size_dimensions (data, &page->canvas_width,
+				 &page->canvas_height, &page->pdf_width,
+				 &page->pdf_height);
+	}
+
+      if (g_getenv ("SCREENATOR_VECTOR_DEBUG"))
+	g_printerr ("VECTOR: initialised canvas for page style %d (%dx%d)\n",
+		    page->style, page->canvas_width, page->canvas_height);
+    }
+
+  if (!page->vector)
+    {
+      extents.x = 0;
+      extents.y = 0;
+      extents.width = page->canvas_width;
+      extents.height = page->canvas_height;
+      page->vector = cairo_recording_surface_create (
+	CAIRO_CONTENT_COLOR_ALPHA, &extents);
+      if (cairo_surface_status (page->vector) != CAIRO_STATUS_SUCCESS)
+	{
+	  cairo_surface_destroy (page->vector);
+	  page->vector = NULL;
+	  page->vector_valid = FALSE;
+	  return NULL;
+	}
+    }
+
+  continuous = data->paper_continuous_scroll && doc->pdf_stack_height > 0;
+
+  if (continuous)
+    {
+      origin_x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      origin_y = 0;
+      /* Vector recording uses screen coordinates.  The page top is at
+       * (top - scroll) on screen, so page-local coordinates require the
+       * opposite offset.  Using the positive offset made annotations on every
+       * page after the first move down twice as far in saved PDFs. */
+      page_y = doc->pdf_page_tops && index < doc->pdf_page_tops->len
+	? -(g_array_index (doc->pdf_page_tops, gint, index) -
+	    doc->pdf_scroll_y) : 0;
+    }
+  else
+    {
+      origin_x = MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      origin_y = MAX (0, ((gint) data->height - page->canvas_height) / 2);
+      page_y = page->view_y;
+    }
+
+  cr = cairo_create (page->vector);
+  cairo_translate (cr, page->view_x - origin_x, page_y - origin_y);
+  cairo_rectangle (cr, 0, 0, page->canvas_width, page->canvas_height);
+  cairo_clip (cr);
+  return cr;
+}
+
+static void
+paper_record_stroke (ScreenatorData *data, ScreenatorDeviceData *devdata)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaintContext *context;
+  GdkRGBA color;
+  GList *points;
+  gboolean erase, continuous;
+  guint i;
+
+  if (!data || !devdata || data->paper == SCREENATOR_PAPER_NONE ||
+      !devdata->coordlist)
+    return;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages)
+    return;
+
+  context = devdata->cur_context;
+  erase = context && context->type == SCREENATOR_ERASER;
+  color = context && context->paint_color
+    ? *context->paint_color : data->pen_color;
+  continuous = data->paper_continuous_scroll && doc->pdf_stack_height > 0;
+  points = g_list_reverse (g_list_copy (devdata->coordlist));
+
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      GList *p;
+      cairo_t *cr;
+
+      if (!continuous && i != doc->page)
+	continue;
+
+      cr = paper_vector_context (data, doc, i, page);
+      if (!cr)
+	continue;
+
+      if (erase)
+	cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+      else
+	{
+	  gdk_cairo_set_source_rgba (cr, &color);
+	  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+	}
+      cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+      cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+      cairo_set_line_width (cr, MAX (1, ((ScreenatorStrokeCoordinate *)
+					points->data)->width));
+
+      /* One continuous path keeps a translucent stroke from compositing the
+       * round cap of every segment on top of the next segment.  That was
+       * showing as darker dots at the joins in saved PDFs. */
+      {
+	ScreenatorStrokeCoordinate *first = points->data;
+	gboolean single = (points->next == NULL);
+
+	cairo_move_to (cr, first->x, first->y);
+	for (p = points->next; p; p = p->next)
+	  {
+	    ScreenatorStrokeCoordinate *point = p->data;
+
+	    cairo_line_to (cr, point->x, point->y);
+	  }
+	if (single)
+	  cairo_line_to (cr, first->x + 0.01, first->y + 0.01);
+	cairo_stroke (cr);
+      }
+
+      cairo_destroy (cr);
+    }
+
+  g_list_free (points);
+}
+
 void coord_list_prepend (ScreenatorData *data, 
 			 GdkDevice* dev, 
 			 gint x, 
@@ -385,6 +664,10 @@ void coord_list_free (ScreenatorData *data,
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, dev);
 
   GList *ptr;
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_record_stroke (data, devdata);
+
   ptr = devdata->coordlist;
 
   while (ptr)
@@ -485,6 +768,17 @@ void raise_icon_window (ScreenatorData *data)
 {
   GdkWindow *icon_window;
 
+  /* The Paper Drawing tool bar is part of the paper, so keep it above the
+   * full-screen annotation window. */
+  if (data->paper_top_bar && gtk_widget_get_visible (data->paper_top_bar))
+    {
+      GdkWindow *bar_window =
+	gtk_widget_get_window (data->paper_top_bar);
+
+      if (bar_window)
+	gdk_window_raise (bar_window);
+    }
+
   /* The settings indicator sits to the left of the icon and has to stay above
    * the annotation window as well. */
   if (data->settings_win && gtk_widget_get_visible (data->settings_win))
@@ -495,12 +789,22 @@ void raise_icon_window (ScreenatorData *data)
 	gdk_window_raise (settings_window);
     }
 
-  if (!data->icon_win || !gtk_widget_get_visible (data->icon_win))
-    return;
+  if (data->icon_win && gtk_widget_get_visible (data->icon_win))
+    {
+      icon_window = gtk_widget_get_window (data->icon_win);
+      if (icon_window)
+	gdk_window_raise (icon_window);
+    }
 
-  icon_window = gtk_widget_get_window (data->icon_win);
-  if (icon_window)
-    gdk_window_raise (icon_window);
+  /* The dialog is modal and stays above the icon and the settings ring even
+   * when either of them is raised again. */
+  if (data->top_dialog)
+    {
+      GdkWindow *dialog_window = gtk_widget_get_window (data->top_dialog);
+
+      if (dialog_window)
+	gdk_window_raise (dialog_window);
+    }
 }
 
 
@@ -546,7 +850,7 @@ void toggle_visibility (ScreenatorData *data)
     hide_window (data);
 }
 
-/* The menu entry and Ctrl+T toggle the drawings.  With a screen paper the
+/* The menu entry and Ctrl+T toggle the drawings.  In Paper Drawing the
  * paper has to stay visible and active, so only the annotations are hidden;
  * without a paper the whole annotation window is hidden as before. */
 void toggle_drawings_visibility (ScreenatorData *data)
@@ -559,9 +863,10 @@ void toggle_drawings_visibility (ScreenatorData *data)
 
       if (window)
 	{
-	  GdkRectangle rect = { 0, 0, data->width, data->height };
+	  GdkRectangle rect = { 0, 0, data->width,
+				cairo_image_surface_get_height (data->backbuffer) };
 
-	  gdk_window_invalidate_rect (window, &rect, 0);
+	  screenator_invalidate_rect (data, &rect);
 	}
     }
   else
@@ -570,7 +875,7 @@ void toggle_drawings_visibility (ScreenatorData *data)
 
 
 /* ------------------------------------------------------------------
- * Screen paper
+ * Paper Drawing
  * ------------------------------------------------------------------ */
 
 /* The colours and the spacing come from assets/ruled-page.pdf and
@@ -580,56 +885,68 @@ void toggle_drawings_visibility (ScreenatorData *data)
 #define PAPER_RULED_SPACING 32
 #define PAPER_GRAPH_SPACING 20
 
-/* Draw the paper below the annotations.  The caller composites the backbuffer
- * on top afterwards, so erasing a stroke shows the paper again. */
+/* Draw only the ruled/graph lines of one page.  The caller fills the paper
+ * white first. */
 void
-draw_screen_paper (ScreenatorData *data, cairo_t *cr)
+draw_paper_pattern (cairo_t *cr, ScreenatorPaperType paper,
+		    gint width, gint height)
 {
   gint x, y;
 
-  if (data->paper == SCREENATOR_PAPER_NONE)
+  if (paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  cairo_save (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+  cairo_set_line_width (cr, 1.0);
+
+  if (paper == SCREENATOR_PAPER_RULED)
+    {
+      /* 0.25098 0.627451 1 in the ruled page. */
+      cairo_set_source_rgb (cr, 0.25098, 0.627451, 1.0);
+      for (y = PAPER_RULED_SPACING; y < height; y += PAPER_RULED_SPACING)
+	{
+	  cairo_move_to (cr, 0, y + 0.5);
+	  cairo_line_to (cr, width, y + 0.5);
+	}
+      cairo_stroke (cr);
+    }
+  else if (paper == SCREENATOR_PAPER_GRAPH)
+    {
+      /* 0.741176 grey in the graph page. */
+      cairo_set_source_rgb (cr, 0.741176, 0.741176, 0.741176);
+      for (x = PAPER_GRAPH_SPACING; x < width; x += PAPER_GRAPH_SPACING)
+	{
+	  cairo_move_to (cr, x + 0.5, 0);
+	  cairo_line_to (cr, x + 0.5, height);
+	}
+      for (y = PAPER_GRAPH_SPACING; y < height; y += PAPER_GRAPH_SPACING)
+	{
+	  cairo_move_to (cr, 0, y + 0.5);
+	  cairo_line_to (cr, width, y + 0.5);
+	}
+      cairo_stroke (cr);
+    }
+
+  cairo_restore (cr);
+}
+
+/* Draw one full paper page.  The same function paints the background into the
+ * PDF that Ctrl+S saves. */
+void
+draw_paper_background (cairo_t *cr, ScreenatorPaperType paper,
+		       gint width, gint height)
+{
+  if (paper == SCREENATOR_PAPER_NONE)
     return;
 
   cairo_save (cr);
   cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
   cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
   cairo_paint (cr);
-
-  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
-  cairo_set_line_width (cr, 1.0);
-
-  if (data->paper == SCREENATOR_PAPER_RULED)
-    {
-      /* 0.25098 0.627451 1 in the ruled page. */
-      cairo_set_source_rgb (cr, 0.25098, 0.627451, 1.0);
-      for (y = PAPER_RULED_SPACING; y < (gint) data->height;
-	   y += PAPER_RULED_SPACING)
-	{
-	  cairo_move_to (cr, 0, y + 0.5);
-	  cairo_line_to (cr, data->width, y + 0.5);
-	}
-      cairo_stroke (cr);
-    }
-  else if (data->paper == SCREENATOR_PAPER_GRAPH)
-    {
-      /* 0.741176 grey in the graph page. */
-      cairo_set_source_rgb (cr, 0.741176, 0.741176, 0.741176);
-      for (x = PAPER_GRAPH_SPACING; x < (gint) data->width;
-	   x += PAPER_GRAPH_SPACING)
-	{
-	  cairo_move_to (cr, x + 0.5, 0);
-	  cairo_line_to (cr, x + 0.5, data->height);
-	}
-      for (y = PAPER_GRAPH_SPACING; y < (gint) data->height;
-	   y += PAPER_GRAPH_SPACING)
-	{
-	  cairo_move_to (cr, 0, y + 0.5);
-	  cairo_line_to (cr, data->width, y + 0.5);
-	}
-      cairo_stroke (cr);
-    }
-
   cairo_restore (cr);
+
+  draw_paper_pattern (cr, paper, width, height);
 }
 
 /* The annotation window is only visible where it has content when the screen is
@@ -664,24 +981,20 @@ update_window_shape (ScreenatorData *data)
       cairo_region_destroy (region);
     }
 
-  /* With a screen paper the annotation window is the active window: it takes
+  /* In Paper Drawing the annotation window is the active window: it takes
    * the pointer input, so clicks and scrolling do not reach the desktop or the
-   * applications below.  Without a paper the window stays click-through. */
+   * applications below.  The default input shape is the whole widget, which is
+   * what a Paper window needs; in Window mode it also follows the resized
+   * window instead of an outdated full-screen rectangle.  Without a paper the
+   * window stays click-through. */
   if (data->paper != SCREENATOR_PAPER_NONE)
-    {
-      cairo_rectangle_int_t rect;
-
-      rect.x = 0;
-      rect.y = 0;
-      rect.width = data->width;
-      rect.height = data->height;
-      region = cairo_region_create_rectangle (&rect);
-    }
+    gtk_widget_input_shape_combine_region (data->win, NULL);
   else
-    region = cairo_region_create ();
-
-  gtk_widget_input_shape_combine_region (data->win, region);
-  cairo_region_destroy (region);
+    {
+      region = cairo_region_create ();
+      gtk_widget_input_shape_combine_region (data->win, region);
+      cairo_region_destroy (region);
+    }
 }
 
 
@@ -689,15 +1002,14 @@ update_window_shape (ScreenatorData *data)
  * Saved annotations
  *
  * The drawing layer is saved as a PNG when Screenator quits and painted back
- * into the backbuffer on the next start.  The screen paper is not part of it:
- * it is drawn separately and follows its own setting.
+ * into the backbuffer on the next start.  Paper Drawing pages are saved
+ * separately as a PDF with Ctrl+S.
  * ------------------------------------------------------------------ */
 
 static gchar *
 annotations_path (void)
 {
-  return g_build_filename (g_get_user_config_dir (),
-			   "screenator-annotations.png", NULL);
+  return screenator_config_path ("screenator-annotations.png");
 }
 
 /* TRUE if the surface has at least one visible pixel. */
@@ -732,26 +1044,39 @@ surface_has_annotations (cairo_surface_t *surface)
   return FALSE;
 }
 
+gboolean
+screenator_has_annotations (cairo_surface_t *surface)
+{
+  return surface_has_annotations (surface);
+}
+
 static void
 save_annotations (ScreenatorData *data)
 {
+  cairo_surface_t *surface;
   gchar *path;
 
-  if (!data->backbuffer)
+  /* Only the Screen Annotation layer is saved on exit.  A Paper Drawing page
+   * is saved as a PDF with Ctrl+S instead. */
+  surface = (data->paper != SCREENATOR_PAPER_NONE &&
+	     data->screen_annotations)
+    ? data->screen_annotations : data->backbuffer;
+
+  if (!surface)
     return;
 
   path = annotations_path ();
 
   /* No drawings: remove an older file instead of saving a blank one. */
-  if (!surface_has_annotations (data->backbuffer))
+  if (!surface_has_annotations (surface))
     {
       g_unlink (path);
       g_free (path);
       return;
     }
 
-  cairo_surface_flush (data->backbuffer);
-  if (cairo_surface_write_to_png (data->backbuffer, path) != CAIRO_STATUS_SUCCESS)
+  cairo_surface_flush (surface);
+  if (cairo_surface_write_to_png (surface, path) != CAIRO_STATUS_SUCCESS)
     g_printerr ("Could not save the annotations to %s\n", path);
 
   g_free (path);
@@ -809,12 +1134,35 @@ void remove_saved_annotations (void)
 }
 
 
+void
+screenator_mark_modified (ScreenatorData *data)
+{
+  data->modified = 1;
+
+  if (data->paper != SCREENATOR_PAPER_NONE &&
+      data->paper_docs[data->paper])
+    {
+      data->paper_docs[data->paper]->modified = TRUE;
+      data->paper_page_dirty = TRUE;
+      /* The active page now has ink; the continuous view can skip allocating
+       * annotation surfaces for pages that never received a drawing. */
+      screenator_paper_mark_ink (data, NULL);
+    }
+}
+
 void clear_screen (ScreenatorData *data)
 {
   /* Clearing is undoable: save the drawings before they are erased.  An
    * already empty canvas does not need an undo step. */
   if (surface_has_annotations (data->backbuffer))
-    snap_undo_state (data);
+    {
+      snap_undo_state (data);
+      if (data->paper != SCREENATOR_PAPER_NONE)
+	{
+	  screenator_mark_modified (data);
+	  paper_clear_active_vector (data);
+	}
+    }
 
   cairo_t *cr = cairo_create(data->backbuffer);
   cairo_set_source_rgba(cr, 0, 0, 0, 0);
@@ -822,13 +1170,15 @@ void clear_screen (ScreenatorData *data)
   cairo_paint (cr);
   cairo_destroy(cr);
 
-  GdkRectangle rect = {0, 0, data->width, data->height};
-  gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+  GdkRectangle rect = {0, 0, data->width,
+		       cairo_image_surface_get_height (data->backbuffer)};
+  screenator_invalidate_rect (data, &rect);
 
   update_window_shape (data);
 
   data->painted = 0;
-  remove_saved_annotations ();
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    remove_saved_annotations ();
 
   if(data->debug)
     g_printerr ("DEBUG: Cleared screen.\n");
@@ -847,13 +1197,15 @@ gint reshape (gpointer user_data)
         }
       else
         {
-	  update_window_shape (data);
-
-	  /*
-	    this is not needed when there is user input, i.e. when drawing,
-	    but needed when uing the undo functionality.
-	  */
-	  gtk_widget_queue_draw(data->win);
+	  /* In Paper mode the window is not shaped: its shape and input
+	   * region never change, so repainting the whole window on every
+	   * stroke would only add scaling work and make drawing lag.  The
+	   * explicit dirty rectangles already update the drawing. */
+	  if (data->paper == SCREENATOR_PAPER_NONE)
+	    {
+	      update_window_shape (data);
+	      gtk_widget_queue_draw(data->win);
+	    }
 
           data->modified = 0;
           data->delayed = 0;
@@ -868,6 +1220,9 @@ gint reshape (gpointer user_data)
 GdkCursor *get_tool_cursor (ScreenatorData *data,
 			    ScreenatorPaintContext *context)
 {
+  if (!context)
+    context = data->forced_context;
+
   if (context && context->type == SCREENATOR_ERASER)
     return data->erase_cursor;
   if (context && context->type == SCREENATOR_TEXT)
@@ -879,6 +1234,17 @@ GdkCursor *get_tool_cursor (ScreenatorData *data,
   return data->paint_cursor;
 }
 
+
+/* Let pointer events that would normally go to another window of this
+ * application reach that window, so the floating icon, settings ring and tool
+ * bar stay clickable while a drawing device is grabbed.  Events that would go
+ * to another application still arrive at the full-screen drawing window, so
+ * drawing over those applications is unaffected. */
+gboolean screenator_paper_grab_owner_events (ScreenatorData *data)
+{
+  (void) data;
+  return TRUE;
+}
 
 /* Point the device grab at the cursor that belongs to the given tool.  The
  * grab cursor has to be replaced by grabbing again; gdk_window_set_cursor()
@@ -892,12 +1258,22 @@ void set_device_cursor (ScreenatorData *data,
   if (!device || !gtk_widget_get_window (data->win))
     return;
 
-  cursor = get_tool_cursor (data, context);
+  /* Paper modes have no global device grab: the window cursor naturally only
+   * applies while the pointer is over the Paper window. */
+  if (screenator_paper_local_input (data))
+    {
+      gdk_window_set_cursor (gtk_widget_get_window (data->win),
+			     data->controls_hover > 0 ? NULL
+			     : get_tool_cursor (data, context));
+      return;
+    }
+
+  cursor = data->controls_hover > 0 ? NULL : get_tool_cursor (data, context);
 
   gdk_device_grab (device,
 		   gtk_widget_get_window (data->win),
 		   GDK_OWNERSHIP_NONE,
-		   FALSE,
+		   screenator_paper_grab_owner_events (data),
 		   SCREENATOR_MOUSE_EVENTS,
 		   cursor,
 		   GDK_CURRENT_TIME);
@@ -1045,12 +1421,130 @@ void select_tool (ScreenatorData *data,
 
 
 
+/* Page whose annotations are currently being drawn.  Used only for the
+ * vector undo snapshots. */
+static ScreenatorPaperPage *
+paper_vector_undo_page (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE)
+    return NULL;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return NULL;
+
+  if (doc->page >= doc->pages->len)
+    doc->page = doc->pages->len - 1;
+
+  return &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
+}
+
+/* Copy a recording surface as another recording surface.  Painting one
+ * recording into another replays its operations, so the copy is a real
+ * snapshot and remains vector/text. */
+static cairo_surface_t *
+paper_copy_vector_surface (cairo_surface_t *source)
+{
+  cairo_rectangle_t extents;
+  cairo_surface_t *copy;
+  cairo_t *cr;
+
+  if (!source ||
+      !cairo_recording_surface_get_extents (source, &extents) ||
+      extents.width <= 0 || extents.height <= 0)
+    return NULL;
+
+  copy = cairo_recording_surface_create (CAIRO_CONTENT_COLOR_ALPHA, &extents);
+  if (cairo_surface_status (copy) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (copy);
+      return NULL;
+    }
+
+  cr = cairo_create (copy);
+  cairo_set_source_surface (cr, source, 0, 0);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+
+  return copy;
+}
+
+static void
+paper_vector_undo_snapshot (ScreenatorData *data, gint index)
+{
+  ScreenatorPaperPage *page;
+  cairo_surface_t *copy = NULL;
+  gboolean valid = FALSE;
+
+  if (!data || index < 0 || index >= SCREENATOR_MAX_UNDO)
+    return;
+
+  page = paper_vector_undo_page (data);
+  if (page)
+    {
+      valid = page->vector_valid;
+      if (valid && page->vector)
+	copy = paper_copy_vector_surface (page->vector);
+    }
+
+  if (data->vector_undobuffer[index])
+    cairo_surface_destroy (data->vector_undobuffer[index]);
+
+  data->vector_undobuffer[index] = copy;
+  data->vector_undo_valid[index] = valid;
+}
+
+/* Swap the active page's vector layer with the snapshot in one undo slot.
+ * Raster undo handles what is shown on screen; this keeps the export layer in
+ * step so text stays text and graphics stay vector. */
+static void
+paper_vector_undo_swap (ScreenatorData *data, gint index)
+{
+  ScreenatorPaperPage *page;
+  cairo_surface_t *surface;
+  gboolean valid;
+
+  if (!data || index < 0 || index >= SCREENATOR_MAX_UNDO)
+    return;
+
+  page = paper_vector_undo_page (data);
+  if (!page)
+    return;
+
+  surface = page->vector;
+  valid = page->vector_valid;
+  page->vector = data->vector_undobuffer[index];
+  page->vector_valid = data->vector_undo_valid[index];
+  data->vector_undobuffer[index] = surface;
+  data->vector_undo_valid[index] = valid;
+}
+
+static void
+paper_vector_undo_clear (ScreenatorData *data)
+{
+  gint i;
+
+  if (!data)
+    return;
+
+  for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+    {
+      if (data->vector_undobuffer[i])
+	cairo_surface_destroy (data->vector_undobuffer[i]);
+      data->vector_undobuffer[i] = NULL;
+      data->vector_undo_valid[i] = FALSE;
+    }
+}
+
 void snap_undo_state (ScreenatorData *data)
 {
   if(data->debug)
     g_printerr ("DEBUG: Snapping undo buffer %d.\n", data->undo_head);
 
   copy_surface(data->undobuffer[data->undo_head], data->backbuffer);
+  paper_vector_undo_snapshot (data, data->undo_head);
 
   // Increment head position
   data->undo_head++;
@@ -1062,17 +1556,56 @@ void snap_undo_state (ScreenatorData *data)
     data->undo_depth = SCREENATOR_MAX_UNDO;
   // Invalidate any redo from this position
   data->redo_depth = 0;
+  screenator_page_redo_clear (data);
 }
 
 
 
 void copy_surface (cairo_surface_t *dst, cairo_surface_t *src)
 {
-  cairo_t *cr = cairo_create(dst);
-  cairo_set_source_surface(cr, src, 0, 0);
-  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
-  cairo_paint (cr);
-  cairo_destroy(cr);
+  /* Snapshotting the backbuffer for undo is on the hot path of every stroke.
+   * For matching ARGB32 image surfaces a row copy is noticeably faster than
+   * a Cairo paint, which otherwise takes several milliseconds at 4K. */
+  if (dst && src &&
+      cairo_surface_get_type (dst) == CAIRO_SURFACE_TYPE_IMAGE &&
+      cairo_surface_get_type (src) == CAIRO_SURFACE_TYPE_IMAGE &&
+      cairo_image_surface_get_format (dst) == CAIRO_FORMAT_ARGB32 &&
+      cairo_image_surface_get_format (src) == CAIRO_FORMAT_ARGB32 &&
+      cairo_image_surface_get_width (dst) == cairo_image_surface_get_width (src) &&
+      cairo_image_surface_get_height (dst) == cairo_image_surface_get_height (src))
+    {
+      gint height = cairo_image_surface_get_height (dst);
+      gint dst_stride = cairo_image_surface_get_stride (dst);
+      gint src_stride = cairo_image_surface_get_stride (src);
+      guchar *dst_data;
+      const guchar *src_data;
+
+      cairo_surface_flush (dst);
+      cairo_surface_flush (src);
+      dst_data = cairo_image_surface_get_data (dst);
+      src_data = cairo_image_surface_get_data (src);
+
+      if (dst_data && src_data)
+	{
+	  gint y;
+	  gint row = MIN (dst_stride, src_stride);
+
+	  for (y = 0; y < height; y++)
+	    memcpy (dst_data + y * dst_stride, src_data + y * src_stride,
+		    row);
+
+	  cairo_surface_mark_dirty (dst);
+	  return;
+	}
+    }
+
+  {
+    cairo_t *cr = cairo_create(dst);
+    cairo_set_source_surface(cr, src, 0, 0);
+    cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+    cairo_paint (cr);
+    cairo_destroy(cr);
+  }
 }
 
 
@@ -1086,6 +1619,19 @@ void swap_surfaces (cairo_surface_t *a, cairo_surface_t *b)
   copy_surface(a, b);
   copy_surface(b, temp);
   cairo_surface_destroy(temp);
+}
+
+/* Undo and redo belong to one drawing layer.  They are cleared whenever the
+ * active layer changes (Screen Annotation to a Paper Drawing page, or from
+ * one page to another), so a step can never be replayed onto another page. */
+void
+reset_undo_history (ScreenatorData *data)
+{
+  paper_vector_undo_clear (data);
+  data->undo_head = 0;
+  data->undo_depth = 0;
+  data->redo_depth = 0;
+  paper_vector_undo_clear (data);
 }
 
 
@@ -1104,15 +1650,16 @@ void undo_drawing (ScreenatorData *data)
     data->undo_head += SCREENATOR_MAX_UNDO;
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
+  paper_vector_undo_swap (data, data->undo_head);
 
   /* Undoing a Clear Screen brings the drawings back; undoing something on an
    * empty canvas leaves it empty. */
   data->painted = surface_has_annotations (data->backbuffer) ? 1 : 0;
 
   GdkRectangle rect = {0, 0, data->width, data->height};
-  gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+  screenator_invalidate_rect (data, &rect);
 
-  data->modified = 1;
+  screenator_mark_modified (data);
 
   if(data->debug)
     g_printerr ("DEBUG: Undo drawing %d.\n", data->undo_head);
@@ -1126,6 +1673,7 @@ void redo_drawing (ScreenatorData *data)
     return;
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
+  paper_vector_undo_swap (data, data->undo_head);
 
   data->redo_depth--;
   data->undo_depth++;
@@ -1135,10 +1683,11 @@ void redo_drawing (ScreenatorData *data)
 
   data->painted = surface_has_annotations (data->backbuffer) ? 1 : 0;
 
-  GdkRectangle rect = {0, 0, data->width, data->height};
-  gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+  GdkRectangle rect = {0, 0, data->width,
+		       cairo_image_surface_get_height (data->backbuffer)};
+  screenator_invalidate_rect (data, &rect);
 
-  data->modified = 1;
+  screenator_mark_modified (data);
 
   if(data->debug)
     g_printerr("DEBUG: Redo drawing.\n");
@@ -1194,8 +1743,13 @@ void stroke_begin (ScreenatorData *data, GdkDevice *dev)
       !context_needs_stroke_layer (data, devdata->cur_context))
     return;
 
-  devdata->strokebuffer = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
-						      data->width, data->height);
+  {
+    gint buffer_height = data->backbuffer
+      ? cairo_image_surface_get_height (data->backbuffer)
+      : (gint) data->height;
+    devdata->strokebuffer = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+					      data->width, buffer_height);
+  }
   devdata->stroke_ctx = cairo_create (devdata->strokebuffer);
   devdata->stroke_alpha = devdata->cur_context->paint_color->alpha;
 
@@ -1235,11 +1789,10 @@ void stroke_finish (ScreenatorData *data, GdkDevice *dev)
   devdata->strokebuffer = NULL;
   devdata->stroke_ctx = NULL;
 
-  data->modified = 1;
+  screenator_mark_modified (data);
 
   if (devdata->stroke_bounds.width > 0 && devdata->stroke_bounds.height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&devdata->stroke_bounds, 0);
+    screenator_invalidate_rect (data, &devdata->stroke_bounds);
 }
 
 void stroke_finish_all (ScreenatorData *data)
@@ -1291,6 +1844,13 @@ void draw_line (ScreenatorData *data,
   if(data->debug)
     g_printerr("DEBUG: draw line from %d %d to %d %d\n", x1, y1, x2, y2);
 
+  /* The continuous PDF view can show two pages at once.  The backbuffer only
+   * holds the active page, so the eraser also clears each page layer the
+   * stroke crosses. */
+  if (devdata->cur_context &&
+      devdata->cur_context->type == SCREENATOR_ERASER)
+    screenator_paper_erase_line (data, x1, y1, x2, y2, data->maxwidth);
+
   if (devdata->cur_context->paint_ctx)
     {
       cairo_t *cr = devdata->stroke_ctx ? devdata->stroke_ctx
@@ -1339,9 +1899,10 @@ void draw_line (ScreenatorData *data,
 	    devdata->stroke_bounds = rect;
 	}
 
-      data->modified = 1;
+      screenator_mark_modified (data);
+      screenator_paper_mark_ink (data, &rect);
 
-      gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+      screenator_invalidate_rect (data, &rect);
     }
 
   data->painted = 1;
@@ -1394,9 +1955,9 @@ void draw_line_finish (ScreenatorData *data,
 	  devdata->stroke_bounds = rect;
       }
 
-    data->modified = 1;
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&rect, 0);
+    screenator_mark_modified (data);
+    screenator_paper_mark_ink (data, &rect);
+    screenator_invalidate_rect (data, &rect);
   }
 }
 
@@ -1460,9 +2021,10 @@ void draw_arrow (ScreenatorData *data,
 
       gdk_cairo_set_source_rgba(devdata->cur_context->paint_ctx, devdata->cur_context->paint_color);
     
-      data->modified = 1;
+      screenator_mark_modified (data);
+      screenator_paper_mark_ink (data, &rect);
 
-      gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+      screenator_invalidate_rect (data, &rect);
     }
 
   data->painted = 1;
@@ -1796,14 +2358,17 @@ line_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
       cr = cairo_create (data->backbuffer);
       draw_line_shape (data, cr, &devdata->line);
       cairo_destroy (cr);
+      paper_record_line_shape (data, &devdata->line);
 
-      data->modified = 1;
+      screenator_mark_modified (data);
       data->painted = 1;
     }
 
   if (data->win && bounds.width > 0 && bounds.height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&bounds, 0);
+    {
+      screenator_paper_mark_ink (data, &bounds);
+      screenator_invalidate_rect (data, &bounds);
+    }
 }
 
 /* Commit every editable line and arrow, e.g. when painting mode ends or
@@ -3482,16 +4047,19 @@ frame_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
       cr = cairo_create (data->backbuffer);
       draw_frame_shape (data, cr, &devdata->frame_shape);
       cairo_destroy (cr);
+      paper_record_frame_shape (data, &devdata->frame_shape);
 
-      data->modified = 1;
+      screenator_mark_modified (data);
       data->painted = 1;
     }
 
   frame_shape_clear (&devdata->frame_shape);
 
   if (data->win && bounds.width > 0 && bounds.height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&bounds, 0);
+    {
+      screenator_paper_mark_ink (data, &bounds);
+      screenator_invalidate_rect (data, &bounds);
+    }
 }
 
 /* Commit every editable frame shape, e.g. when painting mode ends or another
@@ -3847,14 +4415,17 @@ star_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
       cr = cairo_create (data->backbuffer);
       draw_star (data, cr, &devdata->star);
       cairo_destroy (cr);
+      paper_record_star (data, &devdata->star);
 
-      data->modified = 1;
+      screenator_mark_modified (data);
       data->painted = 1;
     }
 
   if (data->win && bounds.width > 0 && bounds.height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&bounds, 0);
+    {
+      screenator_paper_mark_ink (data, &bounds);
+      screenator_invalidate_rect (data, &bounds);
+    }
 }
 
 
@@ -4056,14 +4627,17 @@ triangle_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
       cr = cairo_create (data->backbuffer);
       draw_triangle (data, cr, &devdata->triangle, 3);
       cairo_destroy (cr);
+      paper_record_triangle (data, &devdata->triangle);
 
-      data->modified = 1;
+      screenator_mark_modified (data);
       data->painted = 1;
     }
 
   if (data->win && bounds.width > 0 && bounds.height > 0)
-    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				&bounds, 0);
+    {
+      screenator_paper_mark_ink (data, &bounds);
+      screenator_invalidate_rect (data, &bounds);
+    }
 }
 
 
@@ -4283,7 +4857,11 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
       return FALSE;
     }
 
+  /* Only an actual fill makes the vector layer incomplete.  A click on an
+   * open or unchanged region must not discard the vector drawing.  Taking the
+   * undo snapshot first also lets undoing the fill restore the vector layer. */
   snap_undo_state (data);
+  paper_invalidate_active_vector (data);
 
   for (i = 0; i < (guint) height; i++)
     {
@@ -4329,7 +4907,7 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
 				      minx, miny,
 				      maxx - minx + 1, maxy - miny + 1);
 
-  data->modified = 1;
+  screenator_mark_modified (data);
   data->painted = 1;
 
   if (data->win)
@@ -4340,8 +4918,8 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
       bounds.y = miny;
       bounds.width = maxx - minx + 1;
       bounds.height = maxy - miny + 1;
-      gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				  &bounds, 0);
+      screenator_paper_mark_ink (data, &bounds);
+      screenator_invalidate_rect (data, &bounds);
     }
 
   return TRUE;
@@ -4349,6 +4927,157 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
 
 
 
+
+/* Record one shape on every page that may intersect it.  The page-local
+ * translation and clipping happen in paper_vector_context(). */
+typedef void (*PaperRecordDrawFunc) (ScreenatorData *data, cairo_t *cr,
+				     gpointer arg);
+
+static void
+paper_record_vector (ScreenatorData *data, PaperRecordDrawFunc draw,
+		     gpointer arg)
+{
+  ScreenatorPaperDocument *doc;
+  gboolean continuous;
+  guint i;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages)
+    return;
+
+  continuous = data->paper_continuous_scroll && doc->pdf_stack_height > 0;
+
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      cairo_t *cr;
+
+      if (!continuous && i != doc->page)
+	continue;
+
+      cr = paper_vector_context (data, doc, i, page);
+      if (!cr)
+	continue;
+
+      draw (data, cr, arg);
+      cairo_destroy (cr);
+    }
+}
+
+static void
+paper_record_line_cb (ScreenatorData *data, cairo_t *cr, gpointer arg)
+{
+  draw_line_shape (data, cr, (const ScreenatorLine *) arg);
+}
+
+static void
+paper_record_frame_cb (ScreenatorData *data, cairo_t *cr, gpointer arg)
+{
+  draw_frame_shape (data, cr, (const ScreenatorFrameShape *) arg);
+}
+
+static void
+paper_record_star_cb (ScreenatorData *data, cairo_t *cr, gpointer arg)
+{
+  draw_star (data, cr, (const ScreenatorStar *) arg);
+}
+
+static void
+paper_record_triangle_cb (ScreenatorData *data, cairo_t *cr, gpointer arg)
+{
+  draw_triangle (data, cr, (const ScreenatorTriangle *) arg, 3);
+}
+
+static void
+paper_record_spline_cb (ScreenatorData *data, cairo_t *cr, gpointer arg)
+{
+  draw_spline (data, cr, (GArray *) arg);
+}
+
+static void
+paper_record_line_shape (ScreenatorData *data, const ScreenatorLine *line)
+{
+  paper_record_vector (data, paper_record_line_cb, (gpointer) line);
+}
+
+static void
+paper_record_frame_shape (ScreenatorData *data,
+			  const ScreenatorFrameShape *shape)
+{
+  paper_record_vector (data, paper_record_frame_cb, (gpointer) shape);
+}
+
+static void
+paper_record_star (ScreenatorData *data, const ScreenatorStar *star)
+{
+  paper_record_vector (data, paper_record_star_cb, (gpointer) star);
+}
+
+static void
+paper_record_triangle (ScreenatorData *data,
+		       const ScreenatorTriangle *triangle)
+{
+  paper_record_vector (data, paper_record_triangle_cb, (gpointer) triangle);
+}
+
+static void
+paper_record_spline (ScreenatorData *data, GArray *nodes)
+{
+  paper_record_vector (data, paper_record_spline_cb, nodes);
+}
+
+void
+screenator_paper_record_spline (ScreenatorData *data, GArray *nodes)
+{
+  paper_record_spline (data, nodes);
+}
+
+static void
+paper_invalidate_active_vector (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages || !doc->pages->len)
+    return;
+
+  page = &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
+  if (g_getenv ("SCREENATOR_VECTOR_DEBUG"))
+    g_printerr ("VECTOR: invalidate page %u style %d\n",
+		doc->page, page->style);
+  if (page->vector)
+    cairo_surface_destroy (page->vector);
+  page->vector = NULL;
+  page->vector_valid = FALSE;
+}
+
+static void
+paper_clear_active_vector (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages || !doc->pages->len)
+    return;
+
+  page = &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
+  if (page->vector)
+    cairo_surface_destroy (page->vector);
+  page->vector = NULL;
+  page->vector_valid = TRUE;
+}
 
 /*
  * Functions for handling various (GTK+)-Events
@@ -4358,27 +5087,25 @@ fill_bucket (ScreenatorData *data, gint x, gint y)
 void main_do_event (GdkEventAny *event,
 		    ScreenatorData  *data)
 {
-  guint keycode = ((GdkEventKey *) event)->hardware_keycode;
   if ((event->type == GDK_KEY_PRESS ||
        event->type == GDK_KEY_RELEASE) &&
-      event->window == data->root &&
-      (keycode == data->hot_keycode ||
-       keycode == data->pen_keycode ||
-       keycode == data->text_keycode ||
-       keycode == data->arrow_keycode ||
-       keycode == data->quick_keycode ||
-       keycode == data->undo_ctrl_keycode ||
-       keycode == data->escape_keycode ||
-       keycode == data->paper_z_keycode ||
-       keycode == data->paper_q_keycode ||
-       keycode == data->paper_t_keycode ||
-       keycode == data->paper_f4_keycode))
+      event->window == data->root)
     {
-      /* redirect the event to our main window, so that GTK+ doesn't
-       * throw it away (there is no GtkWidget for the root window...)
-       */
-      event->window = gtk_widget_get_window(data->win);
-      g_object_ref (gtk_widget_get_window(data->win));
+      guint keycode = ((GdkEventKey *) event)->hardware_keycode;
+      guint i;
+
+      for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	{
+	  if (keycode && keycode == data->shortcuts[i].keycode)
+	    {
+	      /* Redirect the event to our main window, so that GTK+ does
+	       * not throw it away (there is no GtkWidget for the root
+	       * window). */
+	      event->window = gtk_widget_get_window(data->win);
+	      g_object_ref (gtk_widget_get_window(data->win));
+	      break;
+	    }
+	}
     }
 
   gtk_main_do_event ((GdkEvent *) event);
@@ -4387,6 +5114,15 @@ void main_do_event (GdkEventAny *event,
 
 
 
+
+static gboolean
+on_main_window_delete (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  (void) widget;
+  (void) event;
+  screenator_request_quit ((ScreenatorData *) user_data);
+  return TRUE;
+}
 
 void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 {
@@ -4447,6 +5183,11 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 						   bucket_cursor_y_hot);
   g_object_unref (bucket_cursor_pixbuf);
 
+  /* Hand cursor shown while the paper is panned. */
+  data->hand_cursor = gdk_cursor_new_from_name (data->display, "grab");
+  if (!data->hand_cursor)
+    data->hand_cursor = gdk_cursor_new_from_name (data->display, "hand2");
+
 
   /*
     DRAWING AREA
@@ -4461,6 +5202,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   data->undo_head = 0;
   data->undo_depth = 0;
   data->redo_depth = 0;
+  paper_vector_undo_clear (data);
   int i;
   for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
     {
@@ -4510,7 +5252,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 		    G_CALLBACK (on_mainapp_selection_received), data);
 
 
-  /* The initial shape also depends on the saved screen paper. */
+  /* The initial shape also depends on the saved paper style. */
   update_window_shape (data);
   
 
@@ -4529,6 +5271,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   gtk_selection_add_target (data->win, GA_CONTROL, GA_RELOAD, 7);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_UNDO, 8);
   gtk_selection_add_target (data->win, GA_CONTROL, GA_REDO, 9);
+  gtk_selection_add_target (data->win, GA_CONTROL, GA_OPENPDF, 11);
 
 
  
@@ -4545,11 +5288,24 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   */
   read_keyfile(data);
 
-  /* Always start on the normal desktop, even if a screen paper was selected
-   * when the application last exited. */
+  /* Always start on the normal desktop, even if Paper Drawing was selected
+   * when the application last exited.  Keep the saved paper type (including
+   * PDF) so F3 can turn Paper Drawing back on with it. */
+  if (data->paper_selected < SCREENATOR_PAPER_PLAIN ||
+      data->paper_selected > SCREENATOR_PAPER_PDF)
+    data->paper_selected =
+      (data->paper >= SCREENATOR_PAPER_PLAIN &&
+       data->paper <= SCREENATOR_PAPER_GRAPH)
+      ? data->paper : SCREENATOR_PAPER_PLAIN;
+
+  /* A selected PDF needs a remembered file; otherwise fall back to Plain. */
+  if (data->paper_selected == SCREENATOR_PAPER_PDF &&
+      (!data->paper_pdf_path || !*data->paper_pdf_path))
+    data->paper_selected = SCREENATOR_PAPER_PLAIN;
+
   data->paper = SCREENATOR_PAPER_NONE;
 
-  /* The saved screen paper changes how much of the window is visible. */
+  /* The saved paper type changes how much of the window is visible. */
   update_window_shape (data);
 
   /*
@@ -4611,7 +5367,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
 
   hide_window (data);
 
-  /* A saved screen paper or some restored annotations are shown right away. */
+  /* Restored annotations are shown right away. */
   if (data->paper != SCREENATOR_PAPER_NONE || data->painted)
     show_window (data);
 
@@ -4634,12 +5390,17 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
    * that was selected from the icon menu before the last quit. */
   apply_pen_settings (data);
 
-  
+  /* Screenator always starts with no drawing tool active: the Cursor tool is
+   * selected in the tool bar until the user chooses a tool.  A tool that was
+   * selected when the application last quit must not look active on launch
+   * before it has actually been activated. */
+  data->pen_tool = 0;
+  data->forced_context = NULL;
 
   gdk_event_handler_set ((GdkEventFunc) main_do_event, data, NULL);
   gtk_key_snooper_install (snoop_key_press, data);
 
-  if (activate)
+  if (activate && !data->start_paper)
     acquire_grab (data, NULL); /* grab all */
 
   /* 
@@ -4658,9 +5419,15 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   /* The tray icon shows the same menu as the floating icon. */
   refresh_tray_menu (data);
 
+  /* The normal, managed Paper window used instead of the overlay. */
+  screenator_create_paper_window (data);
+
   /* movable on-screen icon */
   create_icon_window (data);
 
+  /* A PDF passed on the command line opens directly in Paper Drawing. */
+  if (data->start_paper)
+    screenator_enter_paper_drawing (data, SCREENATOR_PAPER_PDF);
 }
 
 
@@ -4743,8 +5510,40 @@ int app_parse_args (int argc, char **argv, ScreenatorData *data)
          }
        else
          {
-           g_printerr ("Unknown Option for Screenator startup: \"%s\"\n", arg);
-           wrong_arg = TRUE;
+           const gchar *extension = strrchr (arg, '.');
+
+           if (extension && g_ascii_strcasecmp (extension, ".pdf") == 0)
+             {
+               gchar *path;
+
+               if (g_str_has_prefix (arg, "file://"))
+                 path = g_filename_from_uri (arg, NULL, NULL);
+               else
+                 path = g_strdup (arg);
+
+               if (path && g_file_test (path, G_FILE_TEST_IS_REGULAR))
+                 {
+                   gchar *canonical = g_canonicalize_filename (path, NULL);
+
+                   g_free (data->paper_pdf_path);
+                   data->paper_pdf_path = canonical;
+                   data->paper_selected = SCREENATOR_PAPER_PDF;
+                   data->start_paper = TRUE;
+                   activate = FALSE;
+                 }
+               else
+                 {
+                   g_printerr ("Could not open PDF file: \"%s\"\n", arg);
+                   wrong_arg = TRUE;
+                 }
+
+               g_free (path);
+             }
+           else
+             {
+               g_printerr ("Unknown Option for Screenator startup: \"%s\"\n", arg);
+               wrong_arg = TRUE;
+             }
          }
 
        if (wrong_arg)
@@ -4857,8 +5656,31 @@ int main_client (int argc, char **argv, ScreenatorData *data)
          }
        else
          {
-           g_printerr ("Unknown Option to control a running Screenator process: \"%s\"\n", arg);
-           wrong_arg = TRUE;
+           const gchar *extension = strrchr (arg, '.');
+
+           if (extension && g_ascii_strcasecmp (extension, ".pdf") == 0)
+             {
+               gchar *path = g_str_has_prefix (arg, "file://")
+                 ? g_filename_from_uri (arg, NULL, NULL)
+                 : g_strdup (arg);
+               gchar *handoff =
+                 g_build_filename (g_get_user_runtime_dir (),
+                                   "screenator-open-pdf", NULL);
+
+               if (path && g_file_test (path, G_FILE_TEST_IS_REGULAR) &&
+                   g_file_set_contents (handoff, path, -1, NULL))
+                 action = GA_OPENPDF;
+               else
+                 wrong_arg = TRUE;
+
+               g_free (handoff);
+               g_free (path);
+             }
+           else
+             {
+               g_printerr ("Unknown Option to control a running Screenator process: \"%s\"\n", arg);
+               wrong_arg = TRUE;
+             }
          }
 
        if (!wrong_arg && action != GDK_NONE)
@@ -4888,6 +5710,10 @@ int main (int argc, char **argv)
       we run okay under XWayland, but not native Wayland
   */
   gdk_set_allowed_backends ("x11");
+
+  /* Use the desktop's own file chooser (KDE, GNOME, ...) through the XDG
+   * desktop portal.  Do not override a value the user already set. */
+  g_setenv ("GTK_USE_PORTAL", "1", FALSE);
 
   gtk_init (&argc, &argv);
   data = g_malloc0(sizeof (ScreenatorData));
@@ -4924,7 +5750,8 @@ int main (int argc, char **argv)
 
   gtk_widget_add_events (data->win, SCREENATOR_WINDOW_EVENTS);
 
-  g_signal_connect (data->win, "delete-event", gtk_main_quit, NULL);
+  g_signal_connect (data->win, "delete-event",
+		    G_CALLBACK (on_main_window_delete), data);
   g_signal_connect (data->win, "destroy", gtk_main_quit, NULL);
   /* the selection event handlers will be overwritten if we become a mainapp */
   g_signal_connect (data->win, "selection_received", 

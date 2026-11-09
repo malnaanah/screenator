@@ -48,19 +48,24 @@ cd screenator-linux
 
 The script produces the Linux packages in `../build/`:
 
-- `screenator_7.0_amd64.deb` — install with `sudo apt install ./screenator_7.0_amd64.deb`
-- `screenator-7.0-1.x86_64.rpm` — install with `sudo rpm -i ./screenator-7.0-1.x86_64.rpm`
-- `Screenator-7.0-x86_64.AppImage` — make executable and run
+- `screenator_8.0_amd64.deb` — install with `sudo apt install ./screenator_8.0_amd64.deb`
+- `screenator-8.0-1.x86_64.rpm` — install with `sudo rpm -i ./screenator-8.0-1.x86_64.rpm`
+- `Screenator-8.0-x86_64.AppImage` — make executable and run
 
 The Windows application is built separately from `screenator-windows/` with
 MSYS2; see `screenator-windows/README.md`.
 
 ## Configuration
 
-- `~/.config/screenator.ini` — menu settings (colour, width, eraser size,
-  opacity, font, shape fill, icon size, last tool).
-- `~/.config/screenator.cfg` — optional per-user tool/button mapping; falls
-  back to the bundled (AppImage) or system-wide `/etc/screenator/screenator.cfg`.
+- `~/.config/Screenator/screenator.ini` — menu settings (colour, width,
+  eraser size, opacity, font, shape fill, icon size, last tool, Paper mode
+  and shortcuts).
+- `~/.config/Screenator/screenator.cfg` — optional per-user tool/button
+  mapping; falls back to the bundled (AppImage) or system-wide
+  `/etc/screenator/screenator.cfg`.
+- `~/.config/Screenator/screenator-annotations.png` — saved Screen-mode
+  annotations.
+- `~/.config/Screenator/hints.html` — optional user override for the hints.
 - `%APPDATA%\Screenator\screenator.ini` — Windows settings.
 
 ## License

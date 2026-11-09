@@ -1,4 +1,4 @@
-Screenator 7.0
+Screenator 8.0
 ==============
 
 Screenator is a vibe-coded screen annotation tool for X11, developed by
@@ -6,10 +6,10 @@ Mahmoud Alnaanah <malnaanah@gmail.com>.  It is based on Gromit-MPX 1.4.2
 and keeps the upstream GPL-2.0 license and attribution.
 
 Packages:
-  - screenator 7.0 (amd64) .deb
-  - screenator 7.0 (x86_64) .rpm
-  - Screenator-7.0-x86_64.AppImage
-  - Screenator-7.0-win64.zip (Windows, built separately)
+  - screenator 8.0 (amd64) .deb
+  - screenator 8.0 (x86_64) .rpm
+  - Screenator-8.0-x86_64.AppImage
+  - Screenator-7.0-win64.zip (Windows port, still 7.0, built separately)
 
 Layout:
   screenator-windows/   Windows source code and build files (prepared separately).
@@ -22,34 +22,46 @@ Layout:
   screenator-linux/CMakeLists.txt
                         CMake build definition.
   build/                Built packages:
-                          screenator_7.0_amd64.deb
-                          screenator-7.0-1.x86_64.rpm
-                          Screenator-7.0-x86_64.AppImage
+                          screenator_8.0_amd64.deb
+                          screenator-8.0-1.x86_64.rpm
+                          Screenator-8.0-x86_64.AppImage
   info.txt              This file.
 
 Features:
   - Pen, marker, arrow, text, shape and eraser tools.
-  - Floating Icon Position... in Settings chooses Top Right (default), Top
-    Left, Bottom Right or Bottom Left.  The choice is saved across restarts.
-  - The Settings submenu holds Save Annotations on Exit, Change Font, Show
-    Settings Indicator, Floating Icon Position... and Reset Settings.  Show
-    Floating Icon sits directly
-    below Toggle Visibility in the main menu and has the global F9 shortcut.
+  - The Settings dialog has a General tab (Save Annotations on Exit, Change
+    Font, Show Settings Indicator, Timer Delay, and Reset app settings and
+    drawings), a Paper tab (continuous scrolling and paper size), a Toolbar
+    tab (direction, icon size, each icon's visibility and order, changed by
+    dragging), a Floating Icon tab (icon size and position)
+    and a Shortcuts tab (every editable shortcut).  The tool bar is horizontal
+    on the top edge by default; choosing Vertical places it on the right edge.
+    The tool bar and floating icon are visible by default.  Actions sits below
+    Shapes in the
+    main
+    menu and holds Switch Mode, Undo, Redo, Clear Screen, Toggle Visibility,
+    Screenshot, Show toolbar (F10), Show Floating Icon (F9) and Show Hints.
+    The floating icon and tool bar stay clickable while a tool is selected;
+    hovering them shows the normal pointer and suspends drawing.
     With Save
     Annotations on Exit on (the default), the drawings are saved to
-    ~/.config/screenator-annotations.png when Screenator quits and restored on
-    the next start; the screen paper follows its own setting and Clear Screen
-    removes the saved drawing.
-  - Tool Activation Delay in the main menu can delay a newly selected tool by
-    0, 1, 2, 3, 4, 5, 7, 9 or 11 seconds.  The delay is always 0 when the
-    application starts and is not remembered across restarts.  During the
-    delay the previously selected tool stays active.  If the pointer grab is blocked when the delay ends, for
-    example by another application's context menu, Screenator freezes the
-    current screen as a temporary background so the tool can draw over it;
-    exiting the tool removes the frozen background.
-  - The Shapes submenu holds the Marker, Line, Spline, Polygon, Triangle,
-    Arrow, Ellipse, Rounded Rectangle, Paint Bucket, Math Function and Parallel
-    Lines tools.  Shapes are drawn by dragging; the Line and Arrow follow the
+    ~/.config/Screenator/screenator-annotations.png when Screenator quits and restored on
+    the next start; changed papers are offered for saving on exit, and Clear
+    Screen removes the saved drawing.  The Save toolbar button, directly before
+    Paper Type, saves only the current changed paper to Documents or takes a
+    screenshot in Screen mode.
+  - The Timer tool (F12) is available in Screen Annotation mode only. It
+    releases the input for the Timer Delay set in
+    Settings > General, so you can switch to another application.  Other tools
+    cannot be selected during the countdown.  When it ends, the Pen tool
+    becomes active.  If the pointer grab is blocked when
+    the timer ends, for example by another application's context menu,
+    Screenator freezes the current screen as a temporary background so the
+    tool can draw over it; exiting the tool removes the frozen background.
+  - The Arrow tool sits directly after the Eraser.  The Shapes submenu holds
+    the Marker, Line, Spline, Polygon, Triangle, Ellipse, Rounded Rectangle,
+    Paint Bucket, Math Function and Parallel Lines tools.  Shapes are drawn by
+    dragging; the Line and Arrow follow the
     drag direction, which snaps to 0, 30, 45, 60, 90 and so on while Ctrl is
     held, and follows the pointer without it.
     The Arrow adds a triangular arrowhead at the end point by default.  The
@@ -160,7 +172,7 @@ Features:
     Escape cancels.  While the editor is open the mouse buttons are disabled, so
     a click cannot leave painting mode or reach the application below; Enter or
     Escape enables them again.  The text and its blinking caret are drawn above
-    the annotations and the screen paper, so they stay visible even over a
+    the annotations and the paper page, so they stay visible even over a
     drawing.  The middle mouse button still erases while it is held, also with
     the Text tool selected.  Right-to-left
     text such as Arabic extends to the left of the click position.  A placed
@@ -177,34 +189,128 @@ Features:
     colour in its lower half; when shapes are not filled, the lower half shows twelve
     black and white radial stripes.  Both halves have a one pixel black
     stroke.  Left or right click on the ring opens the same menu as the
-    floating icon.  "Show Settings Indicator" in the menu turns it off and on;
+    floating icon.  "Show Settings Indicator" in Settings turns it off and on;
     it is on by default and is disabled while the floating icon is hidden.
   - The same menu is available from the system tray icon.
   - Dialogs and message boxes, such as the Math Function dialog and the hints
-    dialog, are shown above the drawings and the screen paper, so both stay
-    visible behind them; each dialog is raised as it opens, which also works
+    dialog, are shown above the drawings and the paper page, so both stay
+    visible behind them.  Every dialog has a title bar with a close button and
+    a visible border, and each dialog is raised as it opens, which also works
     in virtual machines without a compositor.
-  - A Screen Paper submenu turns the screen into paper for drawing and writing.
-    None shows the normal desktop, Plain a white page, Ruled a white page with
-    blue writing lines and Graph a white page with a grey square grid.  The
-    paper is drawn below the annotations and above the other windows (the
-    floating icon and its menu stay above it), takes the mouse and keyboard so
-    clicks and typing do not reach the desktop or the applications below and
-    stays when Clear Screen is selected.  Screenator always starts on the
-    normal desktop; a saved paper is not restored.  While a paper is active,
-    Ctrl+Z and Ctrl+Shift+Z undo and redo, Ctrl+Q exits the paper, Ctrl+T
-    shows or hides the drawings and Alt+F4 quits.
+  - A Paper submenu holds the paper tools, and Actions holds Switch Mode (F3),
+    Undo, Redo, Clear Screen, Toggle Visibility, Screenshot, Show toolbar
+    (F10), Show Floating Icon (F9) and Show Hints.  Switch Mode is also the
+    first item in the toolbar.  Plain, Ruled and
+    Graph are
+    white pages (with blue writing lines for Ruled and a grey square grid for
+    Graph), and selecting PDF opens the desktop's own file chooser (KDE,
+    GNOME, etc.).  Reset/Open PDF. in the Paper menu or the tool bar's Paper
+    Type menu resets the current Plain, Ruled or Graph paper to one empty page,
+    or opens another PDF when the current paper is PDF.  If the current paper
+    has unsaved changes, Screenator asks whether to save it in the Documents
+    folder first.  Selecting a paper type, or opening a PDF, switches to
+    Paper mode automatically.  Every type keeps its own pages, drawings and
+    loaded PDF while another type is shown, so switching back restores them
+    without a save prompt.  The selected paper type and PDF file are remembered
+    across restarts.  Each PDF file remembers the page it was last closed on
+    when reopened from Screenator or the desktop.  Paper saves
+    show a progress overlay until the PDF is complete, then the saved path.
+    Saving a screenshot shows a confirmation with the saved path.  Opening a PDF with
+    Screenator (Open With or "screenator file.pdf") starts directly in Paper
+    mode with that PDF; if an instance is already running, the PDF is
+    forwarded to it.  The desktop entry registers Screenator as a PDF
+    handler.  While Paper mode is active, the page is shown in a normal
+    managed window, not a fullscreen overlay: other applications and dialogs
+    can cover it, and Alt+Tab switches away normally.  It takes the mouse and
+    keyboard while focused, and stays when Clear Screen is selected.  Ctrl+W
+    switches to Window mode: the Paper window becomes a normal resizable
+    window, the paper page width fits the window automatically, and the desktop
+    panel can appear above it.  The drawing tool and its cursor are active only
+    inside the Paper window, and no global pointer grab is taken, so resizing,
+    the window frame and other applications keep working normally.  Ctrl/Alt
+    shortcuts are received by the focused Paper window as ordinary key events
+    instead of being grabbed globally.  Press it again to return to fullscreen.
+    Ctrl+D leaves fullscreen into a borderless, non-resizable window covering
+    the monitor, so the desktop panel stays above the page; press it again to
+    return to fullscreen.  In every Paper presentation (fullscreen, Ctrl+D and
+    Window mode), the drawing tool and cursor are limited to the Paper window,
+    and Ctrl/Alt shortcuts are received only while that window is focused.
+    Ctrl+S, or the Save toolbar button,
+    saves only the current paper if it has changed, automatically to the
+    Documents folder as Screenator-plain-YYYYMMDD-HHMMSS.pdf,
+    Screenator-ruled-..., Screenator-graph-... or Screenator-pdf-..., and shows
+    the saved path.  Drawings are vector paths, text is saved as text, and the
+    original PDF pages and paper backgrounds stay vector.  Undo and redo keep
+    drawings and text vector as well.  On exit Screenator
+    offers once to save every changed
+    paper; switching paper types never shows a save prompt.  Ctrl+B and Ctrl+A
+    insert a page before or after the current page in
+    Plain, Ruled and Graph.  With Continuous scrolling on (the default), the
+    selected paper is shown as one continuous vertical document with a grey
+    gap between its pages, and Up/Down move smoothly through all of them.
+    Page Up/Page Down move to the previous or next page and Home/End jump to
+    the first or last page.  With it off, pages are shown one at a time;
+    scrolling moves within the
+    current page and moves to the next or previous page at the top or bottom
+    edge.  In Paper mode, holding the mouse middle
+    button or stylus side button 1 pans the paper and shows a hand cursor;
+    holding the right mouse button or stylus side button 2 selects the Eraser
+    and shows the eraser cursor.  No long press is needed, and both work
+    whether a tool is active or not; releasing the right button or stylus
+    button 2 restores the previous tool.  A right click or stylus side button
+    2 acts as Escape while a shape or text is unfinished; after it is
+    committed, the same button is a temporary eraser and keeps the selected
+    tool.  The mouse wheel scrolls the pages, except while a placed shape or
+    text shows its handles: then the wheel and stylus button 1 change its
+    colour.  While text is being typed, the wheel and stylus side button 1
+    change the text colour, and right click cancels the text.
+    F10 shows or hides the tool bar in both Screen and Paper modes.  It is
+    horizontal on the top edge by default; Settings > General can place it
+    vertically on the right edge, and Settings > Toolbar chooses the visible
+    icons and their order.  It contains Switch Mode first, then Cursor, Pen,
+    Text, Eraser, Arrow, Timer, Shapes, Undo, Redo, Save, Paper Type, Insert
+    Page Before, Delete Page, Insert Page After, Clear Screen, Toggle
+    Visibility, Eraser
+    Size, Line Color, Thickness, Fill Color, Opacity, Marker Opacity,
+    Settings, Show Hints and Quit last.  The Timer icon appears only in Screen mode, and
+    Toggle Visibility is hidden from the tool bar in Paper mode.  Paper Type
+    selects a paper type; the insert-page
+    buttons insert a
+    page in an active Plain, Ruled or Graph paper and are hidden in Screen
+    mode.  Save saves the current changed paper to Documents or takes a
+    screenshot in Screen mode.  The selected tool is
+    highlighted.  Drag any icon or the gaps between them to move the bar; a
+    short click still selects the tool.  Cursor exits the current tool and is
+    available in both modes.  In Paper mode with no active tool, the middle
+    mouse button or stylus side button 1 pans, the wheel scrolls, and the
+    right button or stylus side button 2 erases.  The stylus
+    tip.  The bar
+    stays open when a tool or a menu entry is chosen, its icons show tooltips,
+    its direction and icon size (16 to 64 px) are set in Settings > General,
+    its visible icons and order are set in Settings > Toolbar, its shortcuts
+    are set in Settings > Shortcuts, and its open/closed state is remembered.
+    Settings > Paper also
+    sets continuous scrolling and the paper size: Screen, A4 portrait, A4
+    landscape, or Custom width and height in millimetres.  The size applies to
+    Plain, Ruled and Graph pages and scales their existing drawings; PDF pages
+    keep the PDF's own size.  Continuous PDF pages are separated by a grey gap
+    so their edges stay visible.  Screenator always starts on the normal
+    desktop; unsaved paper pages are not restored.
   - A single, colourful Hints dialog appears when Screenator starts.  It is a
     750x550 scrollable column that summarises the common mouse and stylus
-    controls plus Shape Editing tips, the global F9 shortcut and the Drawing
-    Mode and Screen Paper shortcuts in
-    one place instead of repeating them for every tool, and it emphasises that
+    controls plus Shape Editing tips, the global F9 shortcut and the Screen
+    and Paper mode shortcuts in one place instead of repeating them for
+    every tool, and it emphasises that
     a long right click, or a long press of the stylus second side button,
     opens the Scroll Mode menu to choose Color or Thickness for scrolling.  It
     has a "Never show hints again" option beside the Close button, which is
     remembered across restarts.
-    "Show Hints" in the menu opens the dialog again, and Reset Settings keeps
-    the choice.
+    "Show Hints" in the menu opens the dialog again, and Reset app settings
+    and drawings keeps the choice.  The hints text is loaded from an HTML file
+    each time the dialog opens.  Copy /usr/share/screenator/hints.html to
+    ~/.config/Screenator/hints.html to customise it, or set
+    SCREENATOR_HINTS_FILE to another HTML file.  Headings, paragraphs, lists,
+    bold/italic/underline text, links and coloured spans are supported.
   - Line colour, line thickness, eraser size, opacity, text font, shape fill
     and floating icon size can be changed from the menu and are remembered
     across restarts, together with whether the floating icon and the settings
@@ -223,20 +329,26 @@ Features:
     is shown in the settings indicator and the menus.
   - Pen strokes are smoothed with curved segments, and motion event
     compression is disabled so fast strokes stay smooth.
-  - Reset Settings restores red, 6 px, 100% opacity, no shape fill, Arial Bold
-    24, a 60 px eraser and a 48x48 icon.
-  - Undo/redo, clear screen, show/hide drawing, show/hide floating icon and
-    show hints.
+  - Reset app settings and drawings deletes the configuration file and saved
+    drawings, clears every paper page, and restores red, 6 px, 100% opacity,
+    no shape fill, Arial Bold 24, a 60 px eraser, a 48x48 icon, a 2 s Timer
+    Delay and a visible 32 px horizontal tool bar with all icons.
+  - Undo/redo, clear screen, show/hide drawing, show/hide floating icon,
+    show hints and screenshots are in the Actions submenu.
   - F9 is a global shortcut that shows or hides the floating icon at any time.
-    F8 selects the Pen tool, F6 the Arrow tool and F7 the Text tool.  While a
-    tool is active these switch immediately; otherwise they honor the Tool
-    Activation Delay.  F10 opens a centered 5x3 grid of large tool icon
-    tiles; the arrow keys move, Home/End jump to the corners, Enter or Space
-    selects, and Escape closes the grid.  A tool chosen from this menu
-    activates immediately, ignoring the delay.  The old Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9,
-    Shift+F8 and the old F8 undo) are no longer grabbed.  While painting mode
-    is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes, and Esc exits the current
-    tool like a right click outside a shape.
+    F8 selects the Pen tool, F6 the Arrow tool, F7 the Text tool and F12
+    starts the Timer.  F10 shows or hides the tool bar in both modes; it is
+    horizontal on the top edge by default, and Settings > General can make it
+    vertical on the right edge.  F3 activates the selected paper or turns it
+    off.  F4 saves a screenshot of the current screen, including the
+    annotations or paper page, to the Pictures directory as
+    Screenator-YYYYMMDD-HHMMSS.png in both Screen and Paper modes.  The old
+    Gromit-MPX keys (Shift+F9, Ctrl+F9, Alt+F9, Shift+F8 and the old F8 undo)
+    are no longer grabbed.  While painting mode
+    is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes.  Esc first finishes the
+    current shape or closes its handles and keeps the selected tool; press it
+    again to exit the tool and select the Cursor tool, so its icon becomes
+    active.
   - Multi-pointer support inherited from Gromit-MPX.
   - Stylus support: IMPORTANT: In your stylus configuration, set button 1
     (near the tip) to Middle Click and button 2 to Right Click.  The tip draws
@@ -249,18 +361,22 @@ Features:
     the pen hovers above the tablet.  A short click of the second side button
     acts like Escape/right click, finishing the shape being edited and keeping
     the tool active, or leaving painting mode when no shape is being edited.
-    A long press opens the "Button 1 Mode" menu with Color and Thickness.  With
-    the Eraser tool, a short press of the first side button steps through the
-    eraser sizes and a long press of the second side button does not open the
-    menu.  The hints dialog covers the stylus controls at startup and can be
-    reopened with "Show Hints".
+    A long press opens the "Button 1 Mode" menu with Color and Thickness.  In
+    Paper mode the buttons change roles: hold side button 1 or the middle
+    mouse button to pan, and hold side button 2 or the right mouse button to
+    erase.  No long press is needed; releasing the right button or side button
+    2 brings the previous tool back.  While a shape or text is unfinished,
+    side button 2 acts as Escape.  The mouse wheel scrolls the pages.  The
+    hints
+    dialog covers the stylus controls at startup and can be reopened with
+    "Show Hints".
 
 Configuration:
-  ~/.config/screenator.ini          Menu settings (tool, colour, width, eraser
-                                    width, opacity, shape fill, screen paper,
+  ~/.config/Screenator/screenator.ini          Menu settings (tool, colour, width, eraser
+                                    width, opacity, shape fill, Paper mode,
                                     text font, icon size, math expression and
                                     range, hints choice).
-  ~/.config/screenator.cfg          User tool configuration.
+  ~/.config/Screenator/screenator.cfg          User tool configuration.
   /etc/screenator/screenator.cfg    System-wide tool configuration, used when
                                     the user configuration does not exist.
 
@@ -283,8 +399,9 @@ Differences from Gromit-MPX 1.4.2:
     and the chosen Pango font; Enter places it and Escape cancels.  The mouse
     buttons are disabled while the inline editor is open and enabled again by
     Enter or Escape.  The font is saved with the other menu settings.
-  - A Shapes submenu was added with Line, Spline, Polygon, Triangle, Arrow,
-    Ellipse, Rounded Rectangle and Paint Bucket tools.  Shapes are drag-drawn;
+  - A Shapes submenu was added with Line, Spline, Polygon, Triangle, Ellipse,
+    Rounded Rectangle and Paint Bucket tools; the Arrow tool is directly after
+    the Eraser.  Shapes are drag-drawn;
     the line and the arrow follow the drag direction, which snaps to 0, 30,
     45, 60, 90 and so on while Ctrl is held.  The
     arrow draws an arrowhead at the end point.  A placed line or arrow keeps a
@@ -351,10 +468,11 @@ Differences from Gromit-MPX 1.4.2:
     matches the erasing area.  The default font is Arial Bold, menu icons are
     scaled to 16 px, the Shapes submenu sits below Eraser, Undo/Redo sit above
     Change Font, and pen strokes are smoothed with curved segments.
-  - While painting mode is active, Ctrl+Z undoes and Ctrl+Shift+Z redoes; the
-    keys are grabbed only while painting, so they keep their normal meaning in
-    other applications.  The shortcut also works while Caps Lock or Num Lock
-    is on.
+  - While painting mode is active, Ctrl+Z undoes the last drawing stroke or
+    page insertion/deletion and Ctrl+Shift+Z redoes it; drawing undo is used
+    first while drawing history exists.  The keys are grabbed only while
+    painting, so they keep their normal meaning in other applications.  The
+    shortcut also works while Caps Lock or Num Lock is on.
   - The About dialog names the author and email, and states that Screenator is
     a vibe-coded screen annotation app based on Gromit-MPX 1.4.2.
   - Dialogs and message boxes hide the drawings while they are open, so their
@@ -362,14 +480,14 @@ Differences from Gromit-MPX 1.4.2:
     dialog closes.  This also works in virtual machines without a compositor,
     where the window manager cannot stack a dialog above the fullscreen
     annotation window.
-  - A Screen Paper submenu turns the screen into white paper for drawing and
-    writing.  The paper is drawn below the annotations and above the other
+  - A Paper submenu turns the screen into a PDF page for drawing and
+    writing.  The page is drawn below the annotations and above the other
     windows, stays when the screen is cleared and is saved with the other menu
     settings.
   - A settings ring around the floating icon shows the line thickness as
     magenta sectors, the line colour in its upper half and the shape fill
     colour in its lower half.  It is on by default and can be turned off with
-    "Show Settings Indicator".
+    "Show Settings Indicator" in Settings.
 
 Build:
   cd screenator

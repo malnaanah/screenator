@@ -30,13 +30,159 @@
 #include <string.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <glib/gstdio.h>
 
 #include "config.h"
 #include "screenator.h"
+
+/* Move one old configuration file into the new directory when the new copy
+ * does not exist yet.  Rename is preferred; copying handles unusual setups. */
+static void
+config_move_legacy_file (const gchar *old_path, const gchar *new_path)
+{
+  gchar *contents = NULL;
+  gsize length = 0;
+
+  if (g_file_test (new_path, G_FILE_TEST_EXISTS) ||
+      !g_file_test (old_path, G_FILE_TEST_IS_REGULAR))
+    return;
+
+  if (g_rename (old_path, new_path) == 0)
+    return;
+
+  if (g_file_get_contents (old_path, &contents, &length, NULL))
+    {
+      if (g_file_set_contents (new_path, contents, (gssize) length, NULL))
+	g_remove (old_path);
+      g_free (contents);
+    }
+}
+
+/* All Screenator state lives in ~/.config/Screenator.  Keep accepting the
+ * old flat ~/.config/screenator.* names by moving them once. */
+static void
+config_migrate_legacy_files (const gchar *config_dir)
+{
+  static gboolean migrated = FALSE;
+  const gchar *old_names[] = {
+    "screenator.ini",
+    "screenator.cfg",
+    "screenator-annotations.png"
+  };
+  gchar *old_hints_dir;
+  gchar *old_hints;
+  gchar *new_hints;
+  guint i;
+
+  if (migrated)
+    return;
+  migrated = TRUE;
+
+  for (i = 0; i < G_N_ELEMENTS (old_names); i++)
+    {
+      gchar *old_path = g_build_filename (g_get_user_config_dir (),
+					 old_names[i], NULL);
+      gchar *new_path = g_build_filename (config_dir, old_names[i], NULL);
+
+      config_move_legacy_file (old_path, new_path);
+      g_free (old_path);
+      g_free (new_path);
+    }
+
+  old_hints_dir = g_build_filename (g_get_user_config_dir (), "screenator",
+				    NULL);
+  old_hints = g_build_filename (old_hints_dir, "hints.html", NULL);
+  new_hints = g_build_filename (config_dir, "hints.html", NULL);
+  config_move_legacy_file (old_hints, new_hints);
+  g_free (old_hints_dir);
+  g_free (old_hints);
+  g_free (new_hints);
+}
+
+gchar *
+screenator_config_path (const gchar *name)
+{
+  gchar *config_dir =
+    g_build_filename (g_get_user_config_dir (), "Screenator", NULL);
+
+  g_mkdir_with_parents (config_dir, 0700);
+  config_migrate_legacy_files (config_dir);
+
+  {
+    gchar *path = g_build_filename (config_dir, name, NULL);
+
+    g_free (config_dir);
+    return path;
+  }
+}
 #include "build-config.h"
 
 
 #define KEYFILE_FLAGS G_KEY_FILE_KEEP_COMMENTS|G_KEY_FILE_KEEP_TRANSLATIONS
+
+const gchar * const screenator_shortcut_defaults[SCREENATOR_SHORTCUT_COUNT] =
+{
+  "F9",          /* floating icon */
+  "F8",          /* pen */
+  "F7",          /* text */
+  "F6",          /* arrow */
+  "F12",         /* timer */
+  "F10",         /* toolbar */
+  "F3",          /* switch mode */
+  "F4",          /* screenshot */
+  "Ctrl+Z",      /* undo */
+  "Ctrl+Shift+Z",/* redo */
+  "Ctrl+S",      /* save */
+  "Ctrl+B",      /* insert before */
+  "Ctrl+A",      /* insert after */
+  "Ctrl+T",      /* toggle visibility */
+  "Ctrl+Q",      /* exit paper */
+  "Alt+F4",      /* quit */
+  "Escape"       /* escape / cancel */
+};
+
+const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
+{
+  "Show floating icon",
+  "Pen tool",
+  "Text tool",
+  "Arrow tool",
+  "Timer",
+  "Show tool bar",
+  "Switch Screen/Paper mode",
+  "Screenshot",
+  "Undo",
+  "Redo",
+  "Save paper as PDF",
+  "Insert page before",
+  "Insert page after",
+  "Toggle drawings visibility",
+  "Exit Paper mode",
+  "Quit",
+  "Cancel / Escape"
+};
+
+const ScreenatorShortcutScope screenator_shortcut_scopes[
+  SCREENATOR_SHORTCUT_COUNT] =
+{
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_PAINTING,
+  SCREENATOR_SHORTCUT_PAINTING,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAINTING
+};
 
 static gpointer HOTKEY_SYMBOL_VALUE  = (gpointer) 3;
 static gpointer UNDOKEY_SYMBOL_VALUE = (gpointer) 4;
@@ -128,8 +274,7 @@ void parse_config (ScreenatorData *data)
   guint width, arrowsize, minwidth;
 
   /* try user config location */
-  filename = g_strjoin (G_DIR_SEPARATOR_S,
-                        g_get_user_config_dir(), "screenator.cfg", NULL);
+  filename = screenator_config_path ("screenator.cfg");
   if ((file = open(filename, O_RDONLY)) < 0)
       g_print("Could not open user config %s: %s\n", filename, g_strerror (errno));
   else
@@ -486,10 +631,96 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
+#define PAPER_TOOLBAR_ITEMS_VERSION 2
+
+/* Older saved toolbars predate Delete Page and Show Hints.  Add them once,
+ * then record the migration version so hiding them in Settings stays
+ * respected on later starts. */
+static gchar *
+toolbar_items_migrate (const gchar *items, gint version)
+{
+  gchar **tokens;
+  GString *out;
+  gboolean any = FALSE;
+  gboolean has_delete = FALSE;
+  gboolean has_hints = FALSE;
+  gboolean add_delete;
+  gboolean add_hints;
+  guint i;
+
+  if (!items || !*items || version >= PAPER_TOOLBAR_ITEMS_VERSION)
+    return g_strdup (items ? items : "");
+
+  tokens = g_strsplit (items, ",", -1);
+
+  for (i = 0; tokens[i]; i++)
+    {
+      gchar *id = g_strstrip (tokens[i]);
+
+      if (*id)
+	any = TRUE;
+      if (g_strcmp0 (id, "delete_page") == 0)
+	has_delete = TRUE;
+      if (g_strcmp0 (id, "hints") == 0)
+	has_hints = TRUE;
+    }
+
+  if (!any)
+    {
+      g_strfreev (tokens);
+      return g_strdup (items);
+    }
+
+  add_delete = !has_delete;
+  add_hints = !has_hints;
+  out = g_string_new (NULL);
+
+  for (i = 0; tokens[i]; i++)
+    {
+      gchar *id = g_strstrip (tokens[i]);
+
+      if (!*id)
+	continue;
+
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+
+      g_string_append (out, id);
+
+      if (add_delete && g_strcmp0 (id, "insert_before") == 0)
+	{
+	  g_string_append (out, ",delete_page");
+	  add_delete = FALSE;
+	}
+
+      if (add_hints && g_strcmp0 (id, "settings") == 0)
+	{
+	  g_string_append (out, ",hints");
+	  add_hints = FALSE;
+	}
+    }
+
+  if (add_delete)
+    {
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+      g_string_append (out, "delete_page");
+    }
+
+  if (add_hints)
+    {
+      if (out->len > 0)
+	g_string_append_c (out, ',');
+      g_string_append (out, "hints");
+    }
+
+  g_strfreev (tokens);
+  return g_string_free (out, FALSE);
+}
+
 void read_keyfile(ScreenatorData *data)
 {
-    gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
-				 g_get_user_config_dir(), "screenator.ini", NULL);
+    gchar *filename = screenator_config_path ("screenator.ini");
 
     /*
       set defaults
@@ -504,8 +735,9 @@ void read_keyfile(ScreenatorData *data)
     data->pen_tool = 0;
     data->icon_size = KEY_DFLT_ICON_SIZE;
     data->icon_position = SCREENATOR_ICON_TOP_RIGHT;
-    data->tool_delay_seconds = 0;
+    data->tool_delay_seconds = 2;
     data->tool_delay_id = 0;
+    data->timer_active = FALSE;
     data->force_active_icon = FALSE;
     data->font = g_strdup (KEY_DFLT_FONT);
     data->shape_fill_enabled = FALSE;
@@ -514,6 +746,27 @@ void read_keyfile(ScreenatorData *data)
     gdk_rgba_parse (&data->custom_fill_color, "#FF00FF");
     data->custom_fill_color.alpha = 1.0;
     data->paper = SCREENATOR_PAPER_NONE;
+    data->paper_continuous_scroll = TRUE;
+    data->paper_size = SCREENATOR_PAPER_SIZE_SCREEN;
+    data->paper_custom_width_mm = 210.0;
+    data->paper_custom_height_mm = 297.0;
+    data->paper_toolbar_icon_size = 32;
+    data->paper_toolbar_open = TRUE;
+    data->paper_toolbar_vertical = FALSE;
+    g_free (data->paper_toolbar_items);
+    data->paper_toolbar_items = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
+    {
+      guint i;
+
+      for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	{
+	  g_free (data->shortcuts[i].text);
+	  data->shortcuts[i].text =
+	    g_strdup (screenator_shortcut_defaults[i]);
+	}
+    }
+    data->paper_pdf_page = 0;
+    data->paper_hand_tool = FALSE;
     data->math_expression = g_strdup ("cos(2*pi*x)");
     data->math_xmin = -2.0;
     data->math_xmax = 2.0;
@@ -667,13 +920,159 @@ void read_keyfile(ScreenatorData *data)
 	    if (paper)
 		{
 		    if (g_ascii_strcasecmp (paper, "plain") == 0)
+		      {
 			data->paper = SCREENATOR_PAPER_PLAIN;
+			data->paper_selected = SCREENATOR_PAPER_PLAIN;
+		      }
 		    else if (g_ascii_strcasecmp (paper, "ruled") == 0)
+		      {
 			data->paper = SCREENATOR_PAPER_RULED;
+			data->paper_selected = SCREENATOR_PAPER_RULED;
+		      }
 		    else if (g_ascii_strcasecmp (paper, "graph") == 0)
+		      {
 			data->paper = SCREENATOR_PAPER_GRAPH;
+			data->paper_selected = SCREENATOR_PAPER_GRAPH;
+		      }
+		    else if (g_ascii_strcasecmp (paper, "pdf") == 0)
+			data->paper_selected = SCREENATOR_PAPER_PDF;
+		    else
+			data->paper_selected = SCREENATOR_PAPER_NONE;
 		    g_free (paper);
 		}
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperPDFPath", NULL))
+	{
+	    gchar *path =
+		g_key_file_get_string (key_file, "Drawing", "PaperPDFPath",
+				       NULL);
+
+	    if (path && *path)
+	      {
+		g_free (data->paper_pdf_path);
+		data->paper_pdf_path = path;
+	      }
+	    else
+		g_free (path);
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperPDFPage", NULL))
+	data->paper_pdf_page =
+	    g_key_file_get_integer (key_file, "Drawing", "PaperPDFPage",
+				    NULL);
+    if (data->paper_pdf_page < 0)
+	data->paper_pdf_page = 0;
+
+    if (!data->pdf_page_memory)
+      data->pdf_page_memory = g_hash_table_new_full (g_str_hash, g_str_equal,
+						     g_free, NULL);
+    else
+      g_hash_table_remove_all (data->pdf_page_memory);
+
+    if (g_key_file_has_group (key_file, "PDFPages"))
+      {
+	gint count = g_key_file_get_integer (key_file, "PDFPages", "Count",
+					     NULL);
+	gint i;
+
+	for (i = 0; i < count; i++)
+	  {
+	    gchar *key = g_strdup_printf ("Path%d", i);
+	    gchar *path = g_key_file_get_string (key_file, "PDFPages", key,
+						 NULL);
+	    gchar *page_key = g_strdup_printf ("Page%d", i);
+	    gint page = g_key_file_get_integer (key_file, "PDFPages", page_key,
+						NULL);
+
+	    if (path && *path)
+	      {
+		gchar *canonical = g_canonicalize_filename (path, NULL);
+
+		if (canonical)
+		  g_hash_table_insert (data->pdf_page_memory, canonical,
+				       GINT_TO_POINTER (MAX (0, page) + 1));
+	      }
+
+	    g_free (key);
+	    g_free (page_key);
+	    g_free (path);
+	  }
+      }
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperContinuousScroll",
+			     NULL))
+	data->paper_continuous_scroll =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "PaperContinuousScroll", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperSize", NULL))
+	{
+	    gchar *size =
+		g_key_file_get_string (key_file, "Drawing", "PaperSize", NULL);
+
+	    if (size)
+		{
+		    if (g_ascii_strcasecmp (size, "a4-portrait") == 0)
+			data->paper_size = SCREENATOR_PAPER_SIZE_A4_PORTRAIT;
+		    else if (g_ascii_strcasecmp (size, "a4-landscape") == 0)
+			data->paper_size = SCREENATOR_PAPER_SIZE_A4_LANDSCAPE;
+		    else if (g_ascii_strcasecmp (size, "custom") == 0)
+			data->paper_size = SCREENATOR_PAPER_SIZE_CUSTOM;
+		    else
+			data->paper_size = SCREENATOR_PAPER_SIZE_SCREEN;
+		    g_free (size);
+		}
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperCustomWidth", NULL))
+	data->paper_custom_width_mm =
+	    g_key_file_get_double (key_file, "Drawing", "PaperCustomWidth",
+				   NULL);
+    if (g_key_file_has_key (key_file, "Drawing", "PaperCustomHeight", NULL))
+	data->paper_custom_height_mm =
+	    g_key_file_get_double (key_file, "Drawing", "PaperCustomHeight",
+				   NULL);
+
+    data->paper_custom_width_mm =
+	CLAMP (data->paper_custom_width_mm, 10.0, 1000.0);
+    data->paper_custom_height_mm =
+	CLAMP (data->paper_custom_height_mm, 10.0, 1000.0);
+
+    if (g_key_file_has_key (key_file, "Drawing", "TimerDelay", NULL))
+	data->tool_delay_seconds =
+	    g_key_file_get_integer (key_file, "Drawing", "TimerDelay", NULL);
+    data->tool_delay_seconds = CLAMP (data->tool_delay_seconds, 0, 60);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarIconSize",
+			    NULL))
+	data->paper_toolbar_icon_size =
+	    g_key_file_get_integer (key_file, "Drawing",
+				    "PaperToolbarIconSize", NULL);
+    data->paper_toolbar_icon_size =
+	CLAMP (data->paper_toolbar_icon_size, 16, 64);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarOpen", NULL))
+	data->paper_toolbar_open =
+	    g_key_file_get_boolean (key_file, "Drawing", "PaperToolbarOpen",
+				    NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarVertical",
+			    NULL))
+	data->paper_toolbar_vertical =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "PaperToolbarVertical", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarItems", NULL))
+	{
+	  gchar *items = g_key_file_get_string (key_file, "Drawing",
+						"PaperToolbarItems", NULL);
+	  gint items_version = g_key_file_get_integer (
+	    key_file, "Drawing", "PaperToolbarItemsVersion", NULL);
+
+	  g_free (data->paper_toolbar_items);
+	  data->paper_toolbar_items = toolbar_items_migrate (items, items_version);
+	  g_free (items);
 	}
 
     if (g_key_file_has_key (key_file, "Drawing", "MathExpression", NULL))
@@ -773,7 +1172,32 @@ void read_keyfile(ScreenatorData *data)
 	    g_key_file_get_boolean (key_file, "Drawing",
 				    "SaveAnnotationsOnExit", NULL);
 
+    {
+      static const gchar * const shortcut_keys[SCREENATOR_SHORTCUT_COUNT] =
+	{
+	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
+	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
+	  "InsertBefore", "InsertAfter", "ToggleVisibility", "ExitPaper",
+	  "Quit", "Escape"
+	};
+      guint i;
+
+      for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	{
+	  if (g_key_file_has_key (key_file, "Shortcuts", shortcut_keys[i],
+				  NULL))
+	    {
+	      gchar *text = g_key_file_get_string (key_file, "Shortcuts",
+						   shortcut_keys[i], NULL);
+
+	      g_free (data->shortcuts[i].text);
+	      data->shortcuts[i].text = text ? text : g_strdup ("");
+	    }
+	}
+    }
+
     data->pen_tool = read_pen_tool (key_file);
+    screenator_resolve_shortcuts (data);
 
  cleanup:
     g_free(filename);
@@ -799,8 +1223,7 @@ void write_keyfile(ScreenatorData *data)
 					       "free-line", "angled-arrow", "marker",
 					       "spline", "bucket", "polygon", "triangle",
 					       "math", "bars" };
-    gchar *filename = g_strjoin (G_DIR_SEPARATOR_S,
-				 g_get_user_config_dir(), "screenator.ini", NULL);
+    gchar *filename = screenator_config_path ("screenator.ini");
 
     GError *error = NULL;
     GKeyFile *key_file = g_key_file_new ();
@@ -826,11 +1249,106 @@ void write_keyfile(ScreenatorData *data)
     g_key_file_set_string (key_file, "Drawing", "ShapeFill", fill);
     g_key_file_set_string (key_file, "Drawing", "CustomLineColor", custom_line);
     g_key_file_set_string (key_file, "Drawing", "CustomFillColor", custom_fill);
+    /* Remember the selected paper type even while Paper Drawing is off, so
+     * F3 turns it back on with the same type after a restart. */
     g_key_file_set_string (key_file, "Drawing", "Paper",
-			   data->paper == SCREENATOR_PAPER_PLAIN ? "plain" :
-			   data->paper == SCREENATOR_PAPER_RULED ? "ruled" :
-			   data->paper == SCREENATOR_PAPER_GRAPH ? "graph" :
+			   data->paper_selected == SCREENATOR_PAPER_PLAIN ? "plain" :
+			   data->paper_selected == SCREENATOR_PAPER_RULED ? "ruled" :
+			   data->paper_selected == SCREENATOR_PAPER_GRAPH ? "graph" :
+			   data->paper_selected == SCREENATOR_PAPER_PDF ? "pdf" :
 			   "none");
+    {
+      ScreenatorPaperDocument *pdf =
+	data->paper_docs[SCREENATOR_PAPER_PDF];
+      const gchar *pdf_path =
+	(pdf && pdf->pdf_path) ? pdf->pdf_path : data->paper_pdf_path;
+      gint pdf_page = (pdf && pdf->pdf_loaded) ? (gint) pdf->page
+					      : data->paper_pdf_page;
+
+      g_key_file_set_string (key_file, "Drawing", "PaperPDFPath",
+			     (pdf_path && *pdf_path) ? pdf_path : "");
+      g_key_file_set_integer (key_file, "Drawing", "PaperPDFPage",
+			      MAX (0, pdf_page));
+
+      if (!data->pdf_page_memory)
+	data->pdf_page_memory = g_hash_table_new_full (g_str_hash, g_str_equal,
+						       g_free, NULL);
+      if (pdf && pdf->pdf_loaded && pdf_path && *pdf_path)
+	{
+	  gchar *canonical = g_canonicalize_filename (pdf_path, NULL);
+
+	  if (canonical)
+	    g_hash_table_insert (data->pdf_page_memory, canonical,
+				 GINT_TO_POINTER (MAX (0, pdf_page) + 1));
+	}
+
+      g_key_file_remove_group (key_file, "PDFPages", NULL);
+      {
+	GHashTableIter it;
+	gpointer key, value;
+	gint index = 0;
+
+	g_key_file_set_integer (key_file, "PDFPages", "Count",
+				g_hash_table_size (data->pdf_page_memory));
+	g_hash_table_iter_init (&it, data->pdf_page_memory);
+	while (g_hash_table_iter_next (&it, &key, &value))
+	  {
+	    gchar *path_key = g_strdup_printf ("Path%d", index);
+	    gchar *page_key = g_strdup_printf ("Page%d", index);
+
+	    g_key_file_set_string (key_file, "PDFPages", path_key,
+				   (const gchar *) key);
+	    g_key_file_set_integer (key_file, "PDFPages", page_key,
+				    GPOINTER_TO_INT (value) - 1);
+	    g_free (path_key);
+	    g_free (page_key);
+	    index++;
+	  }
+      }
+    }
+    g_key_file_set_boolean (key_file, "Drawing", "PaperContinuousScroll",
+			    data->paper_continuous_scroll);
+    g_key_file_set_string (key_file, "Drawing", "PaperSize",
+			   data->paper_size == SCREENATOR_PAPER_SIZE_A4_PORTRAIT
+			   ? "a4-portrait" :
+			   data->paper_size == SCREENATOR_PAPER_SIZE_A4_LANDSCAPE
+			   ? "a4-landscape" :
+			   data->paper_size == SCREENATOR_PAPER_SIZE_CUSTOM
+			   ? "custom" : "screen");
+    g_key_file_set_double (key_file, "Drawing", "PaperCustomWidth",
+			   data->paper_custom_width_mm);
+    g_key_file_set_double (key_file, "Drawing", "PaperCustomHeight",
+			   data->paper_custom_height_mm);
+    g_key_file_set_integer (key_file, "Drawing", "PaperToolbarIconSize",
+			    data->paper_toolbar_icon_size);
+    g_key_file_set_integer (key_file, "Drawing", "TimerDelay",
+			    data->tool_delay_seconds);
+    g_key_file_set_boolean (key_file, "Drawing", "PaperToolbarOpen",
+			    data->paper_toolbar_open);
+    g_key_file_set_boolean (key_file, "Drawing", "PaperToolbarVertical",
+			    data->paper_toolbar_vertical);
+    g_key_file_set_string (key_file, "Drawing", "PaperToolbarItems",
+			   data->paper_toolbar_items
+			   ? data->paper_toolbar_items
+			   : PAPER_TOOLBAR_DEFAULT_ITEMS);
+    g_key_file_set_integer (key_file, "Drawing", "PaperToolbarItemsVersion",
+			    PAPER_TOOLBAR_ITEMS_VERSION);
+    {
+      static const gchar * const shortcut_keys[SCREENATOR_SHORTCUT_COUNT] =
+	{
+	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
+	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
+	  "InsertBefore", "InsertAfter", "ToggleVisibility", "ExitPaper",
+	  "Quit", "Escape"
+	};
+      guint i;
+
+      for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	g_key_file_set_string (key_file, "Shortcuts", shortcut_keys[i],
+			       data->shortcuts[i].text
+			       ? data->shortcuts[i].text
+			       : screenator_shortcut_defaults[i]);
+    }
     g_key_file_set_string (key_file, "Drawing", "Tool",
 			   (data->pen_tool >= 0 &&
 			    data->pen_tool < (gint) G_N_ELEMENTS (tool_names))

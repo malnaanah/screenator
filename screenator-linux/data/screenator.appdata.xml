@@ -40,7 +40,16 @@
 
   <launchable type="desktop-id">screenator.desktop</launchable>
 
+  <provides>
+    <mediatype>application/pdf</mediatype>
+  </provides>
+
   <releases>
+    <release version="8.0" date="2026-11-09">
+      <description>
+        <p>Screenator 8.0 adds full Paper Drawing with Plain, Ruled, Graph and PDF documents, multi-page and continuous navigation, vector PDF export, a configurable tool bar, editable shortcuts and HTML hints, the Cursor tool, page insertion/deletion and page undo/redo, Window and panel paper modes, and moves all configuration files to ~/.config/Screenator.</p>
+      </description>
+    </release>
     <release version="7.0" date="2026-11-06">
       <description>
         <p>Screenator 7.0 adds a Windows port and updates the Linux version with 128x128 and 256x256 floating icons, larger settings rings, outside shape strokes, 10% to 90% opacity menus, a 48x48 default icon, a 60 px default eraser, new triangle and polygon placement, a single-column scrollable hints dialog with a more visible scrollbar, a grid-based F10 quick tool menu, improved pen detection, and corrected middle-button erasing.</p>

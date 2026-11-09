@@ -1,0 +1,461 @@
+SCREENATOR WINDOWS PORT - ORGANIZED PROMPTS
+============================================
+
+Target: screenator-windows/ (native Win32/Cairo/Pango port)
+Source of truth: the Linux working tree and release-notes-8.0.md
+Version: stay at 7.0 unless explicitly asked to release.
+Repository: run these prompts with the repository root as the working directory.
+
+How to use this file
+--------------------
+1. Start a new DeepSeek V4.1 Flash session on the Windows machine.
+2. Paste Prompt 0 first and let it finish its audit.
+3. Paste the remaining prompts one at a time, in order.
+4. After each prompt, build and test before continuing.
+5. Do not let the agent commit or release unless you explicitly ask it to.
+6. If a feature has no Windows equivalent, the agent must record that in
+   screenator-windows/PORTING_STATUS.md and skip it rather than inventing
+   an incompatible subsystem.
+
+Rules for every prompt
+----------------------
+- Read the existing Windows implementation before editing. The Windows port is
+  independent Win32 code, not GTK code.
+- Never copy GTK, X11, GDK, Wayland, AppIndicator or Linux-specific code into
+  the Windows port. Adapt the behaviour to Win32, Cairo and Pango.
+- Keep changes small and consistent with the existing Windows style.
+- Preserve existing Windows features unless the prompt explicitly replaces
+  them.
+- Build with screenator-windows/build.bat from an MSYS2 MinGW64 shell, or
+  ./build.sh from that shell.
+- Run the available checks:
+      Screenator.exe --selftest
+      Screenator.exe --uitest
+      Screenator.exe --smoke
+  Use --pen-test only when the change touches pen input.
+- Update screenator-windows/README.md and RELEASE_NOTES.md for user-visible
+  changes.
+- Do not bump the version. Do not commit. Do not push.
+- Report exactly what changed, what was skipped and why, and what still needs
+  manual testing.
+
+Important reality check
+-----------------------
+The Windows port currently has a Win32 overlay, tray menu, quick tool menu,
+native dialogs, screen paper (plain/ruled/graph), annotations saved as PNG,
+and no persistent Linux-style tool bar and no Paper/PDF multi-page document
+system.
+
+Therefore:
+- Port the Shell/UI/tool/input fixes that have a Windows equivalent.
+- Do not fake a persistent tool bar or PDF export just to match Linux.
+- Treat full Paper/PDF parity as a separate, large project (Prompt 8).
+
+
+FEATURE MAPPING
+---------------
+Linux change since the last commit                 Windows action
+-------------------------------------------------  --------------------------
+Cursor tool replacing Hand                         Apply: add Cursor tool/menu state
+Two-stage Escape/right-click handle exit           Apply
+Resolution change exits tool to Cursor             Apply on WM_DISPLAYCHANGE/DPI
+Editable HTML hints                               Apply using a native HTML subset
+Hints 700x500, centred, no repeated movement       Apply
+Dialogs get title bar and border                   Apply to custom Windows dialogs
+Show Hints menu/toolbar entry                      Apply to tray/quick menu; no tool bar
+Marker Opacity menu/icon                           Apply if menu exists
+New/updated icons                                  Apply where assets exist
+Editable shortcuts/settings                        Apply only the parts Win32 supports
+Screen-paper scaling on resolution/DPI             Apply
+Undo/vector PDF preservation                       Only if Windows gains PDF export
+Paint-bucket invalidation fix                      Only relevant with vector export
+Persistent Linux tool bar, tooltips and order      Not present; defer
+Paper pages, page insert/delete, continuous view   Not present; defer
+PDF open/render/save/vector export                 Not present; defer
+Window mode/Ctrl+D/Ctrl+W                          Not present; defer
+Linux packaging/CMake/AppImage changes             Not applicable
+
+
+PROMPT 0 - Audit the Windows port and produce a port plan
+---------------------------------------------------------
+Work in screenator-windows/. Do not edit code yet.
+
+Read:
+- screenator-windows/src/app.h
+- screenator-windows/src/main.c
+- screenator-windows/src/tools.c
+- screenator-windows/src/ui.c
+- screenator-windows/src/config.c
+- screenator-windows/src/draw.c
+- screenator-windows/README.md
+- screenator-windows/RELEASE_NOTES.md
+- if present, the repository's release-notes-8.0.md and the Linux sources
+  under screenator-linux/ for behavioural reference only.
+
+Produce a table with one row for every item in FEATURE MAPPING above:
+- Current Windows behaviour and relevant files/functions.
+- Whether the feature already exists, needs a change, or is not applicable.
+- The smallest safe implementation plan.
+- Any dependency or platform blocker.
+- Suggested build/test verification.
+
+Also identify:
+- Where the Cursor/Hand equivalent lives.
+- How tool exit and handle commit are currently implemented.
+- How custom dialogs are created and styled.
+- How hints are built (RTF/plain text/native controls).
+- Which menus exist (tray, quick menu, context menus) and how icons are loaded.
+- How screen paper is drawn and how WM_DISPLAYCHANGE/DPI changes are handled.
+- Whether any PDF/export/page system exists.
+
+Create screenator-windows/PORTING_STATUS.md with the table and a short
+recommended order. Do not start implementing yet. Report the plan.
+
+
+PROMPT 1 - Editable HTML hints, fixed 700x500, centred, with title bar
+----------------------------------------------------------------------
+Goal: replace the hardcoded hints content with an externally editable HTML
+file, keep the hints window stable at 700x500, and give it a normal native
+title bar and border.
+
+Current Windows files to inspect:
+- src/ui.c: hints_rtf(), hints_proc(), ui_show_hints(), CMD_SHOW_HINTS,
+  run_modal(), center_window(), HINTS_CLASS.
+- assets/icons and the packaging list in build.bat/build.sh.
+
+Required behaviour:
+1. Add a hints file, preferably:
+   - assets/hints.html in the Windows package, and
+   - a user override at %APPDATA%\Screenator\hints.html.
+   - Also support SCREENATOR_HINTS_FILE if that is easy and consistent with
+     existing config conventions.
+2. Load the file fresh every time the hints dialog opens. Reloading after
+   editing must not require rebuilding or restarting.
+3. The HTML subset is intentionally small:
+   h1, h2, h3, p, ul, ol, li, br, b, strong, i, em, u, tt, code, a, span,
+   font, and inline style="color:#rrggbb".
+   Convert it to the existing RichEdit/RTF or native rich text presentation.
+   Do not add a browser dependency.
+4. Keep a safe built-in fallback if the file is missing or unreadable. Show
+   the expected paths in that fallback.
+5. Make the hints dialog exactly 700x500 on the primary monitor work area,
+   centred once when it opens. Remove any repeated resize/centre timers or
+   map-time corrections that make it move more than once.
+6. Add a native caption/title bar ("Screenator Hints"), a close button and a
+   visible border. Preserve the existing "Never show hints again" checkbox
+   and modal behaviour.
+7. Keep the existing Help/Hints menu action working. If a quick menu has a
+   place for it, add Show Hints after Settings; the tray menu already has it.
+
+Deliver:
+- The HTML file with the current hints content, converted from the existing
+  hardcoded RTF.
+- A small, documented parser/converter with no external dependencies.
+- Updated README/RELEASE_NOTES describing the paths and supported tags.
+- Verification: open hints, edit the user file, reopen hints, check the
+  content and exact size; run --uitest and --smoke.
+
+
+PROMPT 2 - Title bar and border for every custom dialog
+-------------------------------------------------------
+Goal: all Screenator custom dialogs should look like normal Windows dialogs
+with a title bar, close button and visible border, without breaking their
+existing always-on-top, modal, outside-click-close or paper-focus behaviour.
+
+Inspect all custom window classes and dialogs in src/ui.c:
+- hints dialog
+- math dialog
+- About dialog
+- floating-icon position dialog
+- any other WS_POPUP/WS_EX_TOOLWINDOW custom windows that are dialogs
+- quick tool menu is a menu/palette, not a dialog: leave it borderless unless
+  it already behaves like a dialog.
+
+Required:
+- Add WS_CAPTION | WS_SYSMENU and appropriate border/edge styles, or use the
+  existing dialog style convention if the port already has one.
+- Keep close-button/IDCANCEL/Escape handling and modal cleanup intact.
+- Keep the outside-click-close behaviour for the screen paper where it exists.
+- Do not add a title bar to the overlay, floating icon, tray popup or quick
+  menu unless the prompt above says so.
+- Make the title text match each window's purpose.
+- Preserve DPI-aware sizing and centring.
+
+Verification: open and close each dialog, check Escape/close buttons, check
+paper outside-click behaviour, run --uitest and --smoke.
+
+
+PROMPT 3 - Cursor tool and two-stage tool exit
+-----------------------------------------------
+Goal: match the current Linux tool-exit behaviour in the Win32 port.
+
+Inspect:
+- Tool enum and tool state in src/app.h.
+- tools_activate/tools_request/tools_exit/tools_commit in src/tools.c.
+- Escape handling, right-button short press, handle/editing state, timer state.
+- Main window WM_KEYDOWN/WM_HOTKEY and pen/mouse handlers in src/main.c.
+- Menu checkmarks/active state in src/ui.c.
+
+Required behaviour:
+1. Add a Cursor tool if the port does not have one. Cursor means:
+   - no drawing tool is active;
+   - the normal arrow cursor is shown;
+   - clicking does not draw;
+   - middle/right-button/pen behaviour follows the existing paper/idle rules.
+   Reuse the Linux cursor.png asset if it is available in the repository;
+   otherwise add a Windows asset with the same visual meaning.
+2. Add Cursor to the tool menu and quick menu, with an active indicator.
+3. Exiting a tool with Escape or a right short click:
+   - If a shape/text/spline/polygon/triangle/line still has editable handles
+     or an unfinished edit, commit/close those handles and KEEP the selected
+     tool active. Return handled.
+   - If there are no handles, exit the tool, select Cursor, and update the
+     menu/icon active state.
+   - A further Escape exits the tool and selects Cursor.
+4. In Windows screen-paper mode, preserve the existing captured-menu
+   behaviour. Do not remove the captured menu until the tool is actually
+   dismissed, as documented in the existing README.
+5. After handles are committed, the right button/pen second side button must
+   remain the temporary eraser and keep the selected tool where that is the
+   existing behaviour.
+6. On WM_DISPLAYCHANGE, DPI change, monitor change or equivalent display
+   reconfiguration: exit the current tool immediately, select Cursor, release
+   any tool grab/capture, and refresh the cursor and active UI state. No old
+   tool cursor may remain.
+7. Ensure cursor refresh uses the actually active tool, not a stale cached
+   tool. When Cursor is active, no drawing-tool cursor should appear.
+
+Verification: text, arrow, line, spline, polygon, triangle and frame tools;
+first Escape closes handles, second selects Cursor; right-click/pen variant;
+resolution change while a tool is active; --uitest and --smoke.
+
+
+PROMPT 4 - Menus, actions and icons
+-----------------------------------
+Goal: bring the Windows menus/icons in line with the Linux commit where a
+Windows menu equivalent exists. There is no persistent Linux-style tool bar
+in the Windows port, so do not invent one.
+
+Inspect src/ui.c menu construction, src/main.c asset loading and the assets
+folder.
+
+Required:
+- Add a Show Hints entry to the quick menu or context menu after Settings if
+  those menus have a Settings entry. The tray menu already has Show Hints.
+- Keep the hints icon hint.png and ensure it is copied into the package.
+- Add Marker Opacity directly after Opacity in the main/context menu if that
+  menu exists, with a working submenu.
+- Update menu icons where the Windows assets exist:
+  opacity.png, marker_opacity.png, quit.png, save.png, screenshot.png,
+  cursor.png, switch_mode.png, timer.png, settings.png.
+  Copy the current Linux assets into screenator-windows/assets/icons only when
+  they exist and their visual size is suitable; otherwise create equivalent
+  assets and document it.
+- Add any missing action entries that have a clear Windows equivalent:
+  Save/Screenshot, Show toolbar (only if a toolbar exists; otherwise skip),
+  Show Floating Icon, Show Hints.
+- Keep tray/quick/context menu behaviour, accelerators and checkmarks.
+- Do not add page insert/delete menu entries: the Windows port has no page
+  system.
+
+Verification: menus open, icons load, toggles work, checkmarks match state,
+packaged assets include every referenced icon; --uitest and --smoke.
+
+
+PROMPT 5 - Settings, shortcuts and persistence (applicable subset)
+------------------------------------------------------------------
+Goal: port the applicable settings improvements without inventing GTK tabs or
+Linux-only options.
+
+Inspect src/config.c, the settings/menu commands in src/ui.c and global hotkey
+registration in src/main.c.
+
+Required:
+1. Audit which Linux settings already exist on Windows (font, colours, widths,
+   opacity, marker opacity, icon size/position, paper, hints, save on exit).
+2. Add editable global shortcuts ONLY if it fits the existing Windows hotkey
+   architecture:
+   - store them in the INI;
+   - re-register them when settings change;
+   - update menu shortcut labels;
+   - support a way to disable a shortcut;
+   - keep defaults compatible with the current Windows README.
+   If this becomes a large rework, stop and report instead of half-implementing.
+3. Add screen-paper size/direction settings only where Windows already has a
+   corresponding rendering concept. Do not add Linux Paper Drawing settings
+   for pages, PDFs, continuous scrolling or Window mode.
+4. Preserve the existing Reset Settings behaviour and hidden-hints choice.
+5. Do not change defaults in a way that overrides existing saved settings.
+
+Verification: config round trip in --uitest, restart persistence, hotkey
+re-registration, reset behaviour; update README/RELEASE_NOTES.
+
+
+PROMPT 6 - Screen paper scaling and display changes
+---------------------------------------------------
+Goal: make the Windows screen paper behave like the Linux screen-sized paper
+when the display changes.
+
+Inspect src/main.c WM_DISPLAYCHANGE/DPI handling, screen-paper drawing in
+src/draw.c, annotation buffers and undo buffers in src/app.h/src/main.c.
+
+Required:
+1. On resolution, DPI or monitor-layout change:
+   - resize the annotation/back buffers and undo/redo buffers safely;
+   - scale existing annotations uniformly, preserving aspect ratio, and
+     centre them in the new canvas instead of stretching;
+   - keep screen-paper background geometry correct;
+   - exit the current tool and select Cursor as described in Prompt 3;
+   - refresh the cursor and active-tool UI state;
+   - preserve the floating icon, tray icon and quick-menu positions.
+2. Do not apply Linux page/PDF scaling rules to a system the Windows port does
+   not have.
+3. Avoid copying large buffers or rerendering the whole desktop more than
+   necessary. Follow the existing render pipeline.
+4. Keep the captured-menu image and paper focus state valid after the change.
+
+Verification: change Windows resolution/DPI while a tool is active; check
+annotations keep aspect, Cursor is active, paper/menu/floating icon are
+correct; --selftest, --uitest and --smoke.
+
+
+PROMPT 7 - Drawing/undo/export subset
+-------------------------------------
+Goal: port only the drawing/undo/export changes that apply to the current
+Windows backend (annotations saved as PNG).
+
+Inspect the undo implementation in src/tools.c and the annotation save path in
+src/main.c.
+
+Required:
+- Audit the Linux changes for vector PDF export, page undo/redo, bucket-fill
+  vector preservation and transparent-stroke vector recording.
+- The current Windows port has no PDF/vector export and no page system, so do
+  not invent those subsystems here. Record them as not applicable in
+  PORTING_STATUS.md.
+- If the Windows port does have a vector/PDF export path that the audit
+  missed, implement the corresponding fixes only then:
+  vector text/graphics must stay vector, undo/redo must preserve vector
+  snapshots, bucket fills must not discard vector on a failed click, and
+  transparent strokes must not show overlapping-cap artifacts.
+- Otherwise, verify and keep the existing PNG annotation export and undo/redo
+  behaviour. Fix only concrete Windows regressions found during the audit.
+- If the user explicitly wants full PDF parity later, use Prompt 8.
+
+Verification: --selftest, --uitest, draw/undo/redo/save annotations, inspect
+the PNG result; report what was intentionally skipped.
+
+
+PROMPT 8 - OPTIONAL major feature: full Paper/PDF parity
+--------------------------------------------------------
+Do not start this prompt unless the user explicitly asks for full parity.
+
+Explain in one short paragraph that the Linux Paper Drawing/PDF system is a
+large new subsystem, not a small port. It includes:
+- per-type documents and multiple pages;
+- PDF import/rendering, page layout and continuous scrolling;
+- page insertion/deletion and page undo/redo;
+- a persistent configurable tool bar;
+- fullscreen, Ctrl+D and resizable Window modes;
+- vector PDF export and per-PDF page memory;
+- Linux focus/grab/shortcut semantics.
+
+If the user wants to proceed, first produce a design document and dependency
+choice:
+- Windows PDF renderer: Windows.Data.Pdf, PDFium, MuPDF, or another licence-
+  compatible option.
+- Cairo PDF surface export.
+- Data model and page cache.
+- Win32 input/focus model for the paper window.
+- UI for page/tool bar and settings.
+Do not write code until the user approves the design and dependency choice.
+
+If the user does not explicitly ask, mark all of this as deferred in
+PORTING_STATUS.md and continue with the smaller prompts.
+
+
+PROMPT 9 - Build, tests, docs and final audit
+---------------------------------------------
+Work in screenator-windows/.
+
+1. Build with build.bat (MSYS2 MinGW64) or ./build.sh.
+2. Run:
+       Screenator.exe --selftest
+       Screenator.exe --uitest
+       Screenator.exe --smoke
+   Run --pen-test if pen input changed.
+3. Check the build log for new warnings or errors. Fix every new warning
+   introduced by the port; do not silence warnings.
+4. Verify packaged files:
+   - Screenator.exe and Screenator Data/ are present;
+   - every referenced icon and hints file is packaged;
+   - no absolute Linux paths or /usr/share references remain.
+5. Update:
+   - screenator-windows/README.md
+   - screenator-windows/RELEASE_NOTES.md
+   - screenator-windows/PORTING_STATUS.md
+6. In PORTING_STATUS.md, list:
+   - implemented items;
+   - intentionally skipped/not-applicable items;
+   - deferred Paper/PDF items;
+   - manual tests still required.
+7. Report:
+   - files changed;
+   - build result;
+   - test results;
+   - package hash or executable size;
+   - anything not implemented.
+8. Do not commit, tag or release unless explicitly asked.
+
+
+APPENDIX A - CONCISE LINUX CHANGE CHECKLIST
+-------------------------------------------
+Use this as a checklist when updating PORTING_STATUS.md. Read
+release-notes-8.0.md and the Linux sources for details.
+
+Paper/PDF (deferred for Windows unless Prompt 8 is approved):
+- full Paper mode, per-type documents, pages, page insertion/deletion,
+  page undo/redo, continuous scrolling, PDF import/render/save, PDF page
+  memory, vector PDF export, save progress, Ctrl+W Window mode, Ctrl+D
+  panel mode, paper size settings, delete-page action, PDF file handling.
+
+Tool bar (not present on Windows):
+- persistent F10 tool bar, horizontal/vertical layout, icon size, visibility
+  and order settings, draggable/snap positions, anchored tooltips,
+  Show Hints after Settings, Timer hidden in Paper mode.
+
+Menus, icons, dialogs (apply where Windows menus/dialogs exist):
+- Show Hints, Marker Opacity, opacity/quit/save/screenshot/cursor/switch-
+  mode/timer/settings icons, updated action icons, dialog title bars and
+  borders, 700x500 centred hints, editable HTML hints.
+
+Tools, input, cursor:
+- Cursor tool replacing Hand; startup Cursor; tool exit semantics; first
+  Escape/right click closes handles and keeps tool; second selects Cursor;
+  resolution change exits to Cursor; cursor matches active tool; no tool
+  cursor in Cursor mode; wrong-pen-cursor fixes; timer shortcut F12 and
+  timer/tool locking where applicable; page-navigation keys only if pages are
+  later implemented.
+
+Screen paper and resolution:
+- uniform aspect-preserving scaling and centring of annotations when the
+  screen/DPI changes; undo buffers resized; screen-paper background and
+  floating controls preserved; no tool left active after display changes.
+
+Drawing/undo/export:
+- vector recording for strokes, lines, arrows, frames, stars, triangles and
+  splines; Pango text stays text; transparent strokes recorded as one path;
+  bucket-fill vector fallback only when a fill actually happens; vector
+  snapshots for undo/redo; not applicable unless Windows gains PDF export.
+
+Settings/persistence:
+- editable shortcuts, menu labels reflect shortcuts, defaults, reset
+  behaviour, toolbar/floating-icon visibility defaults, hidden hints choice,
+  per-paper modified tracking (only with Paper/PDF), save-on-exit changes
+  where they map to Windows.
+
+Packaging/docs:
+- every icon/asset referenced at runtime is packaged; no Linux-only paths;
+  README/RELEASE_NOTES reflect Windows behaviour; version remains 7.0.
+
+END OF PROMPT PACK

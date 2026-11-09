@@ -36,6 +36,13 @@
 #include <libayatana-appindicator/app-indicator.h>
 #endif
 
+/* Toolbar items in their default order.  The same ids are used by the
+ * Settings > Toolbar page and by the tool bar builder. */
+#define PAPER_TOOLBAR_DEFAULT_ITEMS \
+  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,save," \
+  "paper,insert_before,delete_page,insert_after,clear,visibility,eraser_size," \
+  "line_color,thickness,fill_color,opacity,marker_opacity,settings,hints,quit"
+
 #define SCREENATOR_MOUSE_EVENTS ( GDK_POINTER_MOTION_MASK | \
                               GDK_BUTTON_MOTION_MASK | \
                               GDK_BUTTON_PRESS_MASK | \
@@ -57,6 +64,7 @@
 #define GA_RELOAD     gdk_atom_intern ("Screenator/reload", FALSE)
 #define GA_UNDO       gdk_atom_intern ("Screenator/undo", FALSE)
 #define GA_REDO       gdk_atom_intern ("Screenator/redo", FALSE)
+#define GA_OPENPDF    gdk_atom_intern ("Screenator/open-pdf", FALSE)
 
 #define GA_DATA       gdk_atom_intern ("Screenator/data", FALSE)
 #define GA_TOGGLEDATA gdk_atom_intern ("Screenator/toggledata", FALSE)
@@ -105,8 +113,85 @@ typedef enum
   SCREENATOR_PAPER_NONE = 0,
   SCREENATOR_PAPER_PLAIN,
   SCREENATOR_PAPER_RULED,
-  SCREENATOR_PAPER_GRAPH
+  SCREENATOR_PAPER_GRAPH,
+  SCREENATOR_PAPER_PDF
 } ScreenatorPaperType;
+
+/* Size of the Plain, Ruled and Graph paper pages.  PDF papers keep the size
+ * of the PDF pages. */
+typedef enum
+{
+  SCREENATOR_PAPER_SIZE_SCREEN = 0,
+  SCREENATOR_PAPER_SIZE_A4_PORTRAIT,
+  SCREENATOR_PAPER_SIZE_A4_LANDSCAPE,
+  SCREENATOR_PAPER_SIZE_CUSTOM
+} ScreenatorPaperSize;
+
+/* One page of a Paper Drawing document.  Every page has its own annotation
+ * layer, so drawings stay on the page where they were made and never appear
+ * in Screen Annotation mode.  For a PDF page background is the rendered PDF
+ * page; view_x/view_y are the visible part of it on screen. */
+typedef struct
+{
+  ScreenatorPaperType style;
+  cairo_surface_t    *annotations;
+  cairo_surface_t    *background;
+  gint                background_width;
+  gint                background_height;
+  gint                canvas_width;      /* page size in screen pixels */
+  gint                canvas_height;
+  gdouble             pdf_width;         /* page size in PDF points */
+  gdouble             pdf_height;
+  gint                view_x;
+  gint                view_y;
+  gboolean            painted;
+  guint32             background_stamp;  /* LRU stamp while scrolling */
+  gboolean            pdf_render_pending;
+  guint               pdf_render_serial;
+
+  /* Vector copy of the annotations, used for PDF export.  It is invalidated
+   * when an operation cannot be represented as vectors (undo, bucket fill). */
+  cairo_surface_t    *vector;
+  gboolean            vector_valid;
+} ScreenatorPaperPage;
+
+/* A reversible page insertion or deletion.  The action owns the surface
+ * references in page while the page is outside the document. */
+typedef enum
+{
+  SCREENATOR_PAGE_ACTION_INSERT = 0,
+  SCREENATOR_PAGE_ACTION_DELETE
+} ScreenatorPageActionType;
+
+typedef struct
+{
+  ScreenatorPageActionType type;
+  ScreenatorPaperType      document;
+  guint                    index;
+  ScreenatorPaperPage      page;
+} ScreenatorPageAction;
+
+/* One selected paper type and its pages.  Plain, Ruled, Graph and PDF each
+ * keep their own pages and drawings. */
+typedef struct
+{
+  ScreenatorPaperType type;
+  GArray             *pages;
+  guint               page;
+  gchar              *pdf_path;
+  gpointer            pdf_document;   /* PopplerDocument for PDF papers */
+  gint                pdf_page_count;
+  gboolean            pdf_loaded;
+
+  /* Continuous PDF view.  Page tops and heights are in the stacked canvas;
+   * pdf_scroll_y is the top of the visible part. */
+  GArray             *pdf_page_tops;
+  GArray             *pdf_page_heights;
+  gint                pdf_stack_width;
+  gint                pdf_stack_height;
+  gint                pdf_scroll_y;
+  gboolean            modified;       /* changed since the last save */
+} ScreenatorPaperDocument;
 
 /* What the first stylus side button does.  The second side button opens the
  * stylus menu. */
@@ -131,6 +216,50 @@ typedef enum
   SCREENATOR_ICON_BOTTOM_RIGHT,
   SCREENATOR_ICON_BOTTOM_LEFT
 } ScreenatorIconPosition;
+
+typedef enum
+{
+  SCREENATOR_SHORTCUT_FLOATING_ICON = 0,
+  SCREENATOR_SHORTCUT_PEN,
+  SCREENATOR_SHORTCUT_TEXT,
+  SCREENATOR_SHORTCUT_ARROW,
+  SCREENATOR_SHORTCUT_TIMER,
+  SCREENATOR_SHORTCUT_TOOLBAR,
+  SCREENATOR_SHORTCUT_SWITCH_MODE,
+  SCREENATOR_SHORTCUT_SCREENSHOT,
+  SCREENATOR_SHORTCUT_UNDO,
+  SCREENATOR_SHORTCUT_REDO,
+  SCREENATOR_SHORTCUT_SAVE,
+  SCREENATOR_SHORTCUT_INSERT_BEFORE,
+  SCREENATOR_SHORTCUT_INSERT_AFTER,
+  SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
+  SCREENATOR_SHORTCUT_EXIT_PAPER,
+  SCREENATOR_SHORTCUT_QUIT,
+  SCREENATOR_SHORTCUT_ESCAPE,
+  SCREENATOR_SHORTCUT_COUNT
+} ScreenatorShortcutId;
+
+typedef enum
+{
+  SCREENATOR_SHORTCUT_ALWAYS = 0,
+  SCREENATOR_SHORTCUT_PAINTING,
+  SCREENATOR_SHORTCUT_PAPER
+} ScreenatorShortcutScope;
+
+typedef struct
+{
+  gchar  *text;
+  guint   keyval;
+  guint   keycode;
+  guint   modifier;
+} ScreenatorShortcut;
+
+extern const gchar * const screenator_shortcut_defaults[
+  SCREENATOR_SHORTCUT_COUNT];
+extern const gchar * const screenator_shortcut_labels[
+  SCREENATOR_SHORTCUT_COUNT];
+extern const ScreenatorShortcutScope screenator_shortcut_scopes[
+  SCREENATOR_SHORTCUT_COUNT];
 
 typedef struct
 {
@@ -325,6 +454,10 @@ typedef struct
   ScreenatorPaintContext *cur_context;
   ScreenatorPaintContext *saved_context;
   gboolean     is_grabbed;
+  /* Window mode does not take a global pointer grab.  The tool is still
+   * active while the pointer is over the Paper window, but other windows and
+   * applications keep their normal pointer input and cursor. */
+  gboolean     window_input;
   gboolean     was_grabbed;
   GdkDevice*   lastslave;
 
@@ -355,6 +488,9 @@ typedef struct
    * the node at "spline_drag_index". */
   gboolean         spline_handle_drag;
   gboolean         spline_drag_out;
+  /* After a node or handle has been edited, keep the rubber-band segment
+   * hidden until the next node is placed. */
+  gboolean         spline_preview_paused;
 
   /* Star tool: the star stays editable with its handles until committed. */
   gboolean             star_active;
@@ -486,6 +622,7 @@ typedef struct
   GdkCursor   *erase_cursor;
   GdkCursor   *text_cursor;
   GdkCursor   *bucket_cursor;
+  GdkCursor   *hand_cursor;
 
   GdkDisplay  *display;
   GdkScreen   *screen;
@@ -502,7 +639,11 @@ typedef struct
   guint        pen_keycode;
   guint        text_keycode;
   guint        arrow_keycode;
+  guint        timer_keycode;
   guint        quick_keycode;
+
+  /* Editable shortcuts, resolved to key values and keycodes. */
+  ScreenatorShortcut shortcuts[SCREENATOR_SHORTCUT_COUNT];
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
@@ -522,13 +663,18 @@ typedef struct
   /* Delay before a newly selected tool becomes active. */
   guint        tool_delay_seconds;
   guint        tool_delay_id;
+  gboolean     timer_active;
+
+  /* Number of Screenator control windows (floating icon, settings ring,
+   * tool bar) under the pointer.  The drawing tool cursor is replaced by the
+   * normal cursor while this is above zero. */
+  gint         controls_hover;
+  guint        controls_hover_idle;
   guint        tool_grab_retry_id;
   gboolean     force_active_icon;
   /* The icon window was created without an alpha visual, so it keeps a shape
    * mask even if the compositor starts later. */
   gboolean     icon_shaped;
-  gint         pending_pen_tool;
-  gint         pending_shape_type;
 
   /* Experimental fallback for drawing while another application holds the
    * pointer grab: XInput2 raw events plus XQueryPointer. */
@@ -575,7 +721,7 @@ typedef struct
   /* The text being typed is previewed in the annotation window, above the
    * annotations, because the editor window itself can be hidden behind them.
    * The caret is drawn there too, so it is never hidden by a drawing or the
-   * screen paper. */
+   * paper page. */
   gboolean     text_preview_valid;
   GdkRectangle text_preview_bounds; /* last area invalidated for the preview */
   gboolean     text_caret_visible;
@@ -597,6 +743,24 @@ typedef struct
 
   cairo_surface_t *backbuffer;
 
+  /* Cached paper page background (surround, page and ruling/PDF content) in
+   * screen coordinates.  Drawing a stroke only changes annotations, so the
+   * background does not have to be rebuilt for every expose. */
+  cairo_surface_t *paper_background_cache;
+  gboolean     paper_background_cache_valid;
+
+  /* Screen area touched since the last page store in the continuous view.
+   * Only the pages intersecting it need their annotation layers updated. */
+  GdkRectangle paper_pending_ink_bounds;
+  gboolean     paper_pending_ink_valid;
+  gboolean     paper_page_dirty;
+  gint         paper_view_height_current;
+  gdouble      eraser_cursor_scale;
+
+  /* Asynchronous PDF page rendering.  Jobs capture this serial and are
+   * discarded if the document or zoom changed in the meantime. */
+  gint         pdf_render_serial;
+
   GHashTable  *devdatatable;
 
   guint        timeout_id;
@@ -613,11 +777,80 @@ typedef struct
   guint        paper_z_keycode;
   guint        paper_q_keycode;
   guint        paper_t_keycode;
+  guint        paper_s_keycode;
+  guint        paper_b_keycode;
+  guint        paper_a_keycode;
+  guint        paper_f3_keycode;
   guint        paper_f4_keycode;
   gboolean     debug;
 
-  /* Screen paper drawn below the annotations. */
+  /* Paper Drawing documents.  The tools always draw on the shared
+   * backbuffer; entering, leaving and switching pages copies the right
+   * annotation layer into it.  Plain, Ruled, Graph and PDF each have their own
+   * ScreenatorPaperDocument, so every type keeps its own drawings.  paper is
+   * the active type, or SCREENATOR_PAPER_NONE outside the mode; paper_selected
+   * is the type chosen in the submenu. */
   ScreenatorPaperType paper;
+  ScreenatorPaperType paper_selected;
+  ScreenatorPaperDocument *paper_docs[SCREENATOR_PAPER_PDF + 1];
+  cairo_surface_t *screen_annotations;
+  gboolean     screen_annotations_painted;
+  gchar       *paper_path;
+  gboolean     start_paper;
+
+  /* PDF file and page remembered between runs.  pdf_page_memory maps a
+   * canonical PDF path to the last page used for that file. */
+  gchar       *paper_pdf_path;
+  gint         paper_pdf_page;
+  GHashTable  *pdf_page_memory;
+  gboolean     paper_saving;
+
+  /* The Hand tool in the paper tool bar: the left mouse button or stylus
+   * tip pans the paper instead of drawing. */
+  gboolean     paper_hand_tool;
+
+  /* Middle-button / stylus-pen panning in Paper Drawing. */
+  gboolean     paper_panning;
+  gint         paper_pan_x;
+  gint         paper_pan_y;
+  guint        paper_pan_button;
+
+  /* Temporary eraser while the right mouse button or stylus side button 2
+   * is pressed in Paper Drawing. */
+  gboolean     paper_eraser_active;
+  GdkDevice   *paper_eraser_device;
+  gboolean     paper_eraser_was_grabbed;
+
+  /* Tool bar toggled with F10; horizontal on the top by default. */
+  GtkWidget   *paper_top_bar;
+  gpointer     paper_top_bar_data;
+  guint        paper_toolbar_icon_size;
+  gboolean     paper_toolbar_open;
+  gboolean     paper_toolbar_vertical;  /* else horizontal */
+  gchar       *paper_toolbar_items;     /* visible ids, comma separated */
+
+  /* A desktop file chooser is open; ignore overlay input while it is. */
+  gboolean     native_dialog_open;
+
+  /* Screen Annotation uses the fullscreen popup overlay.  Paper mode uses a
+   * normal top-level window so other applications and dialogs can cover it
+   * and Alt+Tab works normally.  data->win points at the active one. */
+  GtkWidget   *overlay_win;
+  GtkWidget   *paper_win;
+  gboolean     paper_window_fullscreen;
+  gboolean     paper_window_mode;
+  gboolean     paper_window_focused;
+
+  /* Guards against a dialog-opening menu entry firing twice. */
+  gboolean     paper_pdf_chooser_busy;
+  gboolean     custom_color_pending;
+  guint        custom_color_idle_id;
+
+  /* Paper Drawing settings. */
+  gboolean     paper_continuous_scroll;
+  ScreenatorPaperSize paper_size;
+  gdouble      paper_custom_width_mm;
+  gdouble      paper_custom_height_mm;
   /* A one-off screenshot used as the frozen background for a delayed tool
    * when another application owns the pointer grab. */
   cairo_surface_t *screenshot_paper;
@@ -631,6 +864,17 @@ typedef struct
   cairo_surface_t *undobuffer[SCREENATOR_MAX_UNDO];
   gint            undo_head, undo_depth, redo_depth;
 
+  /* Parallel vector snapshots for the active paper page, so undo and redo
+   * restore the recorded vector layer instead of falling back to the raster
+   * annotation surface. */
+  cairo_surface_t *vector_undobuffer[SCREENATOR_MAX_UNDO];
+  gboolean         vector_undo_valid[SCREENATOR_MAX_UNDO];
+
+  /* Undo/redo for page insertion and deletion.  Drawing undo takes
+   * precedence while its own history is non-empty. */
+  GArray         *page_undo_stack;
+  GArray         *page_redo_stack;
+
 
 } ScreenatorData;
 
@@ -640,18 +884,65 @@ void toggle_drawings_visibility (ScreenatorData *data);
 void hide_window (ScreenatorData *data);
 void show_window (ScreenatorData *data);
 
-/* Screen paper drawn below the annotations. */
-void draw_screen_paper (ScreenatorData *data, cairo_t *cr);
+/* Paper Drawing mode.  The paper background is drawn below the annotations
+ * on screen and in a saved PDF. */
+void draw_paper_background (cairo_t *cr, ScreenatorPaperType paper,
+			    gint width, gint height);
+void paper_size_dimensions (ScreenatorData *data, gint *canvas_width,
+			    gint *canvas_height, gdouble *pdf_width,
+			    gdouble *pdf_height);
+void draw_paper_pattern (cairo_t *cr, ScreenatorPaperType paper,
+			 gint width, gint height);
 void paper_take_focus (ScreenatorData *data);
 void paper_restore_focus (ScreenatorData *data);
-void screenator_exit_screen_paper (ScreenatorData *data);
+void screenator_enter_paper_drawing (ScreenatorData *data,
+				     ScreenatorPaperType paper);
+void screenator_exit_paper_drawing (ScreenatorData *data);
+void screenator_toggle_paper_drawing (ScreenatorData *data);
+void screenator_paper_select (ScreenatorData *data, ScreenatorPaperType paper);
+gboolean screenator_paper_open_pdf (ScreenatorData *data);
+void screenator_mark_modified (ScreenatorData *data);
+gboolean screenator_open_pdf_path (ScreenatorData *data, const gchar *path);
+void screenator_create_paper_window (ScreenatorData *data);
+void screenator_invalidate_rect (ScreenatorData *data,
+				 const GdkRectangle *rect);
+void screenator_resize_drawing_buffer (ScreenatorData *data,
+				      gint width, gint height);
+void screenator_paper_mark_ink (ScreenatorData *data,
+			       const GdkRectangle *bounds);
+void screenator_paper_shortcuts_focus (ScreenatorData *data,
+				       gboolean focused);
+void screenator_use_paper_window (ScreenatorData *data, gboolean use);
+void screenator_window_mode_enter (ScreenatorData *data);
+void screenator_window_mode_leave (ScreenatorData *data);
+void screenator_window_mode_clear (ScreenatorData *data);
+void screenator_toggle_paper_window_fullscreen (ScreenatorData *data);
+void screenator_toggle_paper_panel (ScreenatorData *data);
+gboolean screenator_paper_local_input (ScreenatorData *data);
+gdouble screenator_paper_window_scale (ScreenatorData *data);
+void screenator_paper_insert_page (ScreenatorData *data, gboolean before);
+void screenator_paper_delete_page (ScreenatorData *data);
+void screenator_paper_switch_page (ScreenatorData *data, gint delta);
+void screenator_paper_goto_page (ScreenatorData *data, gint index);
+gboolean screenator_request_quit (ScreenatorData *data);
+void screenator_paper_scroll (ScreenatorData *data, gint direction);
+void screenator_paper_erase_line (ScreenatorData *data,
+				  gint x1, gint y1, gint x2, gint y2,
+				  gint width);
+gboolean screenator_paper_save (ScreenatorData *data);
+gboolean screenator_has_annotations (cairo_surface_t *surface);
+void screenator_save_screenshot (ScreenatorData *data);
+void reset_undo_history (ScreenatorData *data);
 void screenator_marker_prepare (ScreenatorData *data);
 void screenator_marker_leave (ScreenatorData *data);
 void screenator_schedule_tool (ScreenatorData *data, gint pen_tool,
 			       gint shape_type);
+void screenator_start_timer (ScreenatorData *data);
 void screenator_show_text (ScreenatorData *data, GdkDevice *device,
 			   gint x, gint y);
 void screenator_show_quick_menu (ScreenatorData *data);
+void screenator_toggle_paper_top_bar (ScreenatorData *data);
+gboolean screenator_paper_grab_owner_events (ScreenatorData *data);
 void screenator_position_icon (ScreenatorData *data);
 void screenator_raw_input_enable (ScreenatorData *data);
 void screenator_raw_input_disable (ScreenatorData *data);
@@ -677,6 +968,10 @@ void swap_surfaces (cairo_surface_t *a, cairo_surface_t *b);
 void snap_undo_state (ScreenatorData *data);
 void undo_drawing (ScreenatorData *data);
 void redo_drawing (ScreenatorData *data);
+void screenator_undo (ScreenatorData *data);
+void screenator_redo (ScreenatorData *data);
+void screenator_page_history_clear (ScreenatorData *data);
+void screenator_page_redo_clear (ScreenatorData *data);
 
 void draw_line (ScreenatorData *data, GdkDevice *dev, gint x1, gint y1, gint x2, gint y2);
 void draw_line_finish (ScreenatorData *data, GdkDevice *dev);
@@ -693,6 +988,7 @@ void draw_line_shape (ScreenatorData *data, cairo_t *cr,
 		      const ScreenatorLine *line);
 void line_finish_all (ScreenatorData *data);
 void draw_spline (ScreenatorData *data, cairo_t *cr, GArray *nodes);
+void screenator_paper_record_spline (ScreenatorData *data, GArray *nodes);
 void spline_get_bounds (ScreenatorData *data, GArray *nodes,
 			GdkRectangle *bounds);
 void spline_update_auto (GArray *nodes);
@@ -735,6 +1031,12 @@ void clear_screen (ScreenatorData *data);
 void remove_saved_annotations (void);
 void set_floating_icon_visible (ScreenatorData *data, gboolean show);
 void update_paper_shortcuts (ScreenatorData *data, gboolean grab);
+void screenator_resolve_shortcuts (ScreenatorData *data);
+gboolean screenator_shortcut_matches (ScreenatorData *data,
+				      ScreenatorShortcutId id,
+				      GdkEventKey *event);
+void screenator_apply_shortcuts (ScreenatorData *data,
+				 gchar * const *new_texts);
 
 void devdata_free (ScreenatorDeviceData *devdata);
 void stroke_begin (ScreenatorData *data, GdkDevice *dev);

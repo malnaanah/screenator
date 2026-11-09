@@ -30,6 +30,10 @@
 #include <math.h>
 #include <gdk/gdk.h>
 #include <glib/gstdio.h>
+#include <cairo-pdf.h>
+#ifdef HAVE_POPPLER_GLIB
+#include <poppler.h>
+#endif
 #ifdef GDK_WINDOWING_X11
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
@@ -70,6 +74,45 @@ schedule_tray_menu_refresh (ScreenatorData *data)
   data->tray_refresh_id = g_idle_add (refresh_tray_menu_idle, data);
 }
 
+void screenator_paper_pan_start (ScreenatorData *data, guint button,
+				 gint x, gint y);
+void screenator_paper_pan_motion (ScreenatorData *data, gint x, gint y);
+void screenator_paper_pan_end (ScreenatorData *data);
+static ScreenatorPaperDocument *paper_document (ScreenatorData *data,
+						ScreenatorPaperType type);
+static ScreenatorPaperDocument *paper_active_document (ScreenatorData *data);
+static ScreenatorPaperPage *paper_current_page (ScreenatorPaperDocument *doc);
+static gboolean paper_continuous (ScreenatorData *data);
+static gint paper_pdf_page_at (ScreenatorPaperDocument *doc, gint content_y);
+static gint paper_view_height (ScreenatorData *data);
+static void paper_window_ensure_buffer (ScreenatorData *data);
+static void paper_trim_page_backgrounds (ScreenatorPaperDocument *doc);
+static void paper_load_page (ScreenatorData *data, ScreenatorPaperPage *page);
+static void paper_page_origin (ScreenatorData *data, ScreenatorPaperPage *page,
+			       gint *x, gint *y);
+static void paper_pdf_pick_page (ScreenatorData *data, gint screen_y);
+static void paper_pdf_prepare_active (ScreenatorData *data,
+				      ScreenatorPaperDocument *doc);
+static void paper_commit_pending (ScreenatorData *data);
+static void paper_pdf_build_layout (ScreenatorData *data,
+				    ScreenatorPaperDocument *doc);
+static void paper_build_continuous_layout (ScreenatorData *data,
+					   ScreenatorPaperDocument *doc);
+static void paper_ensure_background (ScreenatorData *data,
+				     ScreenatorPaperDocument *doc,
+				     guint index, ScreenatorPaperPage *page);
+static void set_paper_pan_cursor (ScreenatorData *data);
+static void restore_paper_cursor (ScreenatorData *data);
+static void paper_update_hover_cursor (ScreenatorData *data);
+static void paper_refresh_active_cursor (ScreenatorData *data);
+static void screenator_activate_cursor_state (ScreenatorData *data);
+static void paper_refresh_controls_hover (ScreenatorData *data);
+static void paper_controls_attach_hover (ScreenatorData *data,
+					 GtkWidget *widget);
+static void paper_finish_temporary_eraser (ScreenatorData *data);
+static void screenator_timer_cancel (ScreenatorData *data);
+static void paper_top_bar_rebuild (ScreenatorData *data);
+
 /* ------------------------------------------------------------------
  * Dialogs and message boxes
  * ------------------------------------------------------------------ */
@@ -77,7 +120,7 @@ schedule_tray_menu_refresh (ScreenatorData *data)
 /* The annotation window is an override-redirect popup, and the window manager
  * keeps such windows above the dialogs it manages.  Make the dialogs
  * override-redirect too, so they live in the same layer as the annotation
- * window and can be raised above it.  The drawings and the screen paper then
+ * window and can be raised above it.  The drawings and the paper page then
  * stay visible behind them instead of being hidden.  Nothing centres these
  * dialogs or gives them the keyboard focus, so that is done here as well. */
 
@@ -93,12 +136,67 @@ on_dialog_realize (GtkWidget *widget, gpointer user_data)
     gdk_window_set_override_redirect (window, TRUE);
 }
 
+/* Give popup dialogs a visible border.  They are override-redirect windows,
+ * so the window manager does not draw a frame around them. */
+static void
+dialog_install_border (GtkWidget *dialog)
+{
+  static GtkCssProvider *provider = NULL;
+  GtkStyleContext *context;
+  GdkScreen *screen;
+
+  if (!provider)
+    {
+      provider = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (provider,
+	"window.screenator-dialog { border: 2px solid #5f6368; }\n",
+	-1, NULL);
+      screen = gtk_widget_get_screen (dialog);
+      gtk_style_context_add_provider_for_screen (
+	screen ? screen : gdk_screen_get_default (),
+	GTK_STYLE_PROVIDER (provider),
+	GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
+  context = gtk_widget_get_style_context (dialog);
+  gtk_style_context_add_class (context, "screenator-dialog");
+}
+
+/* Every real dialog gets a title bar as well as the border above.  A
+ * GtkHeaderBar works for both override-redirect dialogs (above the drawings)
+ * and managed dialogs (the startup hints), so their appearance is the same. */
+static void
+dialog_install_titlebar (GtkWidget *dialog)
+{
+  GtkWidget *header;
+  const gchar *title;
+
+  if (!GTK_IS_WINDOW (dialog))
+    return;
+
+  if (gtk_window_get_titlebar (GTK_WINDOW (dialog)))
+    return;
+
+  header = gtk_header_bar_new ();
+  gtk_header_bar_set_show_close_button (GTK_HEADER_BAR (header), TRUE);
+  gtk_header_bar_set_decoration_layout (GTK_HEADER_BAR (header), ":close");
+
+  title = gtk_window_get_title (GTK_WINDOW (dialog));
+  gtk_header_bar_set_title (GTK_HEADER_BAR (header), title ? title : "");
+
+  gtk_window_set_titlebar (GTK_WINDOW (dialog), header);
+  gtk_widget_show (header);
+}
+
 static void
 make_dialog_popup (GtkWidget *dialog)
 {
   /* Centring is done when the dialog is mapped, once its content has its
    * final size. */
   gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_NONE);
+  /* Every dialog is a popup above the drawings and the paper page. */
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  dialog_install_border (dialog);
   g_signal_connect (dialog, "realize", G_CALLBACK (on_dialog_realize), NULL);
 }
 
@@ -122,7 +220,7 @@ dialog_take_focus (ScreenatorData *data, GtkWidget *dialog)
   annotation = data->win ? gtk_widget_get_window (data->win) : NULL;
 
   /* Remember what had the focus, unless it was the annotation window (the
-   * screen paper), which is restored on its own when the dialog closes. */
+   * paper page), which is restored on its own when the dialog closes. */
   if (data->dialog_prev_focus == 0)
     {
       XGetInputFocus (xdisplay, &focus, &revert);
@@ -144,7 +242,7 @@ dialog_restore_focus (ScreenatorData *data)
 {
   if (data->paper != SCREENATOR_PAPER_NONE)
     {
-      /* The screen paper is the active window again. */
+      /* Paper Drawing is the active window again. */
       paper_take_focus (data);
       data->dialog_prev_focus = 0;
       return;
@@ -171,26 +269,78 @@ dialog_restore_focus (ScreenatorData *data)
   data->dialog_prev_focus = 0;
 }
 
+/* A fullscreen managed window can lose the window-manager "active" state
+ * when an override-redirect dialog/popup takes focus, which makes some panels
+ * appear.  Keep the paper above the panel while it is fullscreen. */
+static void
+paper_update_panel_raise (ScreenatorData *data)
+{
+  gboolean keep;
+
+  if (!data || !data->paper_win)
+    return;
+
+  keep = data->paper_window_fullscreen && !data->paper_window_mode &&
+    (data->text_editor != NULL || data->top_dialog != NULL);
+
+  gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), keep);
+}
+
+static void
+paper_raise_over_panel (ScreenatorData *data)
+{
+  GdkWindow *window;
+
+  if (!data || !data->paper_win || !data->paper_window_fullscreen ||
+      data->paper_window_mode)
+    return;
+
+  paper_update_panel_raise (data);
+  window = gtk_widget_get_window (data->paper_win);
+  if (window)
+    gdk_window_raise (window);
+}
+
 static gboolean
 on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   GdkWindow *window = gtk_widget_get_window (widget);
-  GtkRequisition req;
-
-  gtk_window_present (GTK_WINDOW (widget));
+  gint width, height;
 
   if (window)
     {
-      /* No window manager places an override-redirect window: centre it. */
-      gtk_widget_get_preferred_size (widget, NULL, &req);
+      GdkScreen *screen = gtk_widget_get_screen (widget);
+      GdkRectangle area;
+      gint monitor = 0;
+
+      /* No window manager places an override-redirect window: centre it at
+       * its real size on the primary monitor. */
+      gtk_window_get_size (GTK_WINDOW (widget), &width, &height);
+
+      if (screen)
+	{
+	  monitor = gdk_screen_get_primary_monitor (screen);
+	  if (monitor < 0)
+	    monitor = 0;
+	  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+	}
+      else
+	{
+	  area.x = 0;
+	  area.y = 0;
+	  area.width = gdk_screen_width ();
+	  area.height = gdk_screen_height ();
+	}
+
       gtk_window_move (GTK_WINDOW (widget),
-		       MAX (0, (gdk_screen_width () - req.width) / 2),
-		       MAX (0, (gdk_screen_height () - req.height) / 2));
+		       area.x + MAX (0, (area.width - width) / 2),
+		       area.y + MAX (0, (area.height - height) / 2));
 
       /* The annotation window and the floating icon are raised above the
        * other windows, so the dialog has to be raised again to stay in front
        * of them. */
+      paper_raise_over_panel (data);
       gdk_window_raise (window);
     }
 
@@ -220,66 +370,31 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
   /* Give the keyboard back to the paper or to the previous application. */
   dialog_restore_focus (data);
 
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    update_paper_shortcuts (data, TRUE);
+
   if (data->dialog_released_grab)
     {
       data->dialog_released_grab = FALSE;
+      paper_refresh_controls_hover (data);
       acquire_grab (data, NULL);
+      if (data->paper != SCREENATOR_PAPER_NONE &&
+	  data->paper_hand_tool)
+	restore_paper_cursor (data);
     }
+
+  paper_update_panel_raise (data);
 }
 
-static void
-center_managed_dialog (GtkWidget *widget)
-{
-  GdkScreen *screen = gtk_widget_get_screen (widget);
-  GtkRequisition req;
-  GdkRectangle area;
-  gint monitor, max_w, max_h;
-
-  if (!screen || !gtk_widget_get_window (widget))
-    return;
-
-  monitor = gdk_screen_get_monitor_at_window (screen,
-					      gtk_widget_get_window (widget));
-  gdk_screen_get_monitor_workarea (screen, monitor, &area);
-
-  max_w = MAX (320, area.width - 40);
-  max_h = MAX (240, area.height - 80);
-
-  gtk_widget_get_preferred_size (widget, NULL, &req);
-  req.width = MIN (MAX (req.width, MIN (745, max_w)), max_w);
-  req.height = MIN (MAX (req.height, MIN (602, max_h)), max_h);
-  gtk_window_resize (GTK_WINDOW (widget), req.width, req.height);
-  gtk_window_move (GTK_WINDOW (widget),
-		   area.x + (area.width - req.width) / 2,
-		   area.y + (area.height - req.height) / 2);
-}
-
-static gboolean
-recenter_hints_idle (gpointer user_data)
-{
-  ScreenatorData *data = user_data;
-
-  if (data->hints_dialog && gtk_widget_get_visible (data->hints_dialog))
-    center_managed_dialog (data->hints_dialog);
-
-  return G_SOURCE_REMOVE;
-}
-
-/* A managed dialog is placed by the window manager.  Keep it within the
- * current monitor and let it shrink when the screen is smaller than its
- * contents. */
+/* A managed dialog is placed by the window manager.  Do not move or resize it
+ * again after mapping: repeated corrections made the startup hints visibly
+ * jump around. */
 static gboolean
 on_managed_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
 
-  gtk_window_present (GTK_WINDOW (widget));
-  center_managed_dialog (widget);
-
-  /* At login the panel/work area can settle after the dialog is mapped. */
-  g_timeout_add (1500, recenter_hints_idle, data);
-  g_timeout_add (4000, recenter_hints_idle, data);
-
+  (void) event;
   dialog_take_focus (data, widget);
   return FALSE;
 }
@@ -287,10 +402,19 @@ on_managed_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
 static void
 show_dialog_common (ScreenatorData *data, GtkWidget *dialog, gboolean popup)
 {
+  /* Dialogs belong above the drawings, the paper page and the floating icon,
+   * including the startup hints dialog that is a normal managed window. */
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  dialog_install_titlebar (dialog);
+  dialog_install_border (dialog);
+  screenator_timer_cancel (data);
+  paper_finish_temporary_eraser (data);
+  screenator_paper_pan_end (data);
+
   if (popup)
     {
       /* The dialog lives in the same layer as the annotation window, so it
-       * can be raised above the drawings and the screen paper. */
+       * can be raised above the drawings and the paper page. */
       make_dialog_popup (dialog);
     }
   else
@@ -302,12 +426,16 @@ show_dialog_common (ScreenatorData *data, GtkWidget *dialog, gboolean popup)
     }
 
   /* Release the painting grab for the outermost dialog, so its buttons and
-   * entries can be used.  The drawings stay visible behind it. */
+   * entries can be used.  The Paper Drawing shortcuts are released too, so
+   * Ctrl+A, Ctrl+S and the other keys keep their normal meaning inside the
+   * dialog.  The drawings stay visible behind it. */
   if (!data->top_dialog)
     {
       data->dialog_released_grab = screenator_any_grabbed (data);
       if (data->dialog_released_grab)
 	release_grab (data, NULL);
+      if (data->paper != SCREENATOR_PAPER_NONE)
+	update_paper_shortcuts (data, FALSE);
     }
 
   g_object_set_data (G_OBJECT (dialog), "screenator-previous-dialog",
@@ -328,8 +456,21 @@ show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog)
 
 static void on_icon_eraser_size (GtkMenuItem *menuitem, gpointer user_data);
 static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data);
-static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
-					       gpointer user_data);
+static void paper_store_active_page (ScreenatorData *data);
+static void draw_paper_page (ScreenatorData *data, cairo_t *cr);
+
+/* Keep only a few rendered PDF pages alive.  Every page rendered at screen
+ * width can take tens of megabytes, so an unbounded cache makes scrolling a
+ * long PDF consume huge amounts of memory and eventually lag or swap. */
+#define PAPER_PDF_BACKGROUND_CACHE_LIMIT 6
+static guint32 paper_page_background_clock;
+static void paper_background_invalidate (ScreenatorData *data);
+static void paper_background_cache_free (ScreenatorData *data);
+static void paper_repaint_window_only (ScreenatorData *data);
+void screenator_paper_pan_start (ScreenatorData *data, guint button,
+				 gint x, gint y);
+void screenator_paper_pan_motion (ScreenatorData *data, gint x, gint y);
+void screenator_paper_pan_end (ScreenatorData *data);
 static GArray *spline_preview_points (ScreenatorDeviceData *devdata);
 static void spline_draw_handles (ScreenatorData *data, cairo_t *cr,
 				 GArray *nodes, guint count);
@@ -371,7 +512,9 @@ static gboolean on_icon_grab_broken (GtkWidget *widget,
 static gboolean event_source_is_stylus (const GdkEvent *event);
 static void apply_scroll_step (ScreenatorData *data, gboolean down,
 			       gboolean colors_only);
+static gboolean editable_handles_active (ScreenatorData *data);
 static void apply_stylus_step (ScreenatorData *data, gboolean down);
+static void paper_cycle_setting (ScreenatorData *data, gboolean down);
 static void show_stylus_menu (ScreenatorData *data,
 			      ScreenatorDeviceData *devdata,
 			      gint x, gint y);
@@ -383,13 +526,156 @@ static void show_marker_menu (ScreenatorData *data,
 			      gint x, gint y);
 static void show_hints_dialog (ScreenatorData *data, gboolean startup);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
+static void on_action_screenshot (GtkMenuItem *menuitem, gpointer user_data);
 static void activate_tool_now (ScreenatorData *data, gint pen_tool,
 			       gint shape_type);
 static gboolean show_math_dialog (ScreenatorData *data);
 static void quick_menu_cancel (ScreenatorData *data);
 static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
+static void apply_icon_size (ScreenatorData *data, guint new_size);
+static void on_icon_timer (GtkMenuItem *menuitem, gpointer user_data);
+static void on_icon_switch_mode (GtkMenuItem *menuitem, gpointer user_data);
+static void on_icon_change_font (GtkMenuItem *menuitem, gpointer user_data);
+static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data);
+static void paper_top_bar_update_images (ScreenatorData *data);
+static void paper_top_bar_update_active_tool (ScreenatorData *data);
+static void paper_top_bar_reposition (ScreenatorData *data);
+static void paper_top_bar_restore (ScreenatorData *data);
+static void paper_repaint (ScreenatorData *data);
+static void paper_top_bar_destroy (ScreenatorData *data);
+static void paper_top_bar_rebuild (ScreenatorData *data);
+static gboolean paper_load_pdf_file (ScreenatorData *data, const gchar *path);
+static gint paper_pdf_memory_get (ScreenatorData *data, const gchar *path);
+static void paper_pdf_memory_set (ScreenatorData *data, const gchar *path,
+				  gint page);
+static void paper_pdf_remember_current (ScreenatorData *data);
+static void schedule_tool_activation (ScreenatorData *data, gint pen_tool,
+				      gint shape_type);
+static void paper_top_bar_menu_button_clicked (GtkButton *button,
+					       gpointer user_data);
+static GtkWidget *paper_top_bar_build_opacity_menu (ScreenatorData *data);
+static GtkWidget *paper_top_bar_build_marker_opacity_menu (
+  ScreenatorData *data);
+static void paper_toolbar_set_visible (GtkWidget *button, gboolean show);
+static void paper_window_transform_values (ScreenatorData *data,
+					   gdouble *scale, gint *origin_x,
+					   gint *origin_y);
+static void paper_window_transform_event (ScreenatorData *data,
+					  gdouble *x, gdouble *y);
+static void paper_window_to_root (ScreenatorData *data, gint *x, gint *y);
+static gboolean paper_window_event_inside (ScreenatorData *data,
+					   gdouble x, gdouble y);
+static const gchar *toolbar_item_id (const gchar *id);
+static GdkPixbuf *paper_color_swatch (const GdkRGBA *color, gboolean none,
+				      gint size);
+static GdkPixbuf *paper_thickness_sample (guint width, gint size);
+static GdkPixbuf *paper_eraser_size_sample (guint width, gint size);
 
+static gchar *
+shortcut_label (ScreenatorData *data, ScreenatorShortcutId id,
+		const gchar *base)
+{
+  const gchar *key = data->shortcuts[id].text;
+
+  if (!key || !*key || g_ascii_strcasecmp (key, "none") == 0)
+    return g_strdup (base);
+
+  return g_strdup_printf ("%s (%s)", base, key);
+}
+
+static GtkWidget *
+shortcut_menu_item (ScreenatorData *data, ScreenatorShortcutId id,
+		    const gchar *base)
+{
+  gchar *label = shortcut_label (data, id, base);
+  GtkWidget *item = gtk_image_menu_item_new_with_label (label);
+
+  g_free (label);
+  return item;
+}
+
+
+typedef struct
+{
+  const gchar *id;
+  const gchar *label;
+  const gchar *icon;
+} ToolbarItemInfo;
+
+static const ToolbarItemInfo toolbar_item_info[] =
+{
+  { "switch_mode",   "Switch Mode",         "switch_mode.png" },
+  { "cursor",        "Cursor",              "cursor.png" },
+  { "pen",           "Pen",                 "pen.png" },
+  { "text",          "Text",                "text.png" },
+  { "eraser",        "Eraser",              "eraser.png" },
+  { "arrow",         "Arrow",               "arrow.png" },
+  { "timer",         "Timer",               "timer.png" },
+  { "shapes",        "Shapes",              "shapes.png" },
+  { "undo",          "Undo",                "undo.png" },
+  { "redo",          "Redo",                "redo.png" },
+  { "save",          "Save / Screenshot",   "save.png" },
+  { "paper",         "Paper Type",          "paper.png" },
+  { "insert_before", "Insert Page Before",  "add_before.png" },
+  { "delete_page",   "Delete Page",         "delete-page.png" },
+  { "insert_after",  "Insert Page After",   "add_after.png" },
+  { "clear",         "Clear Screen",        "trash.png" },
+  { "visibility",    "Toggle Visibility",   "hide.png" },
+  { "eraser_size",   "Eraser Size",         NULL },
+  { "line_color",    "Line Color",          NULL },
+  { "thickness",     "Thickness",           NULL },
+  { "fill_color",    "Fill Color",          NULL },
+  { "opacity",       "Opacity",             "opacity.png" },
+  { "marker_opacity","Marker Opacity",      "marker_opacity.png" },
+  { "settings",      "Settings",            "settings.png" },
+  { "hints",         "Show Hints",          "hint.png" },
+  { "quit",          "Quit",                "quit.png" }
+};
+
+
+/* Use bilinear filtering for screen-sized image surfaces.  Cairo's default
+ * GOOD filter is dramatically slower when downscaling the full backbuffer or
+ * paper in Window mode (tens of milliseconds per frame), while bilinear is a
+ * few milliseconds and looks the same at these scale factors. */
+static void
+use_bilinear_filter (cairo_t *cr)
+{
+  cairo_pattern_set_filter (cairo_get_source (cr), CAIRO_FILTER_BILINEAR);
+}
+
+/* Optional diagnostics: SCREENATOR_PROFILE=1 prints frame and scroll timings
+ * to stderr.  Disabled by default with no measurable overhead. */
+static gboolean
+screenator_profile_enabled (void)
+{
+  static gint enabled = -1;
+
+  if (enabled < 0)
+    enabled = g_getenv ("SCREENATOR_PROFILE") != NULL ? 1 : 0;
+
+  return enabled == 1;
+}
+
+static void
+profile_expose (ScreenatorData *data, cairo_t *cr, gint64 start)
+{
+  ScreenatorPaperDocument *doc;
+  gdouble x1, y1, x2, y2;
+  guint pages = 0;
+
+  cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
+  doc = paper_active_document (data);
+  if (doc && doc->pages)
+    pages = doc->pages->len;
+
+  g_printerr ("PROFILE expose %.2f ms clip %.0fx%.0f window=%d paper=%d "
+	      "continuous=%d pages=%u\n",
+	      (g_get_monotonic_time () - start) / 1000.0,
+	      x2 - x1, y2 - y1,
+	      data->paper_window_mode ? 1 : 0, (gint) data->paper,
+	      paper_continuous (data) ? 1 : 0, pages);
+}
 
 static void
 draw_screenshot_paper (ScreenatorData *data, cairo_t *cr)
@@ -400,6 +686,7 @@ draw_screenshot_paper (ScreenatorData *data, cairo_t *cr)
   cairo_save (cr);
   cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
   cairo_set_source_surface (cr, data->screenshot_paper, 0, 0);
+  use_bilinear_filter (cr);
   cairo_paint (cr);
   cairo_restore (cr);
 }
@@ -411,22 +698,54 @@ gboolean on_expose (GtkWidget *widget,
   ScreenatorData *data = (ScreenatorData *) user_data;
   GHashTableIter it;
   gpointer value;
+  gboolean profile = screenator_profile_enabled ();
+  gint64 profile_start = profile ? g_get_monotonic_time () : 0;
 
   if(data->debug)
     g_printerr("DEBUG: got draw event\n");
 
-  /* The visibility toggle hides the drawings but keeps the screen paper. */
+  /* Window mode scales the paper page so its width matches the Paper
+   * window.  All drawing still happens in screen/backbuffer coordinates. */
+  if (data->paper_window_mode && data->win == data->paper_win)
+    {
+      /* A tall or tiled window can be higher than the scaled screen content.
+       * Paint the whole window with the paper surround first; otherwise the
+       * uncovered lower area contains stale/garbage pixels. */
+      cairo_save (cr);
+      cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+      cairo_set_source_rgb (cr, 0.92, 0.92, 0.92);
+      cairo_paint (cr);
+      cairo_restore (cr);
+    }
+
+  if (data->paper_window_mode && data->win == data->paper_win)
+    {
+      gdouble scale;
+      gint origin_x, origin_y;
+
+      paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+      cairo_save (cr);
+      cairo_scale (cr, scale, scale);
+      cairo_translate (cr, -origin_x, -origin_y);
+    }
+
+  /* The visibility toggle hides the drawings but keeps the paper page. */
   if (data->hide_drawings)
     {
       if (data->screenshot_paper)
 	draw_screenshot_paper (data, cr);
       else if (data->paper != SCREENATOR_PAPER_NONE)
-	draw_screen_paper (data, cr);
+	draw_paper_page (data, cr);
 
+      if (data->paper_window_mode && data->win == data->paper_win)
+	cairo_restore (cr);
+
+      if (profile)
+	profile_expose (data, cr, profile_start);
       return TRUE;
     }
 
-  /* The screen paper is drawn first, so it stays below the annotations and is
+  /* The paper page is drawn first, so it stays below the annotations and is
    * not part of the backbuffer: clearing the screen leaves it in place. */
   if (data->screenshot_paper)
     {
@@ -434,16 +753,18 @@ gboolean on_expose (GtkWidget *widget,
 
       cairo_save (cr);
       cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      use_bilinear_filter (cr);
       cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
       cairo_paint (cr);
       cairo_restore (cr);
     }
   else if (data->paper != SCREENATOR_PAPER_NONE)
     {
-      draw_screen_paper (data, cr);
+      draw_paper_page (data, cr);
 
       cairo_save (cr);
       cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      use_bilinear_filter (cr);
       cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
       cairo_paint (cr);
       cairo_restore (cr);
@@ -452,6 +773,7 @@ gboolean on_expose (GtkWidget *widget,
     {
       cairo_save (cr);
       cairo_set_source_surface (cr, data->backbuffer, 0, 0);
+      use_bilinear_filter (cr);
       cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
       cairo_paint (cr);
       cairo_restore (cr);
@@ -470,6 +792,7 @@ gboolean on_expose (GtkWidget *widget,
       cairo_save (cr);
       cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
       cairo_set_source_surface (cr, devdata->strokebuffer, 0, 0);
+      use_bilinear_filter (cr);
       cairo_paint_with_alpha (cr, devdata->stroke_alpha);
       cairo_restore (cr);
     }
@@ -559,7 +882,7 @@ gboolean on_expose (GtkWidget *widget,
 
   /* The text being typed is previewed above the annotations, so it stays
    * visible even inside a filled shape.  The editor window only supplies the
-   * input; the caret is drawn here as well so drawings and the screen paper
+   * input; the caret is drawn here as well so drawings and the paper page
    * never hide it. */
   if (data->text_preview_valid)
     {
@@ -592,6 +915,12 @@ gboolean on_expose (GtkWidget *widget,
 	  cairo_restore (cr);
 	}
     }
+
+  if (data->paper_window_mode && data->win == data->paper_win)
+    cairo_restore (cr);
+
+  if (profile)
+    profile_expose (data, cr, profile_start);
 
   return TRUE;
 }
@@ -632,14 +961,142 @@ void on_screen_changed(GtkWidget *widget,
 
 
 
+/* Copy a surface into one of a different size, scaling its contents to fit.
+ * Used to keep paper annotations proportional when a page is refitted. */
+static cairo_surface_t *
+resize_surface_scale (cairo_surface_t *source, gint width, gint height)
+{
+  cairo_surface_t *surface =
+    cairo_image_surface_create (CAIRO_FORMAT_ARGB32, MAX (1, width),
+				MAX (1, height));
+
+  if (source)
+    {
+      gint source_width = cairo_image_surface_get_width (source);
+      gint source_height = cairo_image_surface_get_height (source);
+      cairo_t *cr = cairo_create (surface);
+
+      if (source_width > 0 && source_height > 0)
+	cairo_scale (cr, (gdouble) MAX (1, width) / source_width,
+		     (gdouble) MAX (1, height) / source_height);
+      cairo_set_source_surface (cr, source, 0, 0);
+      cairo_paint (cr);
+      cairo_destroy (cr);
+    }
+
+  return surface;
+}
+
+/* Scale surface uniformly to fit inside width x height, centring it. */
+static cairo_surface_t *
+resize_surface_contain (cairo_surface_t *source, gint width, gint height)
+{
+  cairo_surface_t *surface =
+    cairo_image_surface_create (CAIRO_FORMAT_ARGB32, MAX (1, width),
+				MAX (1, height));
+
+  if (source)
+    {
+      gint sw = cairo_image_surface_get_width (source);
+      gint sh = cairo_image_surface_get_height (source);
+
+      if (sw > 0 && sh > 0)
+	{
+	  gdouble scale = MIN ((gdouble) width / sw, (gdouble) height / sh);
+	  cairo_t *cr = cairo_create (surface);
+
+	  cairo_translate (cr, (width - sw * scale) / 2.0,
+			   (height - sh * scale) / 2.0);
+	  cairo_scale (cr, scale, scale);
+	  cairo_set_source_surface (cr, source, 0, 0);
+	  cairo_paint (cr);
+	  cairo_destroy (cr);
+	}
+    }
+
+  return surface;
+}
+
+/* Scale a page's recorded vector layer to a new page size while keeping it a
+ * recording surface.  Strokes stay vector and text stays text; the recording
+ * is only replayed under a scale transform. */
+static void
+paper_scale_vector_surface (ScreenatorPaperPage *page, gint width, gint height,
+			    gboolean contain)
+{
+  cairo_rectangle_t extents;
+  cairo_surface_t *scaled;
+  cairo_t *cr;
+
+  if (!page || !page->vector || !page->vector_valid ||
+      width <= 0 || height <= 0)
+    return;
+
+  if (!cairo_recording_surface_get_extents (page->vector, &extents) ||
+      extents.width <= 0 || extents.height <= 0)
+    return;
+
+  if ((gint) round (extents.width) == width &&
+      (gint) round (extents.height) == height)
+    return;
+
+  {
+    cairo_rectangle_t target = { 0, 0, width, height };
+
+    scaled = cairo_recording_surface_create (CAIRO_CONTENT_COLOR_ALPHA,
+					     &target);
+  }
+
+  if (cairo_surface_status (scaled) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (scaled);
+      return;
+    }
+
+  cr = cairo_create (scaled);
+  if (contain)
+    {
+      gdouble scale = MIN ((gdouble) width / extents.width,
+			   (gdouble) height / extents.height);
+
+      cairo_translate (cr, (width - extents.width * scale) / 2.0,
+		       (height - extents.height * scale) / 2.0);
+      cairo_scale (cr, scale, scale);
+    }
+  else
+    cairo_scale (cr, (gdouble) width / extents.width,
+		 (gdouble) height / extents.height);
+  cairo_set_source_surface (cr, page->vector, 0, 0);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+
+  cairo_surface_destroy (page->vector);
+  page->vector = scaled;
+  page->vector_valid = TRUE;
+}
+
 void on_monitors_changed ( GdkScreen *screen,
 			   gpointer   user_data) 
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  gint new_width, new_height;
 
-  // get new sizes
-  data->width = gdk_screen_get_width (data->screen);
-  data->height = gdk_screen_get_height (data->screen);
+  (void) screen;
+
+  /* A resolution change invalidates the current tool; leave Cursor selected. */
+  screenator_exit_tool (data);
+
+  new_width = gdk_screen_get_width (data->screen);
+  new_height = gdk_screen_get_height (data->screen);
+
+  /* Store the active page with the old screen size before changing
+   * data->width/height. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_store_active_page (data);
+
+  data->width = new_width;
+  data->height = new_height;
+  data->paper_view_height_current = new_height;
 
   if(data->debug)
     g_printerr("DEBUG: screen size changed to %d x %d!\n", data->width, data->height);
@@ -651,15 +1108,191 @@ void on_monitors_changed ( GdkScreen *screen,
   gtk_widget_input_shape_combine_region(data->win, r);
   cairo_region_destroy(r);
 
-  /* recreate the shape surface */
-  cairo_surface_t *new_shape = cairo_image_surface_create(CAIRO_FORMAT_ARGB32 ,data->width, data->height);
-  cairo_t *cr = cairo_create (new_shape);
-  cairo_set_source_surface (cr, data->backbuffer, 0, 0);
-  cairo_paint (cr);
-  cairo_destroy (cr);
-  cairo_surface_destroy(data->backbuffer);
-  data->backbuffer = new_shape;
- 
+  {
+    cairo_surface_t *new_shape =
+      resize_surface_scale (data->backbuffer, data->width, data->height);
+    gint i;
+
+    cairo_surface_destroy (data->backbuffer);
+    data->backbuffer = new_shape;
+
+    /* Undo snapshots must match the new drawing-buffer size. */
+    for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+      {
+	if (data->undobuffer[i])
+	  cairo_surface_destroy (data->undobuffer[i]);
+	data->undobuffer[i] =
+	  cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+				      data->width, data->height);
+      }
+    data->undo_head = 0;
+    data->undo_depth = 0;
+    data->redo_depth = 0;
+    reset_undo_history (data);
+  }
+
+  screenator_page_history_clear (data);
+
+  {
+    cairo_surface_t *surface;
+    ScreenatorPaperType type;
+    guint j;
+
+    if (data->paper != SCREENATOR_PAPER_NONE && data->screen_annotations)
+      {
+	surface = resize_surface_scale (data->screen_annotations,
+					data->width, data->height);
+	cairo_surface_destroy (data->screen_annotations);
+	data->screen_annotations = surface;
+      }
+
+    /* Refit every stored non-PDF page, so a paper activated later also fits
+     * the new screen. */
+    for (type = SCREENATOR_PAPER_PLAIN;
+	 type <= SCREENATOR_PAPER_PDF; type++)
+      {
+	ScreenatorPaperDocument *doc = data->paper_docs[type];
+
+	if (!doc || !doc->pages)
+	  continue;
+
+	for (j = 0; j < doc->pages->len; j++)
+	  {
+	    ScreenatorPaperPage *page =
+	      &g_array_index (doc->pages, ScreenatorPaperPage, j);
+
+	    if (page->style != SCREENATOR_PAPER_PDF)
+	      {
+		if (data->paper_size == SCREENATOR_PAPER_SIZE_SCREEN)
+		  {
+		    if (page->annotations)
+		      {
+			/* Scale the drawing with the paper, exactly like a PDF page.
+			 * Copying it at the old size crops/pads instead. */
+			surface = resize_surface_contain (page->annotations,
+							data->width,
+							data->height);
+			cairo_surface_destroy (page->annotations);
+			page->annotations = surface;
+		      }
+
+		    /* Keep the vector layer vector by replaying it with a scale. */
+		    paper_scale_vector_surface (page, data->width, data->height,
+						TRUE);
+
+		    page->canvas_width = data->width;
+		    page->canvas_height = data->height;
+		    page->pdf_width = data->width;
+		    page->pdf_height = data->height;
+		    page->view_x = 0;
+		    page->view_y = 0;
+		  }
+		else
+		  {
+		    page->view_x = CLAMP (page->view_x, 0,
+					  MAX (0, page->canvas_width -
+					       (gint) data->width));
+		    page->view_y = CLAMP (page->view_y, 0,
+					  MAX (0, page->canvas_height -
+					       (gint) data->height));
+		  }
+	      }
+	  }
+      }
+
+    /* Refit a loaded PDF to the new screen width, even when Paper Drawing is
+     * currently off. */
+    {
+      ScreenatorPaperDocument *pdf =
+	paper_document (data, SCREENATOR_PAPER_PDF);
+
+      if (pdf && pdf->pdf_loaded && pdf->pages && pdf->pages->len > 0)
+	{
+	  gint old_page = CLAMP ((gint) pdf->page, 0,
+				 (gint) pdf->pages->len - 1);
+	  gint old_top = 0, old_height = 0;
+	  gdouble relative = 0.0;
+
+	  if (pdf->pdf_page_tops && pdf->pdf_page_heights &&
+	      pdf->pdf_page_tops->len > (guint) old_page &&
+	      pdf->pdf_page_heights->len > (guint) old_page)
+	    {
+	      old_top = g_array_index (pdf->pdf_page_tops, gint, old_page);
+	      old_height = g_array_index (pdf->pdf_page_heights, gint,
+					  old_page);
+	      if (old_height > 0)
+		relative = ((gdouble) pdf->pdf_scroll_y - old_top) /
+			   old_height;
+	    }
+
+	  /* This scales each page's annotations and invalidates its rendered
+	   * background. */
+	  paper_pdf_build_layout (data, pdf);
+	  pdf->page = MIN ((guint) old_page, pdf->pages->len - 1);
+
+	  if (data->paper == SCREENATOR_PAPER_PDF &&
+	      data->paper_continuous_scroll &&
+	      pdf->pdf_page_tops &&
+	      pdf->pdf_page_tops->len > pdf->page)
+	    {
+	      gint new_top = g_array_index (pdf->pdf_page_tops, gint,
+					    pdf->page);
+	      gint new_height = g_array_index (pdf->pdf_page_heights,
+					       gint, pdf->page);
+
+	      pdf->pdf_scroll_y =
+		new_top + (gint) round (relative * new_height);
+	      pdf->pdf_scroll_y =
+		CLAMP (pdf->pdf_scroll_y, 0,
+		       MAX (0, pdf->pdf_stack_height - (gint) data->height));
+	      paper_pdf_prepare_active (data, pdf);
+	    }
+	  else if (data->paper == SCREENATOR_PAPER_PDF)
+	    {
+	      ScreenatorPaperPage *page = paper_current_page (pdf);
+
+	      if (page)
+		{
+		  page->view_x = 0;
+		  page->view_y = 0;
+		  paper_ensure_background (data, pdf, pdf->page, page);
+		  paper_load_page (data, page);
+		}
+	    }
+	  else
+	    {
+	      pdf->pdf_scroll_y =
+		CLAMP (pdf->pdf_scroll_y, 0,
+		       MAX (0, pdf->pdf_stack_height - (gint) data->height));
+	    }
+
+	  data->paper_pdf_page = (gint) pdf->page;
+	}
+    }
+
+    if (data->paper != SCREENATOR_PAPER_NONE &&
+	data->paper != SCREENATOR_PAPER_PDF)
+      {
+	ScreenatorPaperDocument *doc = paper_active_document (data);
+	ScreenatorPaperPage *page = paper_current_page (doc);
+
+	if (paper_continuous (data))
+	  {
+	    paper_build_continuous_layout (data, doc);
+	    doc->pdf_scroll_y = CLAMP (
+	      (doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	      ? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0,
+	      0, MAX (0, doc->pdf_stack_height - (gint) data->height));
+	    paper_pdf_prepare_active (data, doc);
+	  }
+	else
+	  paper_load_page (data, page);
+      }
+
+    if (data->paper != SCREENATOR_PAPER_NONE)
+      reset_undo_history (data);
+  }
+
   /*
      these depend on the shape surface
   */
@@ -691,16 +1324,26 @@ void on_monitors_changed ( GdkScreen *screen,
 
   update_window_shape (data);
 
-  /* Keep the floating icon at the configured corner of its monitor after a
+  /* Keep the floating icon and the paper tool bar in place after a
    * resolution change. */
   screenator_position_icon (data);
+  paper_top_bar_reposition (data);
 
   setup_input_devices(data);
+
+  /* parse_config() above may have restored a saved tool.  Force the Cursor
+   * tool and refresh its toolbar icon after rebuilding the input devices. */
+  screenator_activate_cursor_state (data);
 
   gtk_widget_show_all (data->win);
 
   /* Showing the annotation window again puts it above the floating icon. */
   raise_icon_window (data);
+
+  paper_refresh_active_cursor (data);
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_repaint (data);
 }
 
 
@@ -766,7 +1409,7 @@ void on_composited_changed ( GdkScreen *screen,
       
 
   GdkRectangle rect = {0, 0, data->width, data->height};
-  gdk_window_invalidate_rect(gtk_widget_get_window(data->win), &rect, 0); 
+  screenator_invalidate_rect (data, &rect);
 }
 
 
@@ -938,17 +1581,17 @@ text_preview_refresh (ScreenatorData *data)
     }
 
   if (data->text_preview_valid)
-    gdk_window_invalidate_rect (window, &old_bounds, 0);
+    screenator_invalidate_rect (data, &old_bounds);
 
   if (has_new)
-    gdk_window_invalidate_rect (window, &new_bounds, 0);
+    screenator_invalidate_rect (data, &new_bounds);
 
   /* The caret moves with the text. */
   {
     GdkRectangle caret;
 
     if (text_caret_bounds (data, &caret))
-      gdk_window_invalidate_rect (window, &caret, 0);
+      screenator_invalidate_rect (data, &caret);
   }
 
   data->text_preview_valid = has_new;
@@ -967,7 +1610,7 @@ text_preview_clear (ScreenatorData *data)
   GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
 
   if (data->text_preview_valid && window)
-    gdk_window_invalidate_rect (window, &data->text_preview_bounds, 0);
+    screenator_invalidate_rect (data, &data->text_preview_bounds);
 
   data->text_preview_valid = FALSE;
 }
@@ -1049,7 +1692,7 @@ text_caret_blink (gpointer user_data)
 
   window = data->win ? gtk_widget_get_window (data->win) : NULL;
   if (window && text_caret_bounds (data, &caret))
-    gdk_window_invalidate_rect (window, &caret, 0);
+    screenator_invalidate_rect (data, &caret);
 
   /* On a screen without a compositor the annotation window is shaped, so the
    * caret area has to enter and leave the shape together with the blink. */
@@ -1207,7 +1850,7 @@ invalidate_text_area (ScreenatorData *data, gint x, gint y)
   area.y = MAX (0, y - 80);
   area.width = 340;
   area.height = 180;
-  gdk_window_invalidate_rect (gtk_widget_get_window (data->win), &area, 0);
+  screenator_invalidate_rect (data, &area);
 }
 
 /* Place the small empty editor at the press position.  The entry keeps a
@@ -1245,6 +1888,7 @@ position_text_editor (ScreenatorData *data)
 
   data->text_editor_x = x;
   data->text_editor_y = y;
+  paper_window_to_root (data, &x, &y);
   gtk_window_move (GTK_WINDOW (data->text_editor), x, y);
   data->text_editor_positioned = TRUE;
 
@@ -1405,7 +2049,7 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 
       data->text_caret_visible = FALSE;
       if (window && text_caret_bounds (data, &caret))
-	gdk_window_invalidate_rect (window, &caret, 0);
+	screenator_invalidate_rect (data, &caret);
     }
 
   if (data->text_focus_id)
@@ -1439,6 +2083,12 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
     }
 
   invalidate_text_area (data, x, y);
+
+  /* Move focus back before destroying the focused popup so the window manager
+   * never sees a frame with no active window (which reveals the panel). */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+
   gtk_widget_destroy (editor);
 
   /* The editor area no longer has to stay visible on the annotation window. */
@@ -1455,9 +2105,13 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
   if (reacquire)
     acquire_grab (data, NULL);
 
-  /* A paper is the active window again after the editor closes. */
+  /* A paper is the active window again after the editor closes.  Release
+   * the temporary keep-above only after focus is back on the paper, otherwise
+   * the desktop panel flashes for one frame. */
   if (data->paper != SCREENATOR_PAPER_NONE)
     paper_take_focus (data);
+
+  paper_update_panel_raise (data);
 }
 
 static void
@@ -1553,9 +2207,10 @@ text_editor_focus_retry (gpointer user_data)
 
   data->text_focus_attempts++;
 
-  gtk_window_present (GTK_WINDOW (data->text_editor));
   if (data->text_entry)
     gtk_widget_grab_focus (data->text_entry);
+
+  paper_raise_over_panel (data);
 
 #ifdef GDK_WINDOWING_X11
   {
@@ -1617,7 +2272,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
       data->text_caret_timeout = 0;
     }
 
-  editor = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+  editor = gtk_window_new (GTK_WINDOW_POPUP);
   gtk_window_set_decorated (GTK_WINDOW (editor), FALSE);
   gtk_window_set_skip_taskbar_hint (GTK_WINDOW (editor), TRUE);
   gtk_window_set_skip_pager_hint (GTK_WINDOW (editor), TRUE);
@@ -1688,6 +2343,10 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 		    G_CALLBACK (on_text_editor_focus_in), data);
   g_signal_connect (editor, "destroy",
 		    G_CALLBACK (on_text_editor_destroy), data);
+  /* A popup is override-redirect, so it must be made override-redirect before
+   * it is mapped on every backend. */
+  g_signal_connect (editor, "realize",
+		    G_CALLBACK (on_dialog_realize), data);
 
   gtk_window_move (GTK_WINDOW (editor), x, y);
   gtk_widget_show_all (editor);
@@ -1710,7 +2369,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   acquire_grab (data, NULL);
 
   gtk_widget_grab_focus (entry);
-  gtk_window_present (GTK_WINDOW (editor));
+  paper_raise_over_panel (data);
 
   data->text_focus_attempts = 0;
   if (data->text_focus_id)
@@ -1728,7 +2387,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
     GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
 
     if (window && text_caret_bounds (data, &caret))
-      gdk_window_invalidate_rect (window, &caret, 0);
+      screenator_invalidate_rect (data, &caret);
   }
 }
 
@@ -1760,16 +2419,23 @@ spline_preview_points (ScreenatorDeviceData *devdata)
   cursor.point.x = devdata->shape_x1;
   cursor.point.y = devdata->shape_y1;
 
-  if (nodes->len == 0)
-    g_array_append_val (nodes, cursor);
-  else
+  /* While a node or one of its Bezier handles is being dragged, the curve
+   * must end at the real last node.  Appending the pointer node here would
+   * draw a stray segment that is not part of the spline. */
+  if (!devdata->spline_node_drag && !devdata->spline_handle_drag &&
+      !devdata->spline_preview_paused)
     {
-      ScreenatorSplineNode last =
-	g_array_index (nodes, ScreenatorSplineNode, nodes->len - 1);
-
-      if (last.point.x != cursor.point.x ||
-	  last.point.y != cursor.point.y)
+      if (nodes->len == 0)
 	g_array_append_val (nodes, cursor);
+      else
+	{
+	  ScreenatorSplineNode last =
+	    g_array_index (nodes, ScreenatorSplineNode, nodes->len - 1);
+
+	  if (last.point.x != cursor.point.x ||
+	      last.point.y != cursor.point.y)
+	    g_array_append_val (nodes, cursor);
+	}
     }
 
   /* Recompute the automatic handles on the copy so the preview matches what
@@ -1797,9 +2463,8 @@ spline_invalidate (ScreenatorData *data, const GdkRectangle *bounds)
   if (bounds->width > 0 && bounds->height > 0)
     {
       /* Let reshape() update the window shape on a non-composited screen. */
-      data->modified = 1;
-      gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				  bounds, 0);
+      screenator_mark_modified (data);
+      screenator_invalidate_rect (data, bounds);
     }
 }
 
@@ -1834,6 +2499,7 @@ spline_add_node (ScreenatorData *data, ScreenatorDeviceData *devdata,
   node.in = node.point;
   node.out = node.point;
   g_array_append_val (devdata->shape_points, node);
+  devdata->spline_preview_paused = FALSE;
 
   spline_update_auto (devdata->shape_points);
 
@@ -2135,6 +2801,7 @@ spline_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
   devdata->shape_active = FALSE;
   devdata->spline_node_drag = FALSE;
   devdata->spline_handle_drag = FALSE;
+  devdata->spline_preview_paused = FALSE;
   devdata->spline_finish_pending = FALSE;
   curve_bounds = preview_bounds;
 
@@ -2148,8 +2815,9 @@ spline_finish (ScreenatorData *data, ScreenatorDeviceData *devdata)
       cr = cairo_create (data->backbuffer);
       draw_spline (data, cr, devdata->shape_points);
       cairo_destroy (cr);
+      screenator_paper_record_spline (data, devdata->shape_points);
 
-      data->modified = 1;
+      screenator_mark_modified (data);
       data->painted = 1;
 
       spline_get_bounds (data, devdata->shape_points, &curve_bounds);
@@ -2226,9 +2894,8 @@ star_invalidate (ScreenatorData *data, const ScreenatorStar *star)
     return;
 
   star_get_bounds (star, pad, &bounds);
-  data->modified = 1;
-  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-			      &bounds, 0);
+  screenator_mark_modified (data);
+  screenator_invalidate_rect (data, &bounds);
 }
 
 /* Return the star handle under (x, y), or NONE.  The square points handle is
@@ -2577,9 +3244,8 @@ triangle_invalidate (ScreenatorData *data, const ScreenatorTriangle *triangle)
     return;
 
   triangle_get_bounds (triangle, pad, &bounds);
-  data->modified = 1;
-  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-			      &bounds, 0);
+  screenator_mark_modified (data);
+  screenator_invalidate_rect (data, &bounds);
 }
 
 /* Return the vertex handle under (x, y), or NONE. */
@@ -2867,9 +3533,8 @@ frame_invalidate (ScreenatorData *data, const ScreenatorFrameShape *shape)
     return;
 
   frame_shape_get_bounds (shape, pad, &bounds);
-  data->modified = 1;
-  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-			      &bounds, 0);
+  screenator_mark_modified (data);
+  screenator_invalidate_rect (data, &bounds);
 }
 
 static gboolean
@@ -3359,9 +4024,8 @@ line_invalidate (ScreenatorData *data, const ScreenatorLine *line)
     return;
 
   line_get_bounds (data, line, &bounds);
-  data->modified = 1;
-  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-			      &bounds, 0);
+  screenator_mark_modified (data);
+  screenator_invalidate_rect (data, &bounds);
 }
 
 /* Position of the arrow-heads handle: halfway along the line, offset to one
@@ -3811,31 +4475,35 @@ send_escape_to_close_menu (ScreenatorData *data)
 #endif
 }
 
-/* Freeze the current screen into a temporary background.  Hiding the overlay
- * and icon first keeps the screenshot free of Screenator's own windows. */
-void
-screenator_take_screenshot_paper (ScreenatorData *data)
+/* Grab the screen without Screenator's floating controls.  When
+ * hide_annotation is TRUE the drawing layer is hidden as well, which is what
+ * the frozen background for a delayed tool needs.  A screenshot key press
+ * keeps the drawings visible. */
+static cairo_surface_t *
+capture_screen_content (ScreenatorData *data, gboolean hide_annotation)
 {
   GdkWindow *root;
   GdkPixbuf *pixbuf;
   cairo_surface_t *surface;
-  gboolean win_visible, icon_visible, settings_visible;
-
-  screenator_clear_screenshot_paper (data);
+  gboolean win_visible, icon_visible, settings_visible, bar_visible;
 
   if (!data->win || !data->display || !data->width || !data->height)
-    return;
+    return NULL;
 
   win_visible = gtk_widget_get_visible (data->win);
   icon_visible = data->icon_win && gtk_widget_get_visible (data->icon_win);
   settings_visible = data->settings_win &&
     gtk_widget_get_visible (data->settings_win);
+  bar_visible = data->paper_top_bar &&
+    gtk_widget_get_visible (data->paper_top_bar);
 
+  if (bar_visible)
+    gtk_widget_hide (data->paper_top_bar);
   if (settings_visible)
     gtk_widget_hide (data->settings_win);
   if (icon_visible)
     gtk_widget_hide (data->icon_win);
-  if (win_visible)
+  if (win_visible && hide_annotation)
     gtk_widget_hide (data->win);
 
   gdk_display_sync (gdk_display_get_default ());
@@ -3856,17 +4524,14 @@ screenator_take_screenshot_paper (ScreenatorData *data)
 	g_object_unref (pixbuf);
     }
 
-  if (surface)
-    data->screenshot_paper = surface;
-  else
-    g_printerr ("Screenshot capture failed; using the live screen.\n");
-
   if (win_visible)
     gtk_widget_show (data->win);
   if (icon_visible)
     gtk_widget_show (data->icon_win);
   if (settings_visible)
     gtk_widget_show (data->settings_win);
+  if (bar_visible)
+    gtk_widget_show (data->paper_top_bar);
 
   if (data->win && gtk_widget_get_window (data->win))
     {
@@ -3875,6 +4540,25 @@ screenator_take_screenshot_paper (ScreenatorData *data)
     }
   raise_icon_window (data);
   update_settings_indicator (data);
+
+  return surface;
+}
+
+/* Freeze the current screen into a temporary background.  Hiding the overlay
+ * and icon first keeps the screenshot free of Screenator's own windows. */
+void
+screenator_take_screenshot_paper (ScreenatorData *data)
+{
+  cairo_surface_t *surface;
+
+  screenator_clear_screenshot_paper (data);
+
+  surface = capture_screen_content (data, TRUE);
+
+  if (surface)
+    data->screenshot_paper = surface;
+  else
+    g_printerr ("Screenshot capture failed; using the live screen.\n");
 
   /* Let the frozen picture become visible before dismissing the real menu.
    * Otherwise the menu can disappear for one frame while the overlay is still
@@ -3887,12 +4571,121 @@ screenator_take_screenshot_paper (ScreenatorData *data)
     }
 }
 
+static gchar *
+screenshot_directory (void)
+{
+  const gchar *pictures =
+    g_get_user_special_dir (G_USER_DIRECTORY_PICTURES);
+
+  if (pictures && *pictures)
+    return g_strdup (pictures);
+
+  return g_build_filename (g_get_home_dir (), "Pictures", NULL);
+}
+
+/* F4 in Screen or Paper mode: save the current screen, including the
+ * annotations or paper page and without the floating controls, to the
+ * Pictures directory as Screenator-YYYYMMDD-HHMMSS.png. */
+void
+screenator_save_screenshot (ScreenatorData *data)
+{
+  cairo_surface_t *surface;
+  GDateTime *now;
+  gchar *directory;
+  gchar *name;
+  gchar *path;
+
+  surface = capture_screen_content (data, FALSE);
+  if (!surface)
+    {
+      g_printerr ("Screenshot capture failed; no file was saved.\n");
+      return;
+    }
+
+  directory = screenshot_directory ();
+  g_mkdir_with_parents (directory, 0755);
+
+  now = g_date_time_new_now_local ();
+  name = g_date_time_format (now, "Screenator-%Y%m%d-%H%M%S.png");
+  path = g_build_filename (directory, name, NULL);
+
+  cairo_surface_flush (surface);
+  {
+    gboolean saved =
+      cairo_surface_write_to_png (surface, path) == CAIRO_STATUS_SUCCESS;
+    GtkWidget *dialog = gtk_message_dialog_new (
+      NULL, GTK_DIALOG_MODAL,
+      saved ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR,
+      GTK_BUTTONS_OK,
+      saved ? "Screenshot saved to:\n%s" : "Could not save the screenshot to:\n%s",
+      path);
+
+    gtk_window_set_title (GTK_WINDOW (dialog),
+			  saved ? "Screenshot saved" : "Screenshot failed");
+    show_dialog_above_drawings (data, dialog);
+    gtk_dialog_run (GTK_DIALOG (dialog));
+    gtk_widget_destroy (dialog);
+  }
+
+  cairo_surface_destroy (surface);
+  g_free (path);
+  g_free (name);
+  g_date_time_unref (now);
+  g_free (directory);
+}
+
+/* Clear the selected drawing tool and make Cursor the active tool again.
+ * Cursor is represented by an empty forced_context and pen_tool 0. */
+static void
+screenator_activate_cursor_state (ScreenatorData *data)
+{
+  screenator_timer_cancel (data);
+
+  if (data->text_editor)
+    close_text_editor (data, FALSE);
+
+  screenator_paper_pan_end (data);
+  paper_finish_temporary_eraser (data);
+
+  if (screenator_any_grabbed (data))
+    release_grab (data, NULL);
+
+  data->paper_hand_tool = FALSE;
+  data->forced_context = NULL;
+  data->pen_tool = 0;
+
+  /* Drop cached per-device tool contexts as well, otherwise re-grabbing the
+   * pointer could show the previous tool's cursor while Cursor is active. */
+  if (data->devdatatable)
+    {
+      GHashTableIter it;
+      gpointer value;
+
+      g_hash_table_iter_init (&it, data->devdatatable);
+      while (g_hash_table_iter_next (&it, NULL, &value))
+	{
+	  ScreenatorDeviceData *devdata = value;
+
+	  devdata->cur_context = NULL;
+	  devdata->saved_context = NULL;
+	}
+    }
+
+  restore_paper_cursor (data);
+  paper_top_bar_update_active_tool (data);
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+}
+
 gboolean
 screenator_exit_tool (ScreenatorData *data)
 {
   GHashTableIter it;
   gpointer value;
   gboolean handled = FALSE;
+  gboolean finished_handles = FALSE;
+  gboolean had_tool;
 
   if (!data->devdatatable)
     return FALSE;
@@ -3906,11 +4699,13 @@ screenator_exit_tool (ScreenatorData *data)
 	{
 	  frame_finish (data, devdata);
 	  handled = TRUE;
+	  finished_handles = TRUE;
 	}
       else if (devdata->line_active)
 	{
 	  line_finish (data, devdata);
 	  handled = TRUE;
+	  finished_handles = TRUE;
 	}
       else if (devdata->cur_context &&
 	       devdata->cur_context->type == SCREENATOR_SHAPE &&
@@ -3919,6 +4714,7 @@ screenator_exit_tool (ScreenatorData *data)
 	{
 	  spline_finish (data, devdata);
 	  handled = TRUE;
+	  finished_handles = TRUE;
 	}
       else if (devdata->cur_context &&
 	       devdata->cur_context->type == SCREENATOR_SHAPE &&
@@ -3927,6 +4723,7 @@ screenator_exit_tool (ScreenatorData *data)
 	{
 	  star_finish (data, devdata);
 	  handled = TRUE;
+	  finished_handles = TRUE;
 	}
       else if (devdata->cur_context &&
 	       devdata->cur_context->type == SCREENATOR_SHAPE &&
@@ -3935,14 +4732,31 @@ screenator_exit_tool (ScreenatorData *data)
 	{
 	  triangle_finish (data, devdata);
 	  handled = TRUE;
+	  finished_handles = TRUE;
 	}
     }
 
-  if (!handled && screenator_any_grabbed (data))
+  /* The first Escape/right click commits the handles but keeps the tool
+   * selected.  Another Escape then exits the tool and selects Cursor. */
+  if (finished_handles)
+    return TRUE;
+
+  if (screenator_any_grabbed (data))
     {
       screenator_marker_leave (data);
       screenator_clear_screenshot_paper (data);
       release_grab (data, NULL);
+      handled = TRUE;
+    }
+
+  /* Exiting a tool always leaves the Cursor tool selected, so the next click
+   * does not start another stroke and the Cursor icon is highlighted. */
+  had_tool = data->forced_context != NULL || data->pen_tool != 0 ||
+    data->timer_active || data->paper_hand_tool;
+
+  if (handled || had_tool)
+    {
+      screenator_activate_cursor_state (data);
       handled = TRUE;
     }
 
@@ -4486,8 +5300,13 @@ gboolean on_buttonpress (GtkWidget *win,
 
   /* A dialog is modal: clicks outside it must not paint on the annotation
    * window that is visible behind it. */
-  if (data->top_dialog)
+  if (data->top_dialog || data->native_dialog_open)
     return TRUE;
+
+  if (!paper_window_event_inside (data, ev->x, ev->y))
+    return TRUE;
+
+  paper_window_transform_event (data, &ev->x, &ev->y);
 
   /* A click on the drawing area outside the quick tool grid dismisses the
    * grid and is consumed. */
@@ -4496,6 +5315,10 @@ gboolean on_buttonpress (GtkWidget *win,
       quick_menu_cancel (data);
       return TRUE;
     }
+
+  /* Crossing events can be stale after using the controls; pick the correct
+   * pointer for this press before an eraser cursor is chosen. */
+  paper_refresh_controls_hover (data);
 
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
@@ -4506,12 +5329,100 @@ gboolean on_buttonpress (GtkWidget *win,
 
   /* The text editor disables the mouse: every button is swallowed until the
    * typed text is accepted with Enter (or cancelled with Escape).  The click
-   * must not commit the text and must not reach the application below. */
+   * must not commit the text and must not reach the application below.
+   * The stylus first side button changes the text colour, and a right click
+   * cancels the text like Escape. */
   if (data->text_editor)
     {
+      if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2)
+	{
+	  apply_scroll_step (data, TRUE, TRUE);
+	  return TRUE;
+	}
+
+      if (ev->button == 3)
+	{
+	  close_text_editor (data, FALSE);
+	  return TRUE;
+	}
+
       data->text_pressed = FALSE;
       return TRUE;
     }
+
+  /* In Paper Drawing the middle mouse button and stylus side button 1 pan
+   * the paper, and the right mouse button and stylus side button 2 erase
+   * only while they are held.  This works with or without an active tool. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      if (ev->button == 2)
+	{
+	  /* With a placed shape or text selected, the stylus first side
+	   * button recolours it instead of starting a pan. */
+	  if (event_source_is_stylus ((GdkEvent *) ev) &&
+	      editable_handles_active (data))
+	    {
+	      apply_stylus_step (data, TRUE);
+	      return TRUE;
+	    }
+
+	  paper_commit_pending (data);
+	  screenator_paper_pan_start (data, 2, ev->x, ev->y);
+	  return TRUE;
+	}
+
+      if (ev->button == 3)
+	{
+	  /* While a shape is still being dragged or a placed shape or text
+	   * still shows its handles, the right button finishes it like
+	   * Escape.  Only after it is committed does it become the
+	   * temporary eraser, which keeps the selected tool. */
+	  if (editable_handles_active (data))
+	    {
+	      screenator_exit_tool (data);
+	      return TRUE;
+	    }
+
+	  if (!devdata || data->paper_eraser_active)
+	    return TRUE;
+
+	  data->paper_eraser_was_grabbed = devdata->is_grabbed;
+
+	  /* Without an active tool the window is not grabbed; take the
+	   * pointer for the duration of the eraser stroke. */
+	  if (!devdata->is_grabbed)
+	    acquire_grab (data, ev->device);
+
+	  if (!devdata->is_grabbed)
+	    return TRUE;
+
+	  paper_commit_pending (data);
+	  stroke_finish (data, ev->device);
+
+	  if (devdata->cur_context != data->default_eraser)
+	    {
+	      devdata->saved_context = devdata->cur_context;
+	      devdata->cur_context = data->default_eraser;
+	    }
+
+	  data->paper_eraser_active = TRUE;
+	  data->paper_eraser_device = ev->device;
+
+	  /* `stylus_eraser_active` tells the motion handler that the eraser is
+	   * held even when the device does not report the side button in the
+	   * motion state.  Without it a stylus would erase only at the press. */
+	  devdata->stylus_eraser_active = TRUE;
+	  set_device_cursor (data, ev->device, data->default_eraser);
+
+	  /* Fall through to the normal drawing code so the eraser starts on
+	   * this press. */
+	}
+    }
+
+  /* In the continuous view, route the stroke to the page under the
+   * pointer. */
+  if (devdata->is_grabbed && paper_continuous (data) && ev->button == 1)
+    paper_pdf_pick_page (data, ev->y);
 
   if (!devdata->is_grabbed)
     return FALSE;
@@ -4519,8 +5430,9 @@ gboolean on_buttonpress (GtkWidget *win,
   /* The right button is a dual-action button: a short click acts like Escape
    * / right click and a long press opens the mouse wheel menu.  On a stylus
    * the same applies to the second side button (button 3), which opens the
-   * Button 1 Mode menu instead. */
-  if (ev->button == 3)
+   * Button 1 Mode menu instead.  In Paper Drawing the right button is the
+   * temporary eraser instead. */
+  if (ev->button == 3 && data->paper == SCREENATOR_PAPER_NONE)
     {
       devdata->menu_button_down = TRUE;
 
@@ -4539,8 +5451,10 @@ gboolean on_buttonpress (GtkWidget *win,
     }
 
   /* The stylus first side button (button 2): a short press steps through
-   * colors or thicknesses, a long press activates the eraser. */
-  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2)
+   * colors or thicknesses, a long press activates the eraser.  In Paper
+   * Drawing this button pans instead. */
+  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
+      data->paper == SCREENATOR_PAPER_NONE)
     {
       devdata->stylus_side_button_down = TRUE;
       devdata->lastx = ev->x;
@@ -4567,7 +5481,7 @@ gboolean on_buttonpress (GtkWidget *win,
 
   /* A long press of the stylus first side button keeps the eraser active even
    * though the button is held; do not let the tool lookup replace it. */
-  if (!devdata->stylus_eraser_active &&
+  if (!devdata->stylus_eraser_active && !data->paper_eraser_active &&
       (ev->state != devdata->state ||
        devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev)))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
@@ -4677,6 +5591,7 @@ gboolean on_buttonpress (GtkWidget *win,
 		  devdata->spline_handle_drag = TRUE;
 		  devdata->spline_drag_index = index;
 		  devdata->spline_drag_out = outgoing;
+		  devdata->spline_preview_paused = TRUE;
 		  return TRUE;
 		}
 	      g_array_free (preview, TRUE);
@@ -4689,6 +5604,7 @@ gboolean on_buttonpress (GtkWidget *win,
 		   * node again (without moving) finishes the curve. */
 		  devdata->spline_node_drag = TRUE;
 		  devdata->spline_drag_index = index;
+		  devdata->spline_preview_paused = TRUE;
 		  devdata->spline_finish_pending =
 		    (index == (gint) devdata->shape_points->len - 1);
 		  devdata->spline_press_x = ev->x;
@@ -4984,17 +5900,44 @@ gboolean on_motion (GtkWidget *win,
   gint nevents;
   int i;
   gdouble pressure = 1;
+
+  if (data->top_dialog || data->native_dialog_open)
+    return TRUE;
+
+  if (!paper_window_event_inside (data, ev->x, ev->y))
+    return TRUE;
+
+  paper_window_transform_event (data, &ev->x, &ev->y);
+
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
   gboolean stylus = event_source_is_stylus ((GdkEvent *) ev);
+
+  /* Leaving the tool bar can be reported only as a motion event over the
+   * canvas.  Refresh the stale control-hover state here so the newly selected
+   * tool cursor appears as soon as the pointer moves back to the drawing
+   * area, without waiting for a click. */
+  if (data->controls_hover > 0)
+    {
+      paper_refresh_controls_hover (data);
+      paper_update_hover_cursor (data);
+    }
+
+  if (data->paper_panning)
+    {
+      screenator_paper_pan_motion (data, ev->x, ev->y);
+      return TRUE;
+    }
 
   if (!devdata->is_grabbed)
     return FALSE;
 
   /* The second side button is the Escape/menu button; moving the pen while it
-   * is held must not draw a line. */
-  if (devdata->menu_button_down ||
-      (ev->state & GDK_BUTTON3_MASK) != 0)
+   * is held must not draw a line.  In Paper Drawing the right button is the
+   * temporary eraser and must keep drawing. */
+  if (!data->paper_eraser_active &&
+      (devdata->menu_button_down ||
+       (ev->state & GDK_BUTTON3_MASK) != 0))
     {
       devdata->lastx = ev->x;
       devdata->lasty = ev->y;
@@ -5017,7 +5960,8 @@ gboolean on_motion (GtkWidget *win,
 
   /* Keep the eraser selected for as long as the first side button is held,
    * and keep the middle-button eraser for as long as that button is held. */
-  if (!devdata->stylus_eraser_active && !devdata->saved_context &&
+  if (!devdata->stylus_eraser_active && !data->paper_eraser_active &&
+      !data->paper_hand_tool && !devdata->saved_context &&
       (ev->state != devdata->state ||
        devdata->lastslave != gdk_event_get_source_device ((GdkEvent *) ev)))
     select_tool (data, ev->device, gdk_event_get_source_device ((GdkEvent *) ev), ev->state);
@@ -5187,8 +6131,7 @@ gboolean on_motion (GtkWidget *win,
 			    &new_bounds);
 
 	  gdk_rectangle_union (&old_bounds, &new_bounds, &dirty);
-	  gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-				      &dirty, 0);
+	  screenator_invalidate_rect (data, &dirty);
 	}
       return TRUE;
     }
@@ -5233,6 +6176,8 @@ gboolean on_motion (GtkWidget *win,
                                   GDK_AXIS_X, &x);
               gdk_device_get_axis(ev->device, coords[i]->axes,
                                   GDK_AXIS_Y, &y);
+
+	      paper_window_transform_event (data, &x, &y);
 
 	      draw_line (data, ev->device, devdata->lastx, devdata->lasty, x, y);
 
@@ -5280,7 +6225,21 @@ gboolean on_buttonrelease (GtkWidget *win,
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   /* get the device data for this event */
-  ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
+  ScreenatorDeviceData *devdata;
+  gdouble raw_x, raw_y;
+
+  if (data->top_dialog || data->native_dialog_open)
+    return TRUE;
+
+  raw_x = ev->x;
+  raw_y = ev->y;
+  paper_window_transform_event (data, &ev->x, &ev->y);
+
+  if (data->paper != SCREENATOR_PAPER_NONE && data->paper_eraser_active &&
+      ev->button == 3 && data->paper_eraser_device != ev->device)
+    return TRUE;
+
+  devdata = g_hash_table_lookup(data->devdatatable, ev->device);
 
   gfloat direction = 0;
   gint width = 0;
@@ -5296,9 +6255,16 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
+  if (data->paper_panning && ev->button == data->paper_pan_button)
+    {
+      screenator_paper_pan_end (data);
+      return TRUE;
+    }
+
   /* Right button: a short click performs Escape; a long press has opened the
-   * mode menu and consumes its own release. */
-  if (ev->button == 3)
+   * mode menu and consumes its own release.  In Paper Drawing it ends the
+   * temporary eraser stroke instead. */
+  if (ev->button == 3 && data->paper == SCREENATOR_PAPER_NONE)
     {
       devdata->menu_button_down = FALSE;
 
@@ -5324,12 +6290,29 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
-  if ((ev->x != devdata->lastx) ||
-      (ev->y != devdata->lasty))
-    on_motion(win, (GdkEventMotion *) ev, user_data);
+  if (paper_window_event_inside (data, raw_x, raw_y) &&
+      ((ev->x != devdata->lastx) ||
+       (ev->y != devdata->lasty)))
+    {
+      /* on_motion() transforms window coordinates itself; give it the raw
+       * release position so it is not transformed a second time. */
+      gdouble transformed_x = ev->x;
+      gdouble transformed_y = ev->y;
+
+      ev->x = raw_x;
+      ev->y = raw_y;
+      on_motion(win, (GdkEventMotion *) ev, user_data);
+      ev->x = transformed_x;
+      ev->y = transformed_y;
+    }
 
   if (!devdata->is_grabbed)
-    return FALSE;
+    {
+      /* Recover even if the grab was broken while the eraser was held. */
+      if (data->paper_eraser_active && data->paper_eraser_device == ev->device)
+	paper_finish_temporary_eraser (data);
+      return FALSE;
+    }
 
   if (ev->button == 2)
     devdata->stylus_side_button_down = FALSE;
@@ -5517,7 +6500,7 @@ gboolean on_buttonrelease (GtkWidget *win,
 			  devdata->shape_x1, devdata->shape_y1);
 	      cairo_destroy (cr);
 
-	      data->modified = 1;
+	      screenator_mark_modified (data);
 	      data->painted = 1;
 	    }
 
@@ -5526,8 +6509,10 @@ gboolean on_buttonrelease (GtkWidget *win,
 			    devdata->shape_x1, devdata->shape_y1,
 			    &bounds);
 	  if (bounds.width > 0 && bounds.height > 0)
-	    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-					&bounds, 0);
+	    {
+	      screenator_paper_mark_ink (data, &bounds);
+	      screenator_invalidate_rect (data, &bounds);
+	    }
 	}
       return TRUE;
     }
@@ -5545,6 +6530,9 @@ gboolean on_buttonrelease (GtkWidget *win,
     draw_arrow (data, ev->device, ev->x, ev->y, width, direction);
 
   coord_list_free (data, ev->device);
+
+  if (data->paper_eraser_active && data->paper_eraser_device == ev->device)
+    paper_finish_temporary_eraser (data);
 
   return TRUE;
 }
@@ -5577,11 +6565,28 @@ void on_mainapp_selection_get (GtkWidget          *widget,
   else if (action == GA_RELOAD)
     setup_input_devices(data);
   else if (action == GA_QUIT)
-    gtk_main_quit ();
+    screenator_request_quit (data);
   else if (action == GA_UNDO)
-    undo_drawing (data);
+    screenator_undo (data);
   else if (action == GA_REDO)
-    redo_drawing (data);
+    screenator_redo (data);
+  else if (action == GA_OPENPDF)
+    {
+      gchar *handoff =
+	g_build_filename (g_get_user_runtime_dir (),
+			  "screenator-open-pdf", NULL);
+      gchar *path = NULL;
+
+      if (g_file_get_contents (handoff, &path, NULL, NULL))
+	{
+	  g_strstrip (path);
+	  if (*path)
+	    screenator_open_pdf_path (data, path);
+	  g_free (path);
+	  g_remove (handoff);
+	}
+      g_free (handoff);
+    }
   else
     uri = "NOK";
 
@@ -5713,6 +6718,20 @@ on_show_hints (GtkMenuItem *menuitem, gpointer user_data)
   show_hints_dialog ((ScreenatorData *) user_data, FALSE);
 }
 
+static void
+on_quit (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  screenator_request_quit ((ScreenatorData *) user_data);
+}
+
+static void
+on_action_screenshot (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  screenator_save_screenshot ((ScreenatorData *) user_data);
+}
+
 
 void on_opacity_bigger(GtkMenuItem *menuitem,
 		       gpointer     user_data)
@@ -5735,14 +6754,14 @@ void on_undo(GtkMenuItem *menuitem,
 	     gpointer     user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  undo_drawing (data);
+  screenator_undo (data);
 }
 
 void on_redo(GtkMenuItem *menuitem,
 	     gpointer     user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  redo_drawing (data);
+  screenator_redo (data);
 }
 
 
@@ -5891,9 +6910,10 @@ void on_about(GtkMenuItem *menuitem,
 
     dialog = build_about_dialog ();
 
-    /* A borderless popup, like the other dialogs, but without their focus
-     * stealing when it maps. */
+    /* A popup above the drawings, without the usual focus stealing when it
+     * maps, but with the same title bar and border as the other dialogs. */
     make_dialog_popup (dialog);
+    dialog_install_titlebar (dialog);
     gtk_widget_add_events (dialog, GDK_ENTER_NOTIFY_MASK |
 				   GDK_BUTTON_PRESS_MASK);
     g_signal_connect (dialog, "map-event",
@@ -6202,6 +7222,7 @@ apply_eraser_size (ScreenatorData *data, guint width)
 
   apply_pen_settings (data);
   update_eraser_cursor (data);
+  paper_top_bar_update_images (data);
 
   /* The cursor is attached to the device grab, so grabbing again is the only
    * way to replace it.  Do that right away, otherwise the new eraser cursor
@@ -6249,6 +7270,19 @@ cycle_eraser_size (ScreenatorData *data, gboolean down)
   apply_eraser_size (data, eraser_widths[current]);
 }
 
+/* Drop a Custom colour dialog that is still waiting for the menu to close.
+ * Applying another colour first means the chooser must not appear. */
+static void
+cancel_pending_custom_color (ScreenatorData *data)
+{
+  if (data->custom_color_idle_id)
+    {
+      g_source_remove (data->custom_color_idle_id);
+      data->custom_color_idle_id = 0;
+      data->custom_color_pending = FALSE;
+    }
+}
+
 /* Apply a line colour exactly like the Line Color menu does. */
 static void
 apply_line_color (ScreenatorData *data, const gchar *name)
@@ -6257,6 +7291,8 @@ apply_line_color (ScreenatorData *data, const gchar *name)
 
   if (!name || !gdk_rgba_parse (&color, name))
     return;
+
+  cancel_pending_custom_color (data);
 
   /* Remember the hue (opacity is a separate setting). */
   data->pen_color.red = color.red;
@@ -6268,6 +7304,7 @@ apply_line_color (ScreenatorData *data, const gchar *name)
   update_settings_indicator (data);
   update_active_frame_colors (data);
   invalidate_annotation_window (data);
+  paper_top_bar_update_images (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -6279,6 +7316,8 @@ apply_shape_fill (ScreenatorData *data, const gchar *name)
 
   if (!name)
     return;
+
+  cancel_pending_custom_color (data);
 
   if (g_ascii_strcasecmp (name, "none") == 0)
     {
@@ -6293,6 +7332,7 @@ apply_shape_fill (ScreenatorData *data, const gchar *name)
 
   update_settings_indicator (data);
   invalidate_annotation_window (data);
+  paper_top_bar_update_images (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -6309,7 +7349,107 @@ typedef struct
 {
   ScreenatorData *data;
   gboolean        fill;
+  GtkWidget      *custom_item;
 } CustomColorRequest;
+
+/* Put the colour radio group back on the colour that is actually selected.
+ * The custom entry is part of the group, so this also covers a cancelled
+ * chooser and keeps a preset from looking selected for a custom colour. */
+static void
+restore_color_menu_selection (gboolean fill, GtkWidget *custom_item,
+			      ScreenatorData *data)
+{
+  GSList *group, *l;
+  GtkWidget *match = NULL;
+  guint i;
+
+  if (!custom_item || !gtk_widget_get_parent (custom_item))
+    return;
+
+  group = gtk_radio_menu_item_get_group (
+    GTK_RADIO_MENU_ITEM (custom_item));
+
+  if (fill)
+    {
+      if (!data->shape_fill_enabled)
+	{
+	  for (l = group; l; l = l->next)
+	    {
+	      const gchar *name = g_object_get_data (G_OBJECT (l->data),
+						     "icon-shape-fill-name");
+
+	      if (name && g_ascii_strcasecmp (name, "none") == 0)
+		{
+		  match = GTK_WIDGET (l->data);
+		  break;
+		}
+	    }
+	}
+      else
+	{
+	  for (i = 0; i < G_N_ELEMENTS (fill_colors) && !match; i++)
+	    {
+	      GdkRGBA color;
+
+	      if (g_ascii_strcasecmp (fill_colors[i].name, "none") == 0 ||
+		  !gdk_rgba_parse (&color, fill_colors[i].name) ||
+		  data->shape_fill_color.red != color.red ||
+		  data->shape_fill_color.green != color.green ||
+		  data->shape_fill_color.blue != color.blue)
+		continue;
+
+	      for (l = group; l; l = l->next)
+		{
+		  const gchar *name = g_object_get_data (G_OBJECT (l->data),
+							 "icon-shape-fill-name");
+
+		  if (g_strcmp0 (name, fill_colors[i].name) == 0)
+		    {
+		      match = GTK_WIDGET (l->data);
+		      break;
+		    }
+		}
+	    }
+	}
+    }
+  else
+    {
+      for (i = 0; i < G_N_ELEMENTS (line_colors) && !match; i++)
+	{
+	  GdkRGBA color;
+
+	  if (!gdk_rgba_parse (&color, line_colors[i].name) ||
+	      data->pen_color.red != color.red ||
+	      data->pen_color.green != color.green ||
+	      data->pen_color.blue != color.blue)
+	    continue;
+
+	  for (l = group; l; l = l->next)
+	    {
+	      const gchar *name = g_object_get_data (G_OBJECT (l->data),
+						     "icon-color-name");
+
+	      if (g_strcmp0 (name, line_colors[i].name) == 0)
+		{
+		  match = GTK_WIDGET (l->data);
+		  break;
+		}
+	    }
+	}
+    }
+
+  if (!match)
+    match = custom_item;
+
+  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (match), TRUE);
+}
+
+static gboolean
+clear_custom_color_pending (gpointer user_data)
+{
+  ((ScreenatorData *) user_data)->custom_color_pending = FALSE;
+  return G_SOURCE_REMOVE;
+}
 
 /* Show the colour chooser after the menu has closed, so the menu cannot stay
  * open behind the modal dialog. */
@@ -6322,6 +7462,8 @@ custom_color_idle (gpointer user_data)
   GtkWidget *dialog;
   GdkRGBA color = fill ? data->custom_fill_color : data->custom_line_color;
   gint response;
+
+  data->custom_color_idle_id = 0;
 
   dialog = gtk_color_chooser_dialog_new (fill ? "Shapes Fill Color"
 					 : "Line Color", NULL);
@@ -6356,8 +7498,15 @@ custom_color_idle (gpointer user_data)
     }
 
   gtk_widget_destroy (dialog);
-  g_free (request);
   schedule_tray_menu_refresh (data);
+
+  restore_color_menu_selection (fill, request->custom_item, data);
+  g_object_unref (request->custom_item);
+  request->custom_item = NULL;
+
+  /* Keep ignoring activations until the event that closed the dialog has been
+   * fully processed, so a duplicate radio activation cannot reopen it. */
+  g_idle_add (clear_custom_color_pending, data);
 
   return G_SOURCE_REMOVE;
 }
@@ -6368,11 +7517,20 @@ on_icon_custom_color (GtkMenuItem *menuitem, gpointer user_data)
   ScreenatorData *data = (ScreenatorData *) user_data;
   const gchar *target =
     g_object_get_data (G_OBJECT (menuitem), "icon-custom-target");
-  CustomColorRequest *request = g_new0 (CustomColorRequest, 1);
+  CustomColorRequest *request;
+
+  if (data->custom_color_pending)
+    return;
+
+  data->custom_color_pending = TRUE;
+  request = g_new0 (CustomColorRequest, 1);
 
   request->data = data;
   request->fill = g_strcmp0 (target, "fill") == 0;
-  g_idle_add (custom_color_idle, request);
+  request->custom_item = g_object_ref (GTK_WIDGET (menuitem));
+  data->custom_color_idle_id =
+    g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, custom_color_idle, request,
+		     g_free);
 }
 
 /* Index of the current colour in a table, or the table size when the current
@@ -6476,6 +7634,32 @@ marker_tool_active (ScreenatorData *data)
 	  data->forced_context == data->default_marker);
 }
 
+/* TRUE while a placed shape, text or spline still shows its editing handles.
+ * In that state the wheel and stylus button 1 recolour the object instead of
+ * scrolling the paper. */
+static gboolean
+editable_handles_active (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return FALSE;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->shape_active || devdata->star_active ||
+	  devdata->triangle_active || devdata->frame_active ||
+	  devdata->line_active)
+	return TRUE;
+    }
+
+  return FALSE;
+}
+
 /* Apply one wheel notch to the setting that belongs to the active tool: the
  * eraser size for the eraser, the shape fill colour over the Paint Bucket and
  * the line colour for every other tool.  Shared by the mouse wheel and the
@@ -6523,6 +7707,7 @@ cycle_line_thickness (ScreenatorData *data, gboolean down)
 
   data->pen_width = widths[current];
   apply_pen_settings (data);
+  paper_top_bar_update_images (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -6532,11 +7717,32 @@ cycle_line_thickness (ScreenatorData *data, gboolean down)
 static void
 apply_stylus_step (ScreenatorData *data, gboolean down)
 {
+  if (editable_handles_active (data))
+    {
+      apply_scroll_step (data, down, TRUE);
+      return;
+    }
+
   if (eraser_tool_active (data))
     cycle_eraser_size (data, down);
   else if (marker_tool_active (data))
     apply_scroll_step (data, down, TRUE);
   else if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
+    cycle_line_thickness (data, down);
+  else
+    apply_scroll_step (data, down, TRUE);
+}
+
+/* Outside Paper Drawing the mouse wheel keeps its setting action: colour,
+ * thickness, or eraser size. */
+static void
+paper_cycle_setting (ScreenatorData *data, gboolean down)
+{
+  if (eraser_tool_active (data))
+    cycle_eraser_size (data, down);
+  else if (marker_tool_active (data))
+    apply_scroll_step (data, down, TRUE);
+  else if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
     cycle_line_thickness (data, down);
   else
     apply_scroll_step (data, down, TRUE);
@@ -6555,10 +7761,17 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
   gint64 now;
   gboolean down;
 
-  if (data->top_dialog)
+  if (data->top_dialog || data->native_dialog_open)
     return TRUE;
 
-  if (!screenator_any_grabbed (data))
+  if (data->quick_menu)
+    return TRUE;
+
+  /* In Paper Drawing the wheel scrolls the pages.  Outside Paper Drawing it
+   * keeps the old tool-only behaviour.  While text is being typed, the wheel
+   * changes the text colour instead. */
+  if (data->paper == SCREENATOR_PAPER_NONE && !data->text_editor_active &&
+      !screenator_any_grabbed (data))
     return FALSE;
 
   if (ev->direction == GDK_SCROLL_UP)
@@ -6588,16 +7801,17 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  /* The Eraser tool always uses the wheel for its size, whichever scroll
-   * setting is selected. */
-  if (eraser_tool_active (data))
-    cycle_eraser_size (data, down);
-  else if (marker_tool_active (data))
+  if (data->text_editor_active)
     apply_scroll_step (data, down, TRUE);
-  else if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
-    cycle_line_thickness (data, down);
+  else if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      if (editable_handles_active (data))
+	apply_scroll_step (data, down, TRUE);
+      else
+	screenator_paper_scroll (data, down ? 1 : -1);
+    }
   else
-    apply_scroll_step (data, down, TRUE);
+    paper_cycle_setting (data, down);
 
   return TRUE;
 }
@@ -6686,53 +7900,5347 @@ paper_restore_focus (ScreenatorData *data)
 #endif
 }
 
-/* Show one of the screen papers, or turn it off again.  The paper is drawn on
- * the annotation window below the annotations, so the window has to stay
- * visible and above the other windows even when painting mode is off. */
-static void
-set_screen_paper (ScreenatorData *data, ScreenatorPaperType paper)
+/* ------------------------------------------------------------------
+ * Paper Drawing
+ *
+ * Plain, Ruled, Graph and PDF are separate documents.  Selecting a type
+ * switches to Paper Drawing, and switching away discards the old drawings
+ * after the save prompt.  A PDF document is rendered with
+ * poppler and can be scrolled, panned and annotated page by page.
+ * ------------------------------------------------------------------ */
+
+static void paper_switch_to (ScreenatorData *data, ScreenatorPaperType type);
+static void paper_ensure_background (ScreenatorData *data,
+				     ScreenatorPaperDocument *doc,
+				     guint index, ScreenatorPaperPage *page);
+static void draw_paper_page (ScreenatorData *data, cairo_t *cr);
+
+static ScreenatorPaperDocument *
+paper_document (ScreenatorData *data, ScreenatorPaperType type)
 {
-  if (paper != SCREENATOR_PAPER_NONE)
-    screenator_clear_screenshot_paper (data);
+  if (type <= SCREENATOR_PAPER_NONE || type > SCREENATOR_PAPER_PDF)
+    return NULL;
 
-  data->hide_drawings = FALSE;
-  data->paper = paper;
-  update_paper_shortcuts (data, paper != SCREENATOR_PAPER_NONE);
+  return data->paper_docs[type];
+}
 
-  update_window_shape (data);
+static ScreenatorPaperDocument *
+paper_ensure_document (ScreenatorData *data, ScreenatorPaperType type)
+{
+  ScreenatorPaperDocument *doc;
 
-  if (gtk_widget_get_window (data->win))
+  if (type <= SCREENATOR_PAPER_NONE || type > SCREENATOR_PAPER_PDF)
+    return NULL;
+
+  doc = data->paper_docs[type];
+  if (!doc)
     {
-      GdkRectangle rect = { 0, 0, data->width, data->height };
-
-      gdk_window_invalidate_rect (gtk_widget_get_window (data->win), &rect, 0);
+      doc = g_new0 (ScreenatorPaperDocument, 1);
+      doc->type = type;
+      doc->pages = g_array_new (FALSE, FALSE, sizeof (ScreenatorPaperPage));
+      doc->pdf_page_tops = g_array_new (FALSE, FALSE, sizeof (gint));
+      doc->pdf_page_heights = g_array_new (FALSE, FALSE, sizeof (gint));
+      doc->page = 0;
+      data->paper_docs[type] = doc;
     }
 
-  if (paper != SCREENATOR_PAPER_NONE)
-    {
-      if (data->hidden)
-	show_window (data);
-      else
-	{
-	  if (gtk_widget_get_window (data->win))
-	    gdk_window_raise (gtk_widget_get_window (data->win));
-	  raise_icon_window (data);
-	}
+  return doc;
+}
 
-      /* The paper is the active window: it keeps the keyboard, so typing does
-       * not reach the application below. */
-      paper_take_focus (data);
+static ScreenatorPaperDocument *
+paper_active_document (ScreenatorData *data)
+{
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    return NULL;
+
+  return data->paper_docs[data->paper];
+}
+
+/* TRUE when the active paper is shown as one continuous vertical document.
+ * All paper types use the same page-top/height layout; only PDF pages have a
+ * rendered background. */
+static gboolean
+paper_continuous (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+
+  if (!doc || data->paper == SCREENATOR_PAPER_NONE ||
+      !data->paper_continuous_scroll || doc->pdf_stack_height <= 0)
+    return FALSE;
+
+  if (doc->type == SCREENATOR_PAPER_PDF)
+    return doc->pdf_loaded;
+
+  return doc->pages && doc->pages->len > 0;
+}
+
+static ScreenatorPaperPage *
+paper_current_page (ScreenatorPaperDocument *doc)
+{
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return NULL;
+
+  if (doc->page >= doc->pages->len)
+    doc->page = doc->pages->len - 1;
+
+  return &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
+}
+
+/* Convert the paper size setting to canvas pixels and PDF points. */
+void
+paper_size_dimensions (ScreenatorData *data, gint *canvas_width,
+		       gint *canvas_height, gdouble *pdf_width,
+		       gdouble *pdf_height)
+{
+  gdouble mm_width = 0, mm_height = 0;
+
+  if (data->paper_size == SCREENATOR_PAPER_SIZE_A4_PORTRAIT)
+    {
+      mm_width = 210.0;
+      mm_height = 297.0;
+    }
+  else if (data->paper_size == SCREENATOR_PAPER_SIZE_A4_LANDSCAPE)
+    {
+      mm_width = 297.0;
+      mm_height = 210.0;
+    }
+  else if (data->paper_size == SCREENATOR_PAPER_SIZE_CUSTOM)
+    {
+      mm_width = CLAMP (data->paper_custom_width_mm, 10.0, 1000.0);
+      mm_height = CLAMP (data->paper_custom_height_mm, 10.0, 1000.0);
     }
   else
     {
-      paper_restore_focus (data);
-
-      if (!data->painted && !screenator_any_grabbed (data))
-	hide_window (data);
+      /* Screen: use the screen pixels and keep the old PDF behaviour where
+       * one screen pixel is one PDF point. */
+      *canvas_width = MAX (1, (gint) data->width);
+      *canvas_height = MAX (1, (gint) data->height);
+      *pdf_width = *canvas_width;
+      *pdf_height = *canvas_height;
+      return;
     }
+
+  *canvas_width = MAX (1, (gint) round (mm_width * 96.0 / 25.4));
+  *canvas_height = MAX (1, (gint) round (mm_height * 96.0 / 25.4));
+  *pdf_width = mm_width * 72.0 / 25.4;
+  *pdf_height = mm_height * 72.0 / 25.4;
+}
+
+static ScreenatorPaperPage
+paper_new_page (ScreenatorData *data, ScreenatorPaperType type)
+{
+  ScreenatorPaperPage page;
+
+  memset (&page, 0, sizeof (page));
+  page.style = type;
+  page.vector_valid = TRUE;
+
+  if (type != SCREENATOR_PAPER_PDF)
+    paper_size_dimensions (data, &page.canvas_width, &page.canvas_height,
+			   &page.pdf_width, &page.pdf_height);
+
+  return page;
+}
+
+static void
+paper_page_clear (ScreenatorPaperPage *page)
+{
+  if (!page)
+    return;
+
+  if (page->annotations)
+    cairo_surface_destroy (page->annotations);
+  if (page->background)
+    cairo_surface_destroy (page->background);
+  if (page->vector)
+    cairo_surface_destroy (page->vector);
+
+  memset (page, 0, sizeof (*page));
+}
+
+/* Free the pages held by an undo or redo stack. */
+static void
+paper_page_action_stack_clear (GArray *stack)
+{
+  guint i;
+
+  if (!stack)
+    return;
+
+  for (i = 0; i < stack->len; i++)
+    paper_page_clear (
+      &g_array_index (stack, ScreenatorPageAction, i).page);
+
+  g_array_set_size (stack, 0);
+}
+
+/* Page history belongs to one paper document.  It is discarded whenever the
+ * active document is replaced, reset or resized. */
+void
+screenator_page_history_clear (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  paper_page_action_stack_clear (data->page_undo_stack);
+  paper_page_action_stack_clear (data->page_redo_stack);
+}
+
+/* A new drawing action branches the timeline, so a pending page redo can no
+ * longer be replayed. */
+void
+screenator_page_redo_clear (ScreenatorData *data)
+{
+  if (data)
+    paper_page_action_stack_clear (data->page_redo_stack);
+}
+
+static void
+paper_document_clear_pages (ScreenatorPaperDocument *doc)
+{
+  guint i;
+
+  if (!doc || !doc->pages)
+    return;
+
+  for (i = 0; i < doc->pages->len; i++)
+    paper_page_clear (&g_array_index (doc->pages, ScreenatorPaperPage, i));
+
+  g_array_set_size (doc->pages, 0);
+  if (doc->pdf_page_tops)
+    g_array_set_size (doc->pdf_page_tops, 0);
+  if (doc->pdf_page_heights)
+    g_array_set_size (doc->pdf_page_heights, 0);
+  doc->pdf_stack_width = 0;
+  doc->pdf_stack_height = 0;
+  doc->pdf_scroll_y = 0;
+  doc->page = 0;
+  doc->modified = FALSE;
+}
+
+/* Commit an editable shape or a stroke that is still in progress before the
+ * active drawing layer is swapped, so it is not painted onto the next page. */
+static void
+paper_commit_pending (ScreenatorData *data)
+{
+  text_editor_finish (data);
+  stroke_finish_all (data);
+  star_finish_all (data);
+  triangle_finish_all (data);
+  frame_finish_all (data);
+  line_finish_all (data);
+  spline_cancel_all (data);
+}
+
+static void
+paper_ensure_annotations (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			  guint index, ScreenatorPaperPage *page)
+{
+  gint width, height;
+
+  if (!page || page->annotations)
+    return;
+
+  if (page->style == SCREENATOR_PAPER_PDF)
+    {
+      paper_ensure_background (data, doc, index, page);
+
+      if (page->background)
+	{
+	  width = page->background_width;
+	  height = page->background_height;
+	  page->canvas_width = width;
+	  page->canvas_height = height;
+	}
+      else
+	{
+	  /* The rendered background is still loading.  Use the page size
+	   * computed by the layout, not the screen size. */
+	  width = page->canvas_width > 0 ? page->canvas_width
+	    : (gint) data->width;
+	  height = page->canvas_height > 0 ? page->canvas_height
+	    : (gint) data->height;
+	}
+    }
+  else
+    {
+      if (!page->canvas_width || !page->canvas_height)
+	paper_size_dimensions (data, &page->canvas_width,
+			       &page->canvas_height,
+			       &page->pdf_width, &page->pdf_height);
+      width = page->canvas_width;
+      height = page->canvas_height;
+    }
+
+  page->annotations = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+						  width, height);
+}
+
+static void
+paper_store_continuous_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			     guint index, ScreenatorPaperPage *page,
+			     const GdkRectangle *area)
+{
+  gint top, height, page_y, origin_x, sx0, sx1, sy0, sy1;
+  cairo_operator_t op;
+  cairo_t *cr;
+
+  if (!page->canvas_width || !page->canvas_height || !page->painted)
+    return;
+
+  top = g_array_index (doc->pdf_page_tops, gint, index);
+  height = g_array_index (doc->pdf_page_heights, gint, index);
+  page_y = top - doc->pdf_scroll_y;
+  origin_x = page->style == SCREENATOR_PAPER_PDF
+    ? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+
+  sx0 = MAX (0, origin_x);
+  sx1 = MIN ((gint) data->width, origin_x + page->canvas_width);
+  sy0 = MAX (0, page_y);
+  sy1 = MIN (paper_view_height (data), page_y + height);
+
+  if (area)
+    {
+      sx0 = MAX (sx0, area->x);
+      sy0 = MAX (sy0, area->y);
+      sx1 = MIN (sx1, area->x + area->width);
+      sy1 = MIN (sy1, area->y + area->height);
+    }
+
+  if (sx1 <= sx0 || sy1 <= sy0)
+    return;
+
+  paper_ensure_annotations (data, doc, index, page);
+
+  op = CAIRO_OPERATOR_SOURCE;
+
+  cr = cairo_create (page->annotations);
+  cairo_rectangle (cr, sx0 - origin_x, sy0 - page_y,
+		   sx1 - sx0, sy1 - sy0);
+  cairo_clip (cr);
+  cairo_set_operator (cr, op);
+  cairo_set_source_surface (cr, data->backbuffer, -origin_x, -page_y);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+
+  page->painted = TRUE;
+}
+
+static void
+paper_store_continuous_pages (ScreenatorData *data,
+			      ScreenatorPaperDocument *doc)
+{
+  gint first, last, i;
+
+  if (!doc || !doc->pages || !doc->pdf_page_tops ||
+      !doc->pdf_page_heights)
+    return;
+
+  /* Store the whole visible region of every visible page.  The drawing
+   * backbuffer is a composite of all visible pages, so copying only one
+   * recorded stroke rectangle can otherwise leave holes where another
+   * element (text, shape, bucket fill) was drawn in the same session. */
+  first = paper_pdf_page_at (doc, doc->pdf_scroll_y);
+  last = paper_pdf_page_at (doc, doc->pdf_scroll_y +
+			    MAX (0, paper_view_height (data) - 1));
+
+  if (first > last)
+    {
+      i = first;
+      first = last;
+      last = i;
+    }
+
+  for (i = first; i <= last && i < (gint) doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+
+      paper_store_continuous_page (data, doc, (guint) i, page, NULL);
+    }
+
+  data->paper_pending_ink_valid = FALSE;
+}
+
+static void
+paper_store_active_page (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page = paper_current_page (doc);
+  gboolean profile = screenator_profile_enabled ();
+  gint64 profile_start = profile ? g_get_monotonic_time () : 0;
+
+  if (!page)
+    return;
+
+  /* Nothing has been drawn since the last store.  Scrolling or switching
+   * pages must not copy the whole active layer in that case. */
+  if (!data->paper_page_dirty && !data->paper_pending_ink_valid)
+    return;
+
+  if (paper_continuous (data))
+    {
+      paper_store_continuous_pages (data, doc);
+      data->paper_page_dirty = FALSE;
+      return;
+    }
+
+  paper_ensure_annotations (data, doc, doc->page, page);
+
+  /* Replace the visible part of the full-page annotation layer.  Source over
+   * the clipped rectangle keeps drawings outside the viewport. */
+  {
+    gint origin_x, origin_y;
+    cairo_t *cr;
+
+    paper_page_origin (data, page, &origin_x, &origin_y);
+    cr = cairo_create (page->annotations);
+    cairo_rectangle (cr, page->view_x - origin_x, page->view_y - origin_y,
+		     data->width, data->height);
+    cairo_clip (cr);
+    cairo_set_source_surface (cr, data->backbuffer,
+			      page->view_x - origin_x,
+			      page->view_y - origin_y);
+    cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+    cairo_paint (cr);
+    cairo_destroy (cr);
+  }
+
+  page->painted = data->painted;
+  data->paper_page_dirty = FALSE;
+
+  if (profile)
+    g_printerr ("PROFILE store %.2f ms continuous=%d dirty=%d\n",
+		(g_get_monotonic_time () - profile_start) / 1000.0,
+		paper_continuous (data) ? 1 : 0,
+		data->paper_page_dirty ? 1 : 0);
+}
+
+#ifdef HAVE_POPPLER_GLIB
+/* PDF pages are rendered on a worker thread, like Xournal++'s render jobs, so
+ * scrolling into a page that has not been rendered yet does not freeze the
+ * window.  The page shows a loading placeholder until the job finishes. */
+typedef struct
+{
+  ScreenatorData *data;
+  PopplerDocument *document;
+  guint index;
+  guint serial;
+  gint screen_width;
+  gint pixel_width;
+  gint pixel_height;
+  cairo_surface_t *surface;
+} PaperPdfRenderJob;
+
+static GThreadPool *paper_pdf_render_pool;
+static GMutex paper_pdf_render_mutex;
+static gsize paper_pdf_pool_ready;
+
+static gboolean
+paper_pdf_page_visible (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			guint index)
+{
+  gint top, height, y;
+
+  if (!data || !doc || data->paper != SCREENATOR_PAPER_PDF ||
+      index >= doc->pages->len)
+    return FALSE;
+
+  if (!paper_continuous (data))
+    return (gint) doc->page == (gint) index;
+
+  if (!doc->pdf_page_tops || !doc->pdf_page_heights ||
+      index >= doc->pdf_page_tops->len)
+    return FALSE;
+
+  top = g_array_index (doc->pdf_page_tops, gint, index);
+  height = g_array_index (doc->pdf_page_heights, gint, index);
+  y = top - doc->pdf_scroll_y;
+
+  return y + height > 0 && y < paper_view_height (data);
+}
+
+static gboolean
+paper_pdf_render_apply (gpointer user_data)
+{
+  PaperPdfRenderJob *job = user_data;
+  ScreenatorData *data = job->data;
+  ScreenatorPaperDocument *doc = NULL;
+  ScreenatorPaperPage *page;
+
+  if (data && data->paper == SCREENATOR_PAPER_PDF)
+    doc = data->paper_docs[SCREENATOR_PAPER_PDF];
+
+  if (doc && doc->pdf_document == job->document &&
+      job->index < doc->pages->len)
+    {
+      page = &g_array_index (doc->pages, ScreenatorPaperPage, job->index);
+
+      if (data->paper_saving)
+	{
+	  /* The exporter renders pages synchronously.  Do not let a background
+	   * result modify/evict page data while the PDF is being written. */
+	  if (page->pdf_render_serial == job->serial)
+	    page->pdf_render_pending = FALSE;
+	  if (job->surface)
+	    {
+	      cairo_surface_destroy (job->surface);
+	      job->surface = NULL;
+	    }
+	  g_object_unref (job->document);
+	  g_free (job);
+	  return G_SOURCE_REMOVE;
+	}
+
+      if (page->pdf_render_serial == job->serial)
+	{
+	  page->pdf_render_pending = FALSE;
+
+	  if (!page->background &&
+	      data->pdf_render_serial != (gint) job->serial &&
+	      paper_pdf_page_visible (data, doc, job->index))
+	    {
+	      /* Serial changed while the page was visible.  Trigger a repaint so
+	       * the page schedules a fresh render. */
+	      paper_background_invalidate (data);
+	      paper_repaint (data);
+	    }
+	}
+
+      if (job->surface && !page->background &&
+	  page->pdf_render_serial == job->serial &&
+	  data->pdf_render_serial == (gint) job->serial)
+	{
+	  gint old_width = page->canvas_width;
+	  gint old_height = page->canvas_height;
+
+	  /* Annotations may have been recorded before the first background
+	   * render established the final page size.  Keep their vector form
+	   * and scale it to the new canvas instead of leaving it behind. */
+	  if (old_width > 0 && old_height > 0 &&
+	      (old_width != job->pixel_width ||
+	       old_height != job->pixel_height))
+	    {
+	      paper_scale_vector_surface (page, job->pixel_width,
+					  job->pixel_height, FALSE);
+	      if (page->annotations)
+		{
+		  cairo_surface_t *scaled =
+		    resize_surface_scale (page->annotations,
+					  job->pixel_width,
+					  job->pixel_height);
+
+		  cairo_surface_destroy (page->annotations);
+		  page->annotations = scaled;
+		}
+
+	      page->view_x = (gint) round ((gdouble) page->view_x *
+					   job->pixel_width / old_width);
+	      page->view_y = (gint) round ((gdouble) page->view_y *
+					   job->pixel_height / old_height);
+	    }
+
+	  page->background = job->surface;
+	  job->surface = NULL;
+	  page->background_width = job->pixel_width;
+	  page->background_height = job->pixel_height;
+	  page->canvas_width = job->pixel_width;
+	  page->canvas_height = job->pixel_height;
+	  page->pdf_width = job->pixel_width;
+	  page->pdf_height = job->pixel_height;
+	  page->background_stamp = ++paper_page_background_clock;
+	  paper_trim_page_backgrounds (doc);
+
+	  if (paper_pdf_page_visible (data, doc, job->index))
+	    {
+	      paper_background_invalidate (data);
+	      paper_repaint (data);
+	    }
+	}
+    }
+
+  if (job->surface)
+    cairo_surface_destroy (job->surface);
+  g_object_unref (job->document);
+  g_free (job);
+  return G_SOURCE_REMOVE;
+}
+
+static void
+paper_pdf_render_worker (gpointer user_data, gpointer pool_data)
+{
+  PaperPdfRenderJob *job = user_data;
+  PopplerPage *pdf_page = NULL;
+  cairo_t *cr;
+  gdouble width = 0, height = 0, scale;
+  cairo_surface_t *surface = NULL;
+
+  (void) pool_data;
+
+  /* A newer view or document has superseded this request.  Do not spend time
+   * rendering a page that will only be discarded. */
+  if ((guint) g_atomic_int_get (&job->data->pdf_render_serial) != job->serial)
+    {
+      job->surface = NULL;
+      g_idle_add (paper_pdf_render_apply, job);
+      return;
+    }
+
+  g_mutex_lock (&paper_pdf_render_mutex);
+  pdf_page = poppler_document_get_page (job->document, job->index);
+  if (pdf_page)
+    {
+      poppler_page_get_size (pdf_page, &width, &height);
+      scale = width > 0 ? (gdouble) job->screen_width / width : 1.0;
+      if (scale <= 0)
+	scale = 1.0;
+      scale = MIN (scale, 4.0);
+
+      job->pixel_width = MAX (1, (gint) ceil (width * scale));
+      job->pixel_height = MAX (1, (gint) ceil (height * scale));
+
+      surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+					    job->pixel_width, job->pixel_height);
+      if (cairo_surface_status (surface) == CAIRO_STATUS_SUCCESS)
+	{
+	  cr = cairo_create (surface);
+	  cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+	  cairo_paint (cr);
+	  cairo_scale (cr, scale, scale);
+	  poppler_page_render (pdf_page, cr);
+	  cairo_destroy (cr);
+	}
+      else
+	{
+	  cairo_surface_destroy (surface);
+	  surface = NULL;
+	}
+
+      g_object_unref (pdf_page);
+    }
+  g_mutex_unlock (&paper_pdf_render_mutex);
+
+  job->surface = surface;
+  g_idle_add (paper_pdf_render_apply, job);
+}
+
+static void
+paper_pdf_render_init (void)
+{
+  if (g_once_init_enter (&paper_pdf_pool_ready))
+    {
+      g_mutex_init (&paper_pdf_render_mutex);
+      paper_pdf_render_pool = g_thread_pool_new (paper_pdf_render_worker,
+						 NULL, 1, FALSE, NULL);
+      g_once_init_leave (&paper_pdf_pool_ready, 1);
+    }
+}
+
+static void
+paper_render_pdf_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		       guint index, ScreenatorPaperPage *page)
+{
+  PaperPdfRenderJob *job;
+
+  if (!doc || !doc->pdf_document || !page || page->background ||
+      page->pdf_render_pending || data->paper_saving)
+    return;
+
+  if (index >= (guint) doc->pdf_page_count)
+    return;
+
+  paper_pdf_render_init ();
+
+  if (!paper_pdf_render_pool)
+    return;
+
+  job = g_new0 (PaperPdfRenderJob, 1);
+  job->data = data;
+  job->document = g_object_ref ((PopplerDocument *) doc->pdf_document);
+  job->index = index;
+  job->serial = (guint) g_atomic_int_get (&data->pdf_render_serial);
+  job->screen_width = (gint) data->width;
+
+  page->pdf_render_pending = TRUE;
+  page->pdf_render_serial = job->serial;
+
+  if (!g_thread_pool_push (paper_pdf_render_pool, job, NULL))
+    {
+      page->pdf_render_pending = FALSE;
+      g_object_unref (job->document);
+      g_free (job);
+    }
+}
+#else
+static void
+paper_render_pdf_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		       guint index, ScreenatorPaperPage *page)
+{
+}
+#endif
+
+static void
+paper_trim_page_backgrounds (ScreenatorPaperDocument *doc)
+{
+  guint i, count = 0;
+  ScreenatorPaperPage *victim;
+  guint32 oldest;
+
+  if (!doc || doc->type != SCREENATOR_PAPER_PDF || !doc->pages)
+    return;
+
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+
+      if (page->background)
+	count++;
+    }
+
+  while (count > PAPER_PDF_BACKGROUND_CACHE_LIMIT)
+    {
+      victim = NULL;
+      oldest = G_MAXUINT32;
+
+      for (i = 0; i < doc->pages->len; i++)
+	{
+	  ScreenatorPaperPage *page =
+	    &g_array_index (doc->pages, ScreenatorPaperPage, i);
+
+	  if (page->background && page->background_stamp <= oldest)
+	    {
+	      oldest = page->background_stamp;
+	      victim = page;
+	    }
+	}
+
+      if (!victim)
+	break;
+
+      cairo_surface_destroy (victim->background);
+      victim->background = NULL;
+      victim->background_width = 0;
+      victim->background_height = 0;
+      count--;
+    }
+}
+
+static void
+paper_ensure_background (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			 guint index, ScreenatorPaperPage *page)
+{
+  if (!page || page->style != SCREENATOR_PAPER_PDF)
+    return;
+
+  if (page->background)
+    {
+      page->background_stamp = ++paper_page_background_clock;
+      return;
+    }
+
+  paper_render_pdf_page (data, doc, index, page);
+
+  if (page->background)
+    {
+      page->background_stamp = ++paper_page_background_clock;
+      paper_trim_page_backgrounds (doc);
+    }
+}
+
+/* Space between two PDF pages in the continuous view.  The grey paper
+ * surround shows through it, so the page edges stay visible. */
+#define PAPER_PDF_PAGE_GAP 16
+
+/* Build the vertical layout of a PDF: every page is rendered at the screen
+ * width, and the pages are stacked with a grey gap between them for
+ * continuous scrolling. */
+static void
+paper_pdf_build_layout (ScreenatorData *data, ScreenatorPaperDocument *doc)
+{
+#ifdef HAVE_POPPLER_GLIB
+  gint i, total = 0, stack_width = 0;
+
+  paper_pdf_render_init ();
+  g_atomic_int_inc (&data->pdf_render_serial);
+
+  if (!doc || !doc->pdf_document || !doc->pdf_page_tops ||
+      !doc->pdf_page_heights)
+    return;
+
+  g_array_set_size (doc->pdf_page_tops, 0);
+  g_array_set_size (doc->pdf_page_heights, 0);
+
+  for (i = 0; i < doc->pdf_page_count; i++)
+    {
+      PopplerPage *pdf_page;
+      gdouble width = 0, height = 0, scale;
+      gint pixel_width, pixel_height;
+
+      g_mutex_lock (&paper_pdf_render_mutex);
+      pdf_page = poppler_document_get_page ((PopplerDocument *) doc->pdf_document,
+					    i);
+      if (pdf_page)
+	poppler_page_get_size (pdf_page, &width, &height);
+      g_mutex_unlock (&paper_pdf_render_mutex);
+
+      if (!pdf_page)
+	break;
+
+      scale = width > 0 ? (gdouble) data->width / width : 1.0;
+      if (scale <= 0)
+	scale = 1.0;
+      scale = MIN (scale, 4.0);
+
+      pixel_width = MAX (1, (gint) ceil (width * scale));
+      pixel_height = MAX (1, (gint) ceil (height * scale));
+
+      if (doc->pages && i < (gint) doc->pages->len)
+	{
+	  ScreenatorPaperPage *page =
+	    &g_array_index (doc->pages, ScreenatorPaperPage, i);
+	  gint old_width = page->canvas_width;
+	  gint old_height = page->canvas_height;
+
+	  if (old_width > 0 && old_height > 0 &&
+	      (old_width != pixel_width || old_height != pixel_height))
+	    {
+	      paper_scale_vector_surface (page, pixel_width, pixel_height,
+					  FALSE);
+	      if (page->annotations)
+		{
+		  cairo_surface_t *scaled =
+		    resize_surface_scale (page->annotations, pixel_width,
+					  pixel_height);
+
+		  cairo_surface_destroy (page->annotations);
+		  page->annotations = scaled;
+		}
+
+	      page->view_x = (gint) round ((gdouble) page->view_x *
+					   pixel_width / old_width);
+	      page->view_y = (gint) round ((gdouble) page->view_y *
+					   pixel_height / old_height);
+	    }
+
+	  page->canvas_width = pixel_width;
+	  page->canvas_height = pixel_height;
+	  page->pdf_width = pixel_width;
+	  page->pdf_height = pixel_height;
+
+	  /* Re-render the PDF page at the new zoom. */
+	  if (page->background &&
+	      (page->background_width != pixel_width ||
+	       page->background_height != pixel_height))
+	    {
+	      cairo_surface_destroy (page->background);
+	      page->background = NULL;
+	      page->background_width = 0;
+	      page->background_height = 0;
+	    }
+	}
+
+      if (i > 0)
+	total += PAPER_PDF_PAGE_GAP;
+
+      g_array_append_val (doc->pdf_page_tops, total);
+      g_array_append_val (doc->pdf_page_heights, pixel_height);
+      total += pixel_height;
+      stack_width = MAX (stack_width, pixel_width);
+      g_object_unref (pdf_page);
+    }
+
+  doc->pdf_stack_width = stack_width;
+  doc->pdf_stack_height = total;
+#else
+  (void) data;
+  (void) doc;
+#endif
+}
+
+/* Build the same vertical stack for Plain, Ruled and Graph pages.  PDF pages
+ * use their rendered heights, other papers use their configured page size. */
+static void
+paper_build_continuous_layout (ScreenatorData *data,
+			       ScreenatorPaperDocument *doc)
+{
+  guint i;
+  gint total = 0, stack_width = 0;
+
+  if (!doc)
+    return;
+
+  if (doc->type == SCREENATOR_PAPER_PDF)
+    {
+      paper_pdf_build_layout (data, doc);
+      return;
+    }
+
+  if (!doc->pages || !doc->pdf_page_tops || !doc->pdf_page_heights)
+    return;
+
+  g_array_set_size (doc->pdf_page_tops, 0);
+  g_array_set_size (doc->pdf_page_heights, 0);
+
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+
+      if (!page->canvas_width || !page->canvas_height)
+	paper_size_dimensions (data, &page->canvas_width,
+			       &page->canvas_height,
+			       &page->pdf_width, &page->pdf_height);
+
+      if (i > 0)
+	total += PAPER_PDF_PAGE_GAP;
+
+      g_array_append_val (doc->pdf_page_tops, total);
+      g_array_append_val (doc->pdf_page_heights, page->canvas_height);
+      total += page->canvas_height;
+      stack_width = MAX (stack_width, page->canvas_width);
+    }
+
+  doc->pdf_stack_width = stack_width;
+  doc->pdf_stack_height = total;
+}
+
+static void
+paper_load_page (ScreenatorData *data, ScreenatorPaperPage *page)
+{
+  cairo_t *cr;
+
+  if (!page)
+    return;
+
+  /* Continuous PDF pages use a virtual, sometimes negative, view offset.
+   * Every other view is clamped to the page. */
+  if (!paper_continuous (data))
+    {
+      gint max_x = MAX (0, page->canvas_width - (gint) data->width);
+      gint max_y = MAX (0, page->canvas_height - (gint) data->height);
+
+      page->view_x = CLAMP (page->view_x, 0, max_x);
+      page->view_y = CLAMP (page->view_y, 0, max_y);
+    }
+
+  cr = cairo_create (data->backbuffer);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgba (cr, 0, 0, 0, 0);
+  cairo_paint (cr);
+
+  if (page->annotations)
+    {
+      gint origin_x, origin_y;
+
+      paper_page_origin (data, page, &origin_x, &origin_y);
+      cairo_set_source_surface (cr, page->annotations,
+				origin_x - page->view_x,
+				origin_y - page->view_y);
+      cairo_paint (cr);
+    }
+
+  cairo_destroy (cr);
+
+  data->painted = page->painted ? 1 : 0;
+  data->paper_page_dirty = FALSE;
+}
+
+static void
+paper_repaint_window_only (ScreenatorData *data)
+{
+  update_window_shape (data);
+
+  if (data->win && gtk_widget_get_window (data->win))
+    {
+      GdkRectangle rect = { 0, 0, data->width,
+			    paper_view_height (data) };
+
+      screenator_invalidate_rect (data, &rect);
+    }
+}
+
+static void
+paper_repaint (ScreenatorData *data)
+{
+  /* Page, view, paper style or layout changed.  Window resizing must not
+   * invalidate the background cache: it is in screen coordinates. */
+  paper_background_invalidate (data);
+  paper_repaint_window_only (data);
+}
+
+static gint
+paper_pdf_page_at (ScreenatorPaperDocument *doc, gint content_y)
+{
+  guint lo, hi;
+
+  if (!doc || !doc->pdf_page_tops || !doc->pdf_page_heights ||
+      doc->pdf_page_tops->len == 0)
+    return 0;
+
+  /* Page tops are sorted, so a long PDF does not need a linear scan for
+   * every scroll or stroke. */
+  lo = 0;
+  hi = doc->pdf_page_tops->len;
+  while (lo < hi)
+    {
+      guint mid = lo + (hi - lo) / 2;
+      gint top = g_array_index (doc->pdf_page_tops, gint, mid);
+      gint height = g_array_index (doc->pdf_page_heights, gint, mid);
+
+      if (content_y < top + height)
+	hi = mid;
+      else
+	lo = mid + 1;
+    }
+
+  if (lo >= doc->pdf_page_tops->len)
+    lo = doc->pdf_page_tops->len - 1;
+
+  return (gint) lo;
+}
+
+/* Mark the page or pages covered by a committed drawing rectangle as having
+ * annotations.  The continuous view uses this to avoid allocating a full page
+ * annotation surface for every blank page that is merely scrolled past. */
+void
+screenator_paper_mark_ink (ScreenatorData *data, const GdkRectangle *bounds)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+  gint first, last, i;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  data->paper_page_dirty = TRUE;
+
+  doc = paper_active_document (data);
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return;
+
+  if (!paper_continuous (data) || !bounds ||
+      !doc->pdf_page_tops || !doc->pdf_page_heights)
+    {
+      page = paper_current_page (doc);
+      if (page)
+	page->painted = TRUE;
+      return;
+    }
+
+  if (data->paper_pending_ink_valid)
+    gdk_rectangle_union (&data->paper_pending_ink_bounds, bounds,
+			 &data->paper_pending_ink_bounds);
+  else
+    {
+      data->paper_pending_ink_bounds = *bounds;
+      data->paper_pending_ink_valid = TRUE;
+    }
+
+  first = paper_pdf_page_at (doc, doc->pdf_scroll_y + bounds->y);
+  last = paper_pdf_page_at (doc, doc->pdf_scroll_y + bounds->y +
+			    MAX (0, bounds->height - 1));
+
+  if (first > last)
+    {
+      i = first;
+      first = last;
+      last = i;
+    }
+
+  for (i = first; i <= last && i < (gint) doc->pages->len; i++)
+    {
+      page = &g_array_index (doc->pages, ScreenatorPaperPage, i);
+      page->painted = TRUE;
+    }
+}
+
+/* Build the screen backbuffer from every visible page.  This is the same
+ * model as the original continuous view: drawing happens in one screen-sized
+ * layer, and storing it back splits the visible content into per-page layers. */
+static void
+paper_load_continuous_view (ScreenatorData *data,
+			    ScreenatorPaperDocument *doc)
+{
+  cairo_t *cr;
+  guint i;
+  gint first = 0, last = -1;
+
+  if (!doc || !doc->pages || !doc->pdf_page_tops)
+    return;
+
+  cr = cairo_create (data->backbuffer);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgba (cr, 0, 0, 0, 0);
+  cairo_paint (cr);
+
+  if (doc->pdf_page_tops->len > 0)
+    {
+      first = paper_pdf_page_at (doc, doc->pdf_scroll_y);
+      last = paper_pdf_page_at (doc, doc->pdf_scroll_y +
+				MAX (0, paper_view_height (data) - 1));
+    }
+
+  data->painted = 0;
+
+  for (i = (guint) first;
+       i <= (guint) last && i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      gint top, page_x, page_y;
+
+      if (!page->annotations)
+	continue;
+
+      top = g_array_index (doc->pdf_page_tops, gint, i);
+      page_y = top - doc->pdf_scroll_y;
+      page_x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+
+      if (page_y + page->canvas_height <= 0 ||
+	  page_y >= paper_view_height (data))
+	continue;
+
+      cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+      cairo_set_source_surface (cr, page->annotations, page_x, page_y);
+      cairo_paint (cr);
+
+      if (page->painted)
+	data->painted = 1;
+    }
+
+  cairo_destroy (cr);
+  data->paper_page_dirty = FALSE;
+}
+
+/* Shift the screen-sized drawing backbuffer vertically.  Scrolling then only
+ * needs to redraw the newly exposed strip instead of clearing and rebuilding
+ * the whole composite. */
+static gboolean
+paper_shift_backbuffer (ScreenatorData *data, gint rows)
+{
+  cairo_surface_t *surface = data->backbuffer;
+  gint height, stride, move;
+  guchar *pixels;
+
+  if (!surface || cairo_surface_get_type (surface) != CAIRO_SURFACE_TYPE_IMAGE)
+    return FALSE;
+
+  height = cairo_image_surface_get_height (surface);
+  if (rows == 0)
+    return TRUE;
+  if (ABS (rows) >= height)
+    return FALSE;
+
+  cairo_surface_flush (surface);
+  stride = cairo_image_surface_get_stride (surface);
+  pixels = cairo_image_surface_get_data (surface);
+  if (!pixels)
+    return FALSE;
+
+  move = height - ABS (rows);
+  if (rows > 0)
+    memmove (pixels, pixels + rows * stride, (gsize) move * stride);
+  else
+    memmove (pixels + (-rows) * stride, pixels, (gsize) move * stride);
+
+  cairo_surface_mark_dirty (surface);
+  return TRUE;
+}
+
+/* Clear one horizontal strip of the backbuffer and composite the visible page
+ * annotations into it. */
+static void
+paper_fill_continuous_strip (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			     gint y, gint height)
+{
+  cairo_t *cr;
+  gint first, last, i;
+
+  if (!doc || height <= 0 || y >= paper_view_height (data))
+    return;
+
+  if (y < 0)
+    {
+      height += y;
+      y = 0;
+    }
+  if (y + height > paper_view_height (data))
+    height = paper_view_height (data) - y;
+  if (height <= 0 || !doc->pdf_page_tops || doc->pdf_page_tops->len == 0)
+    return;
+
+  cr = cairo_create (data->backbuffer);
+  cairo_rectangle (cr, 0, y, data->width, height);
+  cairo_clip (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgba (cr, 0, 0, 0, 0);
+  cairo_paint (cr);
+
+  first = paper_pdf_page_at (doc, doc->pdf_scroll_y + y);
+  last = paper_pdf_page_at (doc, doc->pdf_scroll_y + y + height - 1);
+
+  for (i = first; i <= last && i < (gint) doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      gint top, page_x, page_y;
+
+      if (!page->annotations)
+	continue;
+
+      top = g_array_index (doc->pdf_page_tops, gint, i);
+      page_y = top - doc->pdf_scroll_y;
+      page_x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+
+      cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+      cairo_set_source_surface (cr, page->annotations, page_x, page_y);
+      cairo_paint (cr);
+
+      if (page->painted)
+	data->painted = 1;
+    }
+
+  cairo_destroy (cr);
+  data->paper_page_dirty = FALSE;
+}
+
+/* Put the page under the viewport centre into the backbuffer at its position
+ * in the continuous stack. */
+static void
+paper_pdf_prepare_active (ScreenatorData *data, ScreenatorPaperDocument *doc)
+{
+  ScreenatorPaperPage *page;
+  gint index, top;
+
+  if (!doc || !paper_continuous (data))
+    return;
+
+  /* The page at the top of the viewport is the current one; the page under
+   * the pointer is picked separately when a stroke starts. */
+  index = paper_pdf_page_at (doc, doc->pdf_scroll_y + 1);
+  doc->page = index;
+  data->paper_pdf_page = (gint) index;
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  top = g_array_index (doc->pdf_page_tops, gint, index);
+  page->view_x = 0;
+  page->view_y = -(top - doc->pdf_scroll_y);
+
+  paper_ensure_background (data, doc, index, page);
+  paper_load_continuous_view (data, doc);
+}
+
+static void
+paper_pdf_set_scroll (ScreenatorData *data, gint scroll)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  gint max_scroll;
+  gboolean profile = screenator_profile_enabled ();
+  gint64 profile_start = profile ? g_get_monotonic_time () : 0;
+  gint old_scroll;
+
+  if (!doc || !paper_continuous (data))
+    return;
+
+  max_scroll = MAX (0, doc->pdf_stack_height - paper_view_height (data));
+  scroll = CLAMP (scroll, 0, max_scroll);
+  if (scroll == doc->pdf_scroll_y)
+    return;
+
+  old_scroll = doc->pdf_scroll_y;
+  paper_store_active_page (data);
+
+  {
+    gint old_first = paper_pdf_page_at (doc, doc->pdf_scroll_y);
+    gint old_last = paper_pdf_page_at (doc, doc->pdf_scroll_y +
+				       MAX (0, paper_view_height (data) - 1));
+    gint new_first, new_last;
+    gint delta = scroll - doc->pdf_scroll_y;
+    ScreenatorPaperPage *page;
+    gint top;
+
+    doc->pdf_scroll_y = scroll;
+    new_first = paper_pdf_page_at (doc, doc->pdf_scroll_y);
+    new_last = paper_pdf_page_at (doc, doc->pdf_scroll_y +
+				  MAX (0, paper_view_height (data) - 1));
+
+    if (new_first != old_first || new_last != old_last)
+      g_atomic_int_inc (&data->pdf_render_serial);
+
+    doc->page = (guint) new_first;
+    data->paper_pdf_page = new_first;
+    page = paper_current_page (doc);
+    if (page)
+      {
+	top = g_array_index (doc->pdf_page_tops, gint, new_first);
+	page->view_x = 0;
+	page->view_y = -(top - doc->pdf_scroll_y);
+	paper_ensure_background (data, doc, new_first, page);
+      }
+
+    if (delta != 0 && paper_shift_backbuffer (data, delta))
+      {
+	if (delta > 0)
+	  paper_fill_continuous_strip (data, doc,
+				       paper_view_height (data) - delta, delta);
+	else
+	  paper_fill_continuous_strip (data, doc, 0, -delta);
+      }
+    else
+      paper_load_continuous_view (data, doc);
+
+    data->paper_pending_ink_valid = FALSE;
+  }
+
+  reset_undo_history (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+
+  if (profile)
+    g_printerr ("PROFILE scroll %.2f ms delta=%d\n",
+		(g_get_monotonic_time () - profile_start) / 1000.0,
+		scroll - old_scroll);
+}
+
+/* Jump to the top of one PDF page in the continuous view. */
+static void
+paper_pdf_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		     guint index)
+{
+  ScreenatorPaperPage *page;
+  gint max_scroll, top;
+
+  if (!doc || index >= doc->pdf_page_tops->len)
+    return;
+
+  paper_store_active_page (data);
+  g_atomic_int_inc (&data->pdf_render_serial);
+  max_scroll = MAX (0, doc->pdf_stack_height - paper_view_height (data));
+  top = g_array_index (doc->pdf_page_tops, gint, index);
+  doc->pdf_scroll_y = CLAMP (top, 0, max_scroll);
+  doc->page = index;
+  data->paper_pdf_page = (gint) index;
+
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  page->view_x = 0;
+  page->view_y = -(top - doc->pdf_scroll_y);
+  paper_ensure_background (data, doc, index, page);
+  paper_load_continuous_view (data, doc);
+  reset_undo_history (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Erase a stroke segment directly on every page it crosses.  The tools
+ * normally draw into the screen-sized backbuffer, which only holds the
+ * active page; in the continuous view the pages above and below the viewport
+ * are painted straight from their own annotation layers.  Drawing the
+ * segment into each page's layer, offset by that page's position, lets cairo
+ * crop it to the page it belongs to. */
+void
+screenator_paper_erase_line (ScreenatorData *data,
+			     gint x1, gint y1, gint x2, gint y2,
+			     gint width)
+{
+  ScreenatorPaperDocument *doc;
+  guint i, count;
+
+  if (!data || !paper_continuous (data))
+    return;
+
+  doc = paper_active_document (data);
+  if (!doc || !doc->pages || !doc->pdf_page_tops ||
+      !doc->pdf_page_heights)
+    return;
+
+  count = MIN (doc->pages->len, doc->pdf_page_tops->len);
+
+  for (i = 0; i < count; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      gint top;
+      cairo_t *cr;
+
+      if (!page->annotations)
+	continue;
+
+      top = g_array_index (doc->pdf_page_tops, gint, i);
+
+      {
+	gint page_x = page->style == SCREENATOR_PAPER_PDF
+	  ? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+
+	cr = cairo_create (page->annotations);
+	if (!data->composited)
+	  cairo_set_antialias (cr, CAIRO_ANTIALIAS_NONE);
+
+	cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+	cairo_set_line_width (cr, MAX (1, width));
+	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+	cairo_move_to (cr, x1 - page_x, y1 - (top - doc->pdf_scroll_y));
+	cairo_line_to (cr, x2 - page_x, y2 - (top - doc->pdf_scroll_y));
+      }
+      cairo_stroke (cr);
+      cairo_destroy (cr);
+    }
+}
+
+/* Before a stroke starts, make the page under the pointer the active page. */
+static void
+paper_pdf_pick_page (ScreenatorData *data, gint screen_y)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page;
+  gint content_y, index, top;
+
+  if (!doc || !paper_continuous (data))
+    return;
+
+  content_y = doc->pdf_scroll_y + screen_y;
+  index = paper_pdf_page_at (doc, content_y);
+  if (index == (gint) doc->page)
+    return;
+
+  paper_commit_pending (data);
+
+  /* The backbuffer already contains every visible page, so selecting the page
+   * under the pointer is only bookkeeping. */
+  doc->page = index;
+  data->paper_pdf_page = (gint) index;
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  top = g_array_index (doc->pdf_page_tops, gint, index);
+  page->view_x = 0;
+  page->view_y = -(top - doc->pdf_scroll_y);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Switch between page-by-page and continuous PDF views. */
+static void
+paper_set_continuous_scrolling (ScreenatorData *data, gboolean enable)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page;
+
+  if (data->paper_continuous_scroll == enable)
+    return;
+
+  if (!doc || !doc->pages || doc->pages->len == 0 ||
+      (doc->type == SCREENATOR_PAPER_PDF &&
+       (!doc->pdf_loaded || doc->pdf_stack_height <= 0)))
+    {
+      data->paper_continuous_scroll = enable;
+      return;
+    }
+
+  page = paper_current_page (doc);
+  if (!page)
+    {
+      data->paper_continuous_scroll = enable;
+      return;
+    }
+
+  paper_store_active_page (data);
+
+  if (!enable)
+    {
+      gint max_y = MAX (0, page->canvas_height - (gint) data->height);
+
+      data->paper_continuous_scroll = FALSE;
+
+      if (doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	{
+	  gint top = g_array_index (doc->pdf_page_tops, gint, doc->page);
+
+	  page->view_y = CLAMP (doc->pdf_scroll_y - top, 0, max_y);
+	}
+      else
+	page->view_y = CLAMP (page->view_y, 0, max_y);
+
+      page->view_x = CLAMP (page->view_x, 0,
+			    MAX (0, page->canvas_width - (gint) data->width));
+      paper_load_page (data, page);
+    }
+  else
+    {
+      gint max_scroll, top;
+
+      paper_build_continuous_layout (data, doc);
+      max_scroll = MAX (0, doc->pdf_stack_height - paper_view_height (data));
+      top = (doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0;
+
+      data->paper_continuous_scroll = TRUE;
+      doc->pdf_scroll_y = CLAMP (top + page->view_y, 0, max_scroll);
+      paper_pdf_prepare_active (data, doc);
+    }
+
+  reset_undo_history (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Draw the paper below the annotations.  The caller composites the backbuffer
+ * on top afterwards, so erasing a stroke shows the paper again. */
+static void
+draw_pdf_loading_page (cairo_t *cr, ScreenatorPaperPage *page,
+		       gint x, gint y)
+{
+  const gchar *text = page->pdf_render_pending
+    ? "Loading..." : "PDF page unavailable";
+  cairo_text_extents_t extents;
+  gdouble font_size;
+
+  cairo_save (cr);
+  cairo_translate (cr, x, y);
+  cairo_rectangle (cr, 0, 0, page->canvas_width, page->canvas_height);
+  cairo_clip (cr);
+
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgb (cr, 1, 1, 1);
+  cairo_paint (cr);
+
+  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+  cairo_set_source_rgb (cr, 0.55, 0.55, 0.55);
+  cairo_select_font_face (cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+			  CAIRO_FONT_WEIGHT_NORMAL);
+  font_size = MAX (14.0, page->canvas_width / 40.0);
+  cairo_set_font_size (cr, font_size);
+  cairo_text_extents (cr, text, &extents);
+  cairo_move_to (cr,
+		 (page->canvas_width - extents.width) / 2.0,
+		 page->canvas_height / 2.0);
+  cairo_show_text (cr, text);
+  cairo_restore (cr);
+}
+
+static void
+draw_paper_page (ScreenatorData *data, cairo_t *cr)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page = paper_current_page (doc);
+
+  if (!page)
+    return;
+
+  cairo_save (cr);
+
+  /* A light grey surround makes the paper edge visible when the page is
+   * smaller than the screen. */
+  cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+  cairo_set_source_rgb (cr, 0.92, 0.92, 0.92);
+  cairo_paint (cr);
+
+  if (paper_continuous (data))
+    {
+      guint i;
+      guint count = MIN (doc->pages->len, doc->pdf_page_tops->len);
+
+      for (i = 0; i < count; i++)
+	{
+	  ScreenatorPaperPage *pdf_page =
+	    &g_array_index (doc->pages, ScreenatorPaperPage, i);
+	  gint top = g_array_index (doc->pdf_page_tops, gint, i);
+	  gint height = g_array_index (doc->pdf_page_heights, gint, i);
+	  gint y = top - doc->pdf_scroll_y;
+
+	  if (top + height <= doc->pdf_scroll_y ||
+	      top >= doc->pdf_scroll_y + paper_view_height (data))
+	    continue;
+
+	  gint page_x = pdf_page->style == SCREENATOR_PAPER_PDF
+	    ? 0 : MAX (0, ((gint) data->width - pdf_page->canvas_width) / 2);
+
+	  paper_ensure_background (data, doc, i, pdf_page);
+
+	  if (pdf_page->style == SCREENATOR_PAPER_PDF)
+	    {
+	      if (pdf_page->background)
+		{
+		  pdf_page->background_stamp = ++paper_page_background_clock;
+		  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+		  cairo_set_source_surface (cr, pdf_page->background, 0, y);
+		  use_bilinear_filter (cr);
+		  cairo_paint (cr);
+		}
+	      else
+		draw_pdf_loading_page (cr, pdf_page, 0, y);
+	    }
+	  else
+	    {
+	      cairo_save (cr);
+	      cairo_translate (cr, page_x, y);
+	      cairo_rectangle (cr, 0, 0,
+			       pdf_page->canvas_width,
+			       pdf_page->canvas_height);
+	      cairo_clip (cr);
+	      cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+	      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+	      cairo_paint (cr);
+	      draw_paper_pattern (cr, pdf_page->style,
+				  pdf_page->canvas_width,
+				  pdf_page->canvas_height);
+	      cairo_restore (cr);
+	    }
+
+	}
+
+      cairo_restore (cr);
+      return;
+    }
+
+  if (page->style == SCREENATOR_PAPER_PDF)
+    {
+      if (page->background)
+	{
+	  gint origin_x, origin_y;
+
+	  page->background_stamp = ++paper_page_background_clock;
+	  paper_page_origin (data, page, &origin_x, &origin_y);
+	  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
+	  cairo_set_source_surface (cr, page->background,
+				    origin_x - page->view_x,
+				    origin_y - page->view_y);
+	  use_bilinear_filter (cr);
+	  cairo_paint (cr);
+	}
+      else
+	{
+	  gint origin_x, origin_y;
+
+	  paper_page_origin (data, page, &origin_x, &origin_y);
+	  draw_pdf_loading_page (cr, page,
+				 origin_x - page->view_x,
+				 origin_y - page->view_y);
+	}
+    }
+  else
+    {
+      gint origin_x, origin_y;
+
+      paper_page_origin (data, page, &origin_x, &origin_y);
+      cairo_save (cr);
+      cairo_translate (cr, origin_x - page->view_x,
+		       origin_y - page->view_y);
+      cairo_rectangle (cr, 0, 0,
+		       page->canvas_width, page->canvas_height);
+      cairo_clip (cr);
+      cairo_set_operator (cr, CAIRO_OPERATOR_SOURCE);
+      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+      cairo_paint (cr);
+      draw_paper_pattern (cr, page->style,
+			  page->canvas_width, page->canvas_height);
+      cairo_restore (cr);
+    }
+
+  cairo_restore (cr);
+}
+
+static void
+paper_background_cache_free (ScreenatorData *data)
+{
+  if (data->paper_background_cache)
+    cairo_surface_destroy (data->paper_background_cache);
+
+  data->paper_background_cache = NULL;
+  data->paper_background_cache_valid = FALSE;
+}
+
+static void
+paper_background_invalidate (ScreenatorData *data)
+{
+  data->paper_background_cache_valid = FALSE;
+}
+
+/* Centre a page that is smaller than the screen.  Pages larger than the
+ * screen use zero and are panned instead. */
+static void
+paper_page_origin (ScreenatorData *data, ScreenatorPaperPage *page,
+		   gint *x, gint *y)
+{
+  if (!page)
+    {
+      *x = *y = 0;
+      return;
+    }
+
+  if (paper_continuous (data))
+    {
+      *x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      *y = 0;
+      return;
+    }
+
+  *x = MAX (0, ((gint) data->width - page->canvas_width) / 2);
+  *y = MAX (0, ((gint) data->height - page->canvas_height) / 2);
+}
+
+/* Scale and page origin used by Window mode.  The scale makes the active
+ * paper page exactly as wide as the Paper window.  At scale 1 and origin 0
+ * the normal fullscreen presentation is unchanged. */
+static void
+paper_window_transform_values (ScreenatorData *data, gdouble *scale,
+			       gint *origin_x, gint *origin_y)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+  gint page_origin_x, page_origin_y, window_width, canvas_width;
+
+  *scale = 1.0;
+  *origin_x = 0;
+  *origin_y = 0;
+
+  if (!data || !data->paper_window_mode || !data->paper_win)
+    return;
+
+  doc = paper_active_document (data);
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  paper_page_origin (data, page, &page_origin_x, &page_origin_y);
+  *origin_x = page_origin_x - page->view_x;
+
+  /* In the continuous view the screen coordinate system is the viewport,
+   * whose top-left is the window origin.  Using the current page's view_y
+   * here shifts the whole window whenever a lower page is selected, which
+   * corrupts drawing on every page except the top one. */
+  *origin_y = paper_continuous (data) ? 0 : page_origin_y - page->view_y;
+
+  window_width = gtk_widget_get_allocated_width (data->paper_win);
+  if (window_width <= 0)
+    window_width = (gint) data->width;
+
+  canvas_width = page->canvas_width > 0
+    ? page->canvas_width : (gint) data->width;
+  if (canvas_width <= 0)
+    return;
+
+  *scale = (gdouble) window_width / (gdouble) canvas_width;
+  if (*scale < 0.02)
+    *scale = 0.02;
+  if (*scale > 10.0)
+    *scale = 10.0;
+}
+
+/* Desired content height for the current Window-mode geometry. */
+static gint
+paper_compute_view_height (ScreenatorData *data)
+{
+  gdouble scale;
+  gint origin_x, origin_y, window_height, view_height;
+
+  if (!data || !data->paper_window_mode || data->win != data->paper_win)
+    return data->height;
+
+  /* Extending the viewport is meaningful for the continuous page stack. */
+  if (!paper_continuous (data))
+    return data->height;
+
+  paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+  if (scale <= 0.0)
+    return data->height;
+
+  window_height = gtk_widget_get_allocated_height (data->paper_win);
+  if (window_height <= 0)
+    return data->height;
+
+  view_height = (gint) ceil ((gdouble) window_height / scale);
+  view_height = MAX (view_height, (gint) data->height);
+
+  /* Avoid pathological allocations in extremely narrow/tall windows. */
+  view_height = MIN (view_height, (gint) data->height * 3);
+
+  return view_height;
+}
+
+/* Actual content height currently backed by the drawing buffer. */
+static gint
+paper_view_height (ScreenatorData *data)
+{
+  if (!data || !data->paper_window_mode || data->win != data->paper_win)
+    return data->height;
+
+  return MAX ((gint) data->height, data->paper_view_height_current);
+}
+
+/* Make the drawing buffer and paint contexts match the current Window-mode
+ * viewport. */
+static void
+paper_window_ensure_buffer (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+  gint view_height;
+
+  if (!data || !data->paper_window_mode || data->win != data->paper_win ||
+      !data->backbuffer)
+    return;
+
+  view_height = paper_compute_view_height (data);
+  if (cairo_image_surface_get_width (data->backbuffer) == (gint) data->width &&
+      cairo_image_surface_get_height (data->backbuffer) == view_height)
+    {
+      data->paper_view_height_current = view_height;
+      return;
+    }
+
+  /* Store with the old buffer height before changing it. */
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+
+  screenator_resize_drawing_buffer (data, (gint) data->width, view_height);
+  data->paper_view_height_current = view_height;
+  doc = paper_active_document (data);
+
+  if (paper_continuous (data) && doc)
+    paper_load_continuous_view (data, doc);
+  else
+    {
+      page = paper_current_page (doc);
+      if (page)
+	paper_load_page (data, page);
+    }
+
+  update_window_shape (data);
+}
+
+/* Restore the normal screen-sized drawing buffer when leaving Window mode. */
+static void
+paper_window_restore_buffer (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+
+  if (!data || !data->backbuffer)
+    return;
+
+  if (cairo_image_surface_get_width (data->backbuffer) == (gint) data->width &&
+      cairo_image_surface_get_height (data->backbuffer) == (gint) data->height)
+    return;
+
+  /* Store while the tall viewport height is still the active one. */
+  {
+    gboolean was_mode = data->paper_window_mode;
+
+    if (!was_mode && data->win == data->paper_win)
+      data->paper_window_mode = TRUE;
+
+    paper_commit_pending (data);
+    paper_store_active_page (data);
+    data->paper_window_mode = was_mode;
+  }
+
+  screenator_resize_drawing_buffer (data, (gint) data->width,
+				    (gint) data->height);
+  data->paper_view_height_current = (gint) data->height;
+  doc = paper_active_document (data);
+  if (paper_continuous (data) && doc)
+    paper_load_continuous_view (data, doc);
+  else
+    {
+      page = paper_current_page (doc);
+      if (page)
+	paper_load_page (data, page);
+    }
+
+  update_window_shape (data);
+}
+
+/* Scale applied to the paper in Window mode; 1.0 for fullscreen/Ctrl+D. */
+gdouble
+screenator_paper_window_scale (ScreenatorData *data)
+{
+  gdouble scale = 1.0;
+  gint origin_x, origin_y;
+
+  if (!data || !data->paper_window_mode || data->win != data->paper_win)
+    return 1.0;
+
+  paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+  return scale > 0.0 ? scale : 1.0;
+}
+
+static void
+paper_window_transform_event (ScreenatorData *data, gdouble *x, gdouble *y)
+{
+  gdouble scale;
+  gint origin_x, origin_y;
+
+  if (!data || !data->paper_window_mode || data->win != data->paper_win)
+    return;
+
+  paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+  if (scale <= 0.0)
+    return;
+
+  *x = *x / scale + origin_x;
+  *y = *y / scale + origin_y;
+}
+
+/* Convert a backbuffer coordinate to a root-window coordinate.  Used for
+ * windows that are positioned independently, such as the inline text editor. */
+static void
+paper_window_to_root (ScreenatorData *data, gint *x, gint *y)
+{
+  gdouble scale;
+  gint origin_x, origin_y, window_x, window_y;
+
+  if (!data || !data->paper_window_mode || data->win != data->paper_win ||
+      !data->paper_win)
+    return;
+
+  paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+
+  {
+    GdkWindow *window = gtk_widget_get_window (data->paper_win);
+
+    if (window)
+      gdk_window_get_root_coords (window, 0, 0, &window_x, &window_y);
+    else
+      gtk_window_get_position (GTK_WINDOW (data->paper_win),
+			       &window_x, &window_y);
+  }
+
+  *x = window_x + (gint) round ((*x - origin_x) * scale);
+  *y = window_y + (gint) round ((*y - origin_y) * scale);
+}
+
+/* Invalidate the on-screen part that corresponds to a backbuffer rectangle.
+ * Window mode scales and translates the paper, so using the raw backbuffer
+ * rectangle would miss the area being drawn and make drawing look laggy. */
+void
+screenator_invalidate_rect (ScreenatorData *data, const GdkRectangle *rect)
+{
+  GdkWindow *window;
+  GdkRectangle scaled;
+
+  if (!data || !data->win)
+    return;
+
+  window = gtk_widget_get_window (data->win);
+  if (!window)
+    return;
+
+  if (!rect)
+    {
+      gdk_window_invalidate_rect (window, NULL, 0);
+      return;
+    }
+
+  if (data->paper_window_mode && data->win == data->paper_win)
+    {
+      gdouble scale;
+      gint origin_x, origin_y;
+
+      paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+      scaled.x = (gint) floor ((rect->x - origin_x) * scale) - 2;
+      scaled.y = (gint) floor ((rect->y - origin_y) * scale) - 2;
+      scaled.width = (gint) ceil (rect->width * scale) + 4;
+      scaled.height = (gint) ceil (rect->height * scale) + 4;
+      gdk_window_invalidate_rect (window, &scaled, 0);
+    }
+  else
+    gdk_window_invalidate_rect (window, rect, 0);
+}
+
+/* TRUE when a pointer coordinate is over the visible Paper window.  Window
+ * mode must not draw or show tool feedback outside its window; button drags
+ * can still deliver coordinates outside during the X implicit grab. */
+static gboolean
+paper_window_event_inside (ScreenatorData *data, gdouble x, gdouble y)
+{
+  gdouble scale;
+  gint origin_x, origin_y;
+  gdouble screen_x, screen_y;
+
+  if (!screenator_paper_local_input (data))
+    return TRUE;
+
+  if (!data->paper_window_mode)
+    {
+      gint width = gtk_widget_get_allocated_width (data->paper_win);
+      gint height = gtk_widget_get_allocated_height (data->paper_win);
+
+      if (width <= 0 || height <= 0)
+	return TRUE;
+
+      return x >= 0 && y >= 0 && x < width && y < height;
+    }
+
+  paper_window_transform_values (data, &scale, &origin_x, &origin_y);
+  if (scale <= 0.0)
+    return TRUE;
+
+  /* A tall window extends beyond the scaled screen content.  Pointer events
+   * there must not draw outside the backbuffer. */
+  screen_x = x / scale + origin_x;
+  screen_y = y / scale + origin_y;
+
+  return screen_x >= 0 && screen_y >= 0 &&
+    screen_x < (gdouble) data->width &&
+    screen_y < (gdouble) paper_view_height (data);
+}
+
+static void
+on_paper_window_size_allocate (GtkWidget *widget, GdkRectangle *allocation,
+			       gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) allocation;
+
+  if (data->paper_window_mode && data->win == data->paper_win)
+    {
+      paper_window_ensure_buffer (data);
+      paper_repaint_window_only (data);
+
+      if (ABS (screenator_paper_window_scale (data) -
+	       data->eraser_cursor_scale) > 0.001)
+	{
+	  update_eraser_cursor (data);
+	  paper_update_hover_cursor (data);
+	}
+    }
+}
+
+/* Largest viewport offsets for a page.  PDF pages use their rendered size;
+ * other papers use their configured canvas size. */
+static void
+paper_page_view_limits (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			guint index, ScreenatorPaperPage *page,
+			gint *max_x, gint *max_y)
+{
+  if (!page)
+    {
+      *max_x = *max_y = 0;
+      return;
+    }
+
+  if (!page->canvas_width || !page->canvas_height)
+    {
+      if (page->style == SCREENATOR_PAPER_PDF)
+	paper_ensure_background (data, doc, index, page);
+
+      if (page->style == SCREENATOR_PAPER_PDF && page->background)
+	{
+	  page->canvas_width = page->background_width;
+	  page->canvas_height = page->background_height;
+	}
+      else if (page->style != SCREENATOR_PAPER_PDF)
+	paper_size_dimensions (data, &page->canvas_width,
+			       &page->canvas_height,
+			       &page->pdf_width, &page->pdf_height);
+    }
+
+  *max_x = MAX (0, page->canvas_width - (gint) data->width);
+  *max_y = MAX (0, page->canvas_height - (gint) data->height);
+}
+
+/* Move the visible part of a page.  The old viewport is stored into the
+ * full-page annotation layer, then the new viewport is loaded from it, so
+ * drawings outside the screen are not lost. */
+static void
+paper_set_view (ScreenatorData *data, gint x, gint y)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page = paper_current_page (doc);
+  gint max_x, max_y;
+
+  if (!page)
+    return;
+
+  paper_page_view_limits (data, doc, doc->page, page, &max_x, &max_y);
+  x = CLAMP (x, 0, max_x);
+  y = CLAMP (y, 0, max_y);
+
+  if (x == page->view_x && y == page->view_y)
+    return;
+
+  paper_store_active_page (data);
+  page->view_x = x;
+  page->view_y = y;
+  paper_load_page (data, page);
+  reset_undo_history (data);
+  paper_repaint (data);
+}
+
+static gboolean
+hover_settle_idle (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->controls_hover_idle = 0;
+  paper_refresh_controls_hover (data);
+  paper_update_hover_cursor (data);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+on_controls_enter (GtkWidget *widget, GdkEventCrossing *event,
+		   gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) event;
+
+  data->controls_hover++;
+  if (data->controls_hover == 1)
+    paper_update_hover_cursor (data);
+
+  return FALSE;
+}
+
+static gboolean
+on_controls_leave (GtkWidget *widget, GdkEventCrossing *event,
+		   gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) event;
+
+  if (data->controls_hover > 0)
+    data->controls_hover--;
+
+  if (data->controls_hover == 0)
+    {
+      /* Moving between child windows of the toolbar can produce a leave on
+       * the toplevel before the next child's enter.  Check the real pointer
+       * now, then once more after the crossing events have settled. */
+      paper_refresh_controls_hover (data);
+      paper_update_hover_cursor (data);
+
+      if (!data->controls_hover_idle)
+	data->controls_hover_idle = g_idle_add (hover_settle_idle, data);
+    }
+
+  return FALSE;
+}
+
+static void
+paper_controls_attach_hover (ScreenatorData *data, GtkWidget *widget)
+{
+  gtk_widget_add_events (widget, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+  g_signal_connect (widget, "enter-notify-event",
+		    G_CALLBACK (on_controls_enter), data);
+  g_signal_connect (widget, "leave-notify-event",
+		    G_CALLBACK (on_controls_leave), data);
+}
+
+/* Re-grab every active device with the normal cursor while the pointer is
+ * over one of Screenator's control windows, and with the tool cursor
+ * otherwise. */
+static void
+paper_update_hover_cursor (ScreenatorData *data)
+{
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  GHashTableIter it;
+  gpointer value;
+
+  if (!window)
+    return;
+
+  /* Crossing events can be lost after a menu, a toolbar click, or a window
+   * change.  Recompute the hover state from the real pointer position before
+   * choosing a cursor. */
+  paper_refresh_controls_hover (data);
+
+  /* Grabbed devices use their own cursor.  The window cursor matters while
+   * no device is grabbed, for example in raw-input fallback mode, so keep it
+   * in step with the selected tool as well. */
+  if (data->paper_hand_tool || data->paper_panning)
+    gdk_window_set_cursor (window, data->hand_cursor);
+  else if (data->forced_context)
+    gdk_window_set_cursor (window,
+			   get_tool_cursor (data, data->forced_context));
+  else
+    gdk_window_set_cursor (window, NULL);
+
+  /* In every Paper presentation the window cursor already follows the
+   * pointer only over the Paper window.  Re-grabbing devices here would make
+   * the tool cursor appear over other applications again. */
+  if (screenator_paper_local_input (data))
+    return;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+      GdkCursor *cursor = NULL;
+
+      if (!devdata->is_grabbed)
+	continue;
+
+      if (data->controls_hover <= 0)
+	{
+	  /* Use the tool that is actually selected, not a cursor cached on
+	   * this device.  After a resolution or mode change the cached context
+	   * may belong to a tool that is no longer active. */
+	  if (data->paper_panning || data->paper_hand_tool)
+	    cursor = data->hand_cursor;
+	  else if (devdata->saved_context)
+	    cursor = get_tool_cursor (data, devdata->cur_context);
+	  else if (data->forced_context)
+	    cursor = get_tool_cursor (data, data->forced_context);
+	  else
+	    cursor = NULL;
+	}
+
+      gdk_device_grab (devdata->device, window, GDK_OWNERSHIP_NONE,
+		       screenator_paper_grab_owner_events (data),
+		       SCREENATOR_MOUSE_EVENTS, cursor, GDK_CURRENT_TIME);
+    }
+}
+
+/* Re-apply the cursor that belongs to the tool which is actually selected
+ * now.  Used after mode changes, resolution changes and paper/PDF loading,
+ * where cached cursors or scaled eraser sizes may be stale. */
+static void
+paper_refresh_active_cursor (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  update_eraser_cursor (data);
+  paper_update_hover_cursor (data);
+}
+
+/* Recompute the control-window hover state from the real pointer position.
+ * Crossing events can be missing after a menu, dialog or toolbar drag. */
+static void
+paper_refresh_controls_hover (ScreenatorData *data)
+{
+  GdkWindow *pointer_window = gdk_window_at_pointer (NULL, NULL);
+  GdkWindow *icon_window =
+    data->icon_win ? gtk_widget_get_window (data->icon_win) : NULL;
+  GdkWindow *settings_window =
+    data->settings_win ? gtk_widget_get_window (data->settings_win) : NULL;
+  GdkWindow *bar_window =
+    data->paper_top_bar ? gtk_widget_get_window (data->paper_top_bar) : NULL;
+  GdkWindow *window;
+  gboolean over = FALSE;
+
+  /* The pointer can be over a child X window of the toolbar or icon, so walk
+   * the window tree up to the control toplevels. */
+  for (window = pointer_window; window && !over;
+       window = gdk_window_get_parent (window))
+    {
+      if (window == icon_window || window == settings_window ||
+	  window == bar_window)
+	over = TRUE;
+    }
+
+  data->controls_hover = over ? 1 : 0;
+}
+
+static void
+set_paper_pan_cursor (ScreenatorData *data)
+{
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  GHashTableIter it;
+  gpointer value;
+
+  if (!window || !data->hand_cursor)
+    return;
+
+  gdk_window_set_cursor (window, data->hand_cursor);
+
+  if (screenator_paper_local_input (data))
+    return;
+
+  if (!data->devdatatable)
+    return;
+
+  /* A grabbed device uses the cursor from its grab, not the window cursor. */
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->is_grabbed)
+	gdk_device_grab (devdata->device, window, GDK_OWNERSHIP_NONE,
+			 screenator_paper_grab_owner_events (data),
+			 SCREENATOR_MOUSE_EVENTS,
+			 data->controls_hover > 0 ? NULL : data->hand_cursor,
+			 GDK_CURRENT_TIME);
+    }
+}
+
+static void
+restore_paper_cursor (ScreenatorData *data)
+{
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  GHashTableIter it;
+  gpointer value;
+
+  /* While panning, the pointer stays a hand between drags. */
+  if (data->paper_hand_tool)
+    {
+      set_paper_pan_cursor (data);
+      return;
+    }
+
+  if (window)
+    gdk_window_set_cursor (window,
+			   data->forced_context
+			   ? get_tool_cursor (data, data->forced_context)
+			   : NULL);
+
+  if (screenator_paper_local_input (data))
+    return;
+
+  if (!data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->is_grabbed)
+	set_device_cursor (data, devdata->device,
+			   devdata->saved_context
+			   ? devdata->cur_context : data->forced_context);
+    }
+}
+
+void
+screenator_paper_pan_start (ScreenatorData *data, guint button, gint x, gint y)
+{
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  data->paper_panning = TRUE;
+  data->paper_pan_button = button;
+  data->paper_pan_x = x;
+  data->paper_pan_y = y;
+  set_paper_pan_cursor (data);
+}
+
+void
+screenator_paper_pan_motion (ScreenatorData *data, gint x, gint y)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+  gint dx, dy;
+
+  if (!data->paper_panning)
+    return;
+
+  dx = x - data->paper_pan_x;
+  dy = y - data->paper_pan_y;
+  data->paper_pan_x = x;
+  data->paper_pan_y = y;
+
+  doc = paper_active_document (data);
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  if (paper_continuous (data))
+    {
+      paper_pdf_set_scroll (data, doc->pdf_scroll_y - dy);
+      return;
+    }
+
+  paper_set_view (data, page->view_x - dx, page->view_y - dy);
+}
+
+void
+screenator_paper_pan_end (ScreenatorData *data)
+{
+  gboolean was_panning = data->paper_panning;
+
+  data->paper_panning = FALSE;
+  data->paper_pan_button = 0;
+
+  if (was_panning)
+    restore_paper_cursor (data);
+}
+
+/* The right mouse button and stylus side button 2 erase only while they are
+ * pressed.  Restore the tool that was active before and drop the grab that
+ * was taken just for the temporary eraser. */
+static void
+paper_finish_temporary_eraser (ScreenatorData *data)
+{
+  ScreenatorDeviceData *devdata = NULL;
+  GdkDevice *device;
+
+  if (!data->paper_eraser_active)
+    return;
+
+  device = data->paper_eraser_device;
+  data->paper_eraser_active = FALSE;
+  data->paper_eraser_device = NULL;
+
+  if (device && data->devdatatable)
+    devdata = g_hash_table_lookup (data->devdatatable, device);
+
+  if (devdata)
+    {
+      devdata->stylus_eraser_active = FALSE;
+
+      if (devdata->saved_context)
+	{
+	  devdata->cur_context = devdata->saved_context;
+	  devdata->saved_context = NULL;
+	}
+
+      /* The pointer may still be over the window when a dialog opens. */
+      if (devdata->is_grabbed)
+	set_device_cursor (data, device, devdata->cur_context);
+    }
+
+  if (data->paper_hand_tool)
+    set_paper_pan_cursor (data);
+
+  /* If the eraser itself grabbed the device, let it go again so the paper
+   * becomes idle as soon as the button is released. */
+  if (!data->paper_eraser_was_grabbed && device)
+    release_grab (data, device);
+
+  data->paper_eraser_was_grabbed = FALSE;
+}
+
+/* Write every page of a document to a PDF.  For a PDF source the rendered
+ * page is the background and the annotations are placed where they were on
+ * screen. */
+static gboolean
+paper_write_pdf_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			  const gchar *path)
+{
+  cairo_surface_t *pdf;
+  cairo_status_t status;
+  guint i;
+
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return FALSE;
+
+  pdf = cairo_pdf_surface_create (path, data->width, data->height);
+  status = cairo_surface_status (pdf);
+
+  if (status != CAIRO_STATUS_SUCCESS)
+    {
+      g_printerr ("Could not create the PDF %s: %s\n", path,
+		  cairo_status_to_string (status));
+      cairo_surface_destroy (pdf);
+      return FALSE;
+    }
+
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+      gint canvas_width = page->canvas_width;
+      gint canvas_height = page->canvas_height;
+      gdouble pdf_width = page->pdf_width;
+      gdouble pdf_height = page->pdf_height;
+      cairo_t *cr;
+
+      if (page->style == SCREENATOR_PAPER_PDF)
+	{
+	  paper_ensure_background (data, doc, i, page);
+	  if (page->background)
+	    {
+	      canvas_width = page->background_width;
+	      canvas_height = page->background_height;
+	    }
+	  pdf_width = canvas_width;
+	  pdf_height = canvas_height;
+	}
+      else if (!canvas_width || !canvas_height)
+	paper_size_dimensions (data, &canvas_width, &canvas_height,
+			       &pdf_width, &pdf_height);
+
+      if (!canvas_width || !canvas_height)
+	{
+	  canvas_width = data->width;
+	  canvas_height = data->height;
+	}
+      if (pdf_width <= 0 || pdf_height <= 0)
+	{
+	  pdf_width = canvas_width;
+	  pdf_height = canvas_height;
+	}
+
+      cairo_pdf_surface_set_size (pdf, pdf_width, pdf_height);
+      cr = cairo_create (pdf);
+
+      if (page->style == SCREENATOR_PAPER_PDF)
+	{
+	  gboolean rendered = FALSE;
+
+#ifdef HAVE_POPPLER_GLIB
+	  if (doc->pdf_document)
+	    {
+	      PopplerPage *pdf_page;
+
+	      g_mutex_lock (&paper_pdf_render_mutex);
+	      pdf_page = poppler_document_get_page (
+		(PopplerDocument *) doc->pdf_document, i);
+
+	      if (pdf_page)
+		{
+		  gdouble source_width = 0.0, source_height = 0.0;
+
+		  poppler_page_get_size (pdf_page, &source_width,
+					 &source_height);
+		  cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+		  cairo_paint (cr);
+
+		  if (source_width > 0.0 && source_height > 0.0)
+		    {
+		      cairo_save (cr);
+		      cairo_scale (cr, pdf_width / source_width,
+				   pdf_height / source_height);
+		      poppler_page_render (pdf_page, cr);
+		      cairo_restore (cr);
+		      rendered = TRUE;
+		    }
+
+		  g_object_unref (pdf_page);
+		}
+	      g_mutex_unlock (&paper_pdf_render_mutex);
+	    }
+#endif
+
+	  if (!rendered && page->background)
+	    {
+	      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+	      cairo_paint (cr);
+	      cairo_set_source_surface (cr, page->background, 0, 0);
+	      cairo_paint (cr);
+	    }
+	}
+      else
+	{
+	  cairo_scale (cr, pdf_width / canvas_width,
+		       pdf_height / canvas_height);
+	  draw_paper_background (cr, page->style,
+				 canvas_width, canvas_height);
+	}
+
+      cairo_save (cr);
+      if (page->style != SCREENATOR_PAPER_PDF && canvas_width > 0 &&
+	  canvas_height > 0)
+	cairo_scale (cr, pdf_width / canvas_width,
+		     pdf_height / canvas_height);
+
+      cairo_rectangle (cr, 0, 0, canvas_width, canvas_height);
+      cairo_clip (cr);
+
+      if (g_getenv ("SCREENATOR_VECTOR_DEBUG"))
+	g_printerr ("VECTOR: save page %u style %d valid=%d vector=%p "
+		    "type=%d annotations=%p\n", i, page->style,
+		    page->vector_valid, (void *) page->vector,
+		    page->vector ? (gint) cairo_surface_get_type (page->vector)
+		    : -1, (void *) page->annotations);
+
+      if (page->vector_valid && page->vector)
+	{
+	  cairo_set_source_surface (cr, page->vector, 0, 0);
+	  cairo_paint (cr);
+	}
+      else if (page->annotations)
+	{
+	  cairo_set_source_surface (cr, page->annotations, 0, 0);
+	  cairo_paint (cr);
+	}
+      cairo_restore (cr);
+
+      cairo_show_page (cr);
+      cairo_destroy (cr);
+    }
+
+  cairo_surface_finish (pdf);
+  status = cairo_surface_status (pdf);
+  cairo_surface_destroy (pdf);
+
+  if (status != CAIRO_STATUS_SUCCESS)
+    {
+      g_printerr ("Could not save the PDF %s: %s\n", path,
+		  cairo_status_to_string (status));
+      return FALSE;
+    }
+
+  return TRUE;
+}
+
+/* Folder used for automatic paper saves. */
+static gchar *
+paper_documents_directory (void)
+{
+  const gchar *documents =
+    g_get_user_special_dir (G_USER_DIRECTORY_DOCUMENTS);
+
+  if (documents && *documents)
+    return g_strdup (documents);
+
+  return g_build_filename (g_get_home_dir (), "Documents", NULL);
+}
+
+static const gchar *
+paper_type_slug (ScreenatorPaperType type)
+{
+  switch (type)
+    {
+    case SCREENATOR_PAPER_PLAIN:
+      return "plain";
+    case SCREENATOR_PAPER_RULED:
+      return "ruled";
+    case SCREENATOR_PAPER_GRAPH:
+      return "graph";
+    case SCREENATOR_PAPER_PDF:
+      return "pdf";
+    default:
+      return "paper";
+    }
+}
+
+static void
+paper_pump_events (void)
+{
+  gint i = 0;
+
+  while (gtk_events_pending () && i++ < 100)
+    gtk_main_iteration_do (FALSE);
+}
+
+/* Small non-focusable overlay shown while a PDF is written. */
+static GtkWidget *
+paper_show_save_progress (ScreenatorData *data)
+{
+  GtkWidget *window;
+  GtkWidget *box;
+  GtkWidget *label;
+  GtkWidget *bar;
+  GdkScreen *screen;
+  GdkRectangle area;
+  gint width, height, monitor;
+
+  window = gtk_window_new (GTK_WINDOW_POPUP);
+  gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_accept_focus (GTK_WINDOW (window), FALSE);
+  gtk_window_set_focus_on_map (GTK_WINDOW (window), FALSE);
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 18);
+  label = gtk_label_new ("Saving PDF...");
+  gtk_label_set_markup (GTK_LABEL (label), "<b>Saving PDF...</b>");
+  bar = gtk_progress_bar_new ();
+  gtk_progress_bar_set_pulse_step (GTK_PROGRESS_BAR (bar), 0.15);
+  gtk_progress_bar_pulse (GTK_PROGRESS_BAR (bar));
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+  gtk_box_pack_start (GTK_BOX (box), bar, FALSE, FALSE, 0);
+  gtk_container_add (GTK_CONTAINER (window), box);
+
+  make_dialog_popup (window);
+
+  /* Block pointer/keyboard handling on the paper while the save runs. */
+  g_object_set_data (G_OBJECT (window), "screenator-save-previous-dialog",
+		     data->top_dialog);
+  data->top_dialog = window;
+
+  gtk_widget_show_all (window);
+  paper_pump_events ();
+
+  screen = gdk_screen_get_default ();
+  monitor = screen ? gdk_screen_get_primary_monitor (screen) : 0;
+  if (screen && monitor >= 0)
+    gdk_screen_get_monitor_geometry (screen, monitor, &area);
+  else
+    {
+      area.x = 0;
+      area.y = 0;
+      area.width = gdk_screen_width ();
+      area.height = gdk_screen_height ();
+    }
+
+  gtk_window_get_size (GTK_WINDOW (window), &width, &height);
+  gtk_window_move (GTK_WINDOW (window),
+		   area.x + MAX (0, (area.width - width) / 2),
+		   area.y + MAX (0, (area.height - height) / 2));
+
+  paper_raise_over_panel (data);
+  if (gtk_widget_get_window (window))
+    gdk_window_raise (gtk_widget_get_window (window));
+  paper_pump_events ();
+
+  return window;
+}
+
+static void
+paper_hide_save_progress (ScreenatorData *data, GtkWidget *window)
+{
+  GtkWidget *previous;
+
+  if (!window)
+    return;
+
+  previous = g_object_get_data (G_OBJECT (window),
+				"screenator-save-previous-dialog");
+  gtk_widget_destroy (window);
+  data->top_dialog = previous;
+  paper_update_panel_raise (data);
+}
+
+/* Save one paper document to the Documents folder as
+ * Screenator-<type>-YYYYMMDD-HHMMSS.pdf.  A document is only written when it
+ * has been changed since its last save. */
+static gboolean
+paper_autosave_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			 gchar **saved_path)
+{
+  GDateTime *now;
+  gchar *directory, *stamp, *name, *path;
+
+  if (saved_path)
+    *saved_path = NULL;
+
+  if (data->paper_saving)
+    return FALSE;
+
+  if (!doc || !doc->pages || doc->pages->len == 0 || !doc->modified)
+    return FALSE;
+
+  if (data->paper == doc->type)
+    {
+      paper_commit_pending (data);
+      paper_store_active_page (data);
+    }
+
+  directory = paper_documents_directory ();
+  if (g_mkdir_with_parents (directory, 0755) != 0)
+    {
+      g_free (directory);
+      return FALSE;
+    }
+
+  now = g_date_time_new_now_local ();
+  stamp = g_date_time_format (now, "%Y%m%d-%H%M%S");
+  name = g_strdup_printf ("Screenator-%s-%s.pdf",
+			  paper_type_slug (doc->type), stamp);
+  path = g_build_filename (directory, name, NULL);
+
+  g_free (name);
+  g_free (stamp);
+  g_free (directory);
+  g_date_time_unref (now);
+
+  {
+    GtkWidget *progress;
+    gboolean written;
+
+    data->paper_saving = TRUE;
+    progress = paper_show_save_progress (data);
+    written = paper_write_pdf_document (data, doc, path);
+    paper_hide_save_progress (data, progress);
+    data->paper_saving = FALSE;
+
+    if (!written)
+      {
+	g_free (path);
+	return FALSE;
+      }
+  }
+
+  doc->modified = FALSE;
+  if (saved_path)
+    *saved_path = path;
+  else
+    g_free (path);
+
+  return TRUE;
+}
+
+static void
+paper_show_saved_paths (ScreenatorData *data, GList *paths)
+{
+  GtkWidget *dialog;
+  GString *text = g_string_new (NULL);
+  GList *l;
+
+  if (!paths)
+    return;
+
+  if (g_list_length (paths) == 1)
+    g_string_append (text, "Saved to:\n");
+  else
+    g_string_append (text, "The changed papers were saved to:\n");
+
+  for (l = paths; l; l = l->next)
+    {
+      g_string_append (text, (const gchar *) l->data);
+      g_string_append_c (text, '\n');
+    }
+
+  dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_MODAL,
+				   GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+				   "%s", text->str);
+  gtk_window_set_title (GTK_WINDOW (dialog), "Paper saved");
+  show_dialog_above_drawings (data, dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+
+  g_string_free (text, TRUE);
+}
+
+static void
+paper_show_save_failure (ScreenatorData *data)
+{
+  GtkWidget *dialog;
+
+  dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_MODAL,
+				   GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+				   "The paper could not be saved to the "
+				   "Documents folder.");
+  gtk_window_set_title (GTK_WINDOW (dialog), "Could not save paper");
+  show_dialog_above_drawings (data, dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+}
+
+/* The desktop file chooser is a separate, normally managed window.  The
+ * annotation overlay is always above managed windows, so hide it (and the
+ * floating controls) while the chooser is open.  The global shortcuts and the
+ * painting grab are released too, so the chooser owns the keyboard and
+ * pointer. */
+static gint
+paper_run_native_dialog (ScreenatorData *data, GtkFileChooserNative *dialog)
+{
+  gboolean was_grabbed;
+  gboolean win_visible, icon_visible, settings_visible, bar_visible;
+  gint response;
+#ifdef GDK_WINDOWING_X11
+  GdkWindow *win;
+  GdkDisplay *gdk_display = NULL;
+  Display *xdisplay = NULL;
+  Window prev_focus = None;
+  int revert = 0;
+#endif
+
+  was_grabbed = screenator_any_grabbed (data);
+
+  paper_finish_temporary_eraser (data);
+  screenator_paper_pan_end (data);
+  data->native_dialog_open = TRUE;
+
+  /* Releasing the grab can hide an empty Screen Annotation window.  Check the
+   * visibility afterwards so the restore below matches the real state. */
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  win_visible = data->win && gtk_widget_get_visible (data->win);
+  icon_visible = data->icon_win && gtk_widget_get_visible (data->icon_win);
+  settings_visible = data->settings_win &&
+    gtk_widget_get_visible (data->settings_win);
+  bar_visible = data->paper_top_bar &&
+    gtk_widget_get_visible (data->paper_top_bar);
+
+#ifdef GDK_WINDOWING_X11
+  win = data->win ? gtk_widget_get_window (data->win) : NULL;
+  if (win && GDK_IS_X11_WINDOW (win))
+    {
+      gdk_display = gdk_window_get_display (win);
+      xdisplay = GDK_DISPLAY_XDISPLAY (gdk_display);
+
+      if (data->paper == SCREENATOR_PAPER_NONE)
+	{
+	  XGetInputFocus (xdisplay, &prev_focus, &revert);
+	  if (prev_focus == None || prev_focus == PointerRoot ||
+	      prev_focus == GDK_WINDOW_XID (win))
+	    prev_focus = None;
+	}
+    }
+#endif
+
+  screenator_suspend_shortcuts (data, TRUE);
+
+  if (bar_visible)
+    gtk_widget_hide (data->paper_top_bar);
+  if (settings_visible)
+    gtk_widget_hide (data->settings_win);
+  if (icon_visible)
+    gtk_widget_hide (data->icon_win);
+  if (win_visible)
+    gtk_widget_hide (data->win);
+
+  gdk_display_sync (gdk_display_get_default ());
+  gdk_window_process_all_updates ();
+
+  response = gtk_native_dialog_run (GTK_NATIVE_DIALOG (dialog));
+
+  if (win_visible)
+    gtk_widget_show (data->win);
+  if (icon_visible)
+    gtk_widget_show (data->icon_win);
+  if (settings_visible)
+    gtk_widget_show (data->settings_win);
+  if (bar_visible)
+    gtk_widget_show (data->paper_top_bar);
+
+  if (data->win && gtk_widget_get_window (data->win))
+    {
+      gdk_window_raise (gtk_widget_get_window (data->win));
+      gdk_window_invalidate_rect (gtk_widget_get_window (data->win), NULL, 0);
+    }
+  raise_icon_window (data);
+  update_settings_indicator (data);
+
+  screenator_suspend_shortcuts (data, FALSE);
+  data->native_dialog_open = FALSE;
+
+  if (was_grabbed)
+    acquire_grab (data, NULL);
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+#ifdef GDK_WINDOWING_X11
+  else if (xdisplay && prev_focus != None)
+    {
+      gdk_x11_display_error_trap_push (gdk_display);
+      XSetInputFocus (xdisplay, prev_focus, RevertToParent, CurrentTime);
+      XFlush (xdisplay);
+      gdk_x11_display_error_trap_pop_ignored (gdk_display);
+    }
+#endif
+
+  return response;
+}
+
+/* Switch the active paper to another selected type.  The current page is
+ * stored first and the new document is loaded into the shared backbuffer. */
+static void
+paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+
+  if (data->paper == SCREENATOR_PAPER_NONE || data->paper == type)
+    return;
+
+  if (data->paper == SCREENATOR_PAPER_PDF)
+    paper_pdf_remember_current (data);
+
+  doc = paper_ensure_document (data, type);
+  if (!doc)
+    return;
+
+  if (type == SCREENATOR_PAPER_PDF && !doc->pdf_loaded)
+    return;
+
+  screenator_paper_pan_end (data);
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+  screenator_page_history_clear (data);
+
+  data->paper = type;
+  data->paper_selected = type;
+
+  if (type != SCREENATOR_PAPER_PDF && doc->pages->len == 0)
+    {
+      ScreenatorPaperPage fresh = paper_new_page (data, type);
+
+      g_array_append_val (doc->pages, fresh);
+      doc->page = 0;
+    }
+
+  if (doc->pages->len == 0)
+    return;
+
+  if (data->paper_continuous_scroll)
+    {
+      paper_build_continuous_layout (data, doc);
+
+      if (doc->pdf_stack_height > 0)
+	{
+	  gint top = (doc->pdf_page_tops &&
+		      doc->page < doc->pdf_page_tops->len)
+	    ? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0;
+
+	  doc->pdf_scroll_y = CLAMP (top, 0,
+				     MAX (0, doc->pdf_stack_height -
+					  (gint) data->height));
+	  paper_pdf_prepare_active (data, doc);
+	  reset_undo_history (data);
+	  paper_repaint (data);
+	  schedule_tray_menu_refresh (data);
+	  return;
+	}
+    }
+
+  page = paper_current_page (doc);
+  if (type == SCREENATOR_PAPER_PDF)
+    paper_ensure_background (data, doc, doc->page, page);
+
+  paper_load_page (data, page);
+  reset_undo_history (data);
+  paper_refresh_active_cursor (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static gboolean
+on_paper_window_focus_in (GtkWidget *widget, GdkEventFocus *event,
+			  gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) event;
+
+  data->paper_window_focused = TRUE;
+  if (screenator_paper_local_input (data))
+    screenator_paper_shortcuts_focus (data, TRUE);
+
+  return FALSE;
+}
+
+static gboolean
+on_paper_window_focus_out (GtkWidget *widget, GdkEventFocus *event,
+			   gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) event;
+
+  data->paper_window_focused = FALSE;
+  if (screenator_paper_local_input (data))
+    screenator_paper_shortcuts_focus (data, FALSE);
+
+  return FALSE;
+}
+
+static gboolean
+on_paper_window_delete (GtkWidget *widget, GdkEvent *event, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) widget;
+  (void) event;
+
+  screenator_exit_paper_drawing (data);
+  return TRUE;
+}
+
+/* Create the normal Paper window.  Unlike the Screen Annotation overlay it is
+ * a regular managed top-level window: other applications and dialogs can cover
+ * it, and Alt+Tab switches away from it normally. */
+void
+screenator_create_paper_window (ScreenatorData *data)
+{
+  GtkWidget *window;
+
+  if (!data || data->paper_win)
+    return;
+
+  if (!data->overlay_win)
+    data->overlay_win = data->win;
+
+  window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+  data->paper_win = window;
+  data->paper_window_fullscreen = FALSE;
+
+  gtk_window_set_title (GTK_WINDOW (window), "Screenator Paper");
+  gtk_window_set_resizable (GTK_WINDOW (window), TRUE);
+  gtk_window_set_decorated (GTK_WINDOW (window), TRUE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (window), FALSE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (window), FALSE);
+  gtk_window_set_accept_focus (GTK_WINDOW (window), TRUE);
+  gtk_window_set_focus_on_map (GTK_WINDOW (window), TRUE);
+  gtk_widget_set_app_paintable (window, TRUE);
+  /* Do not set a fixed size request: it becomes a minimum size and would stop
+   * the Window mode from being resizable below the original screen size. */
+  gtk_window_set_default_size (GTK_WINDOW (window),
+			       data->width, data->height);
+
+  gtk_widget_add_events (window,
+			 SCREENATOR_WINDOW_EVENTS | GDK_FOCUS_CHANGE_MASK);
+  g_signal_connect (window, "draw",
+		    G_CALLBACK (on_expose), data);
+  g_signal_connect (window, "motion_notify_event",
+		    G_CALLBACK (on_motion), data);
+  g_signal_connect (window, "button_press_event",
+		    G_CALLBACK (on_buttonpress), data);
+  g_signal_connect (window, "button_release_event",
+		    G_CALLBACK (on_buttonrelease), data);
+  g_signal_connect (window, "scroll_event",
+		    G_CALLBACK (on_scroll), data);
+  g_signal_connect (window, "size-allocate",
+		    G_CALLBACK (on_paper_window_size_allocate), data);
+  g_signal_connect (window, "delete-event",
+		    G_CALLBACK (on_paper_window_delete), data);
+  g_signal_connect (window, "focus-in-event",
+		    G_CALLBACK (on_paper_window_focus_in), data);
+  g_signal_connect (window, "focus-out-event",
+		    G_CALLBACK (on_paper_window_focus_out), data);
+
+  gtk_widget_realize (window);
+  gtk_widget_hide (window);
+}
+
+/* Switch the active drawing window between the Screen overlay and the normal
+ * Paper window. */
+void
+screenator_use_paper_window (ScreenatorData *data, gboolean use)
+{
+  if (!data)
+    return;
+
+  if (use)
+    {
+      screenator_create_paper_window (data);
+      if (!data->paper_win)
+	return;
+
+      if (data->overlay_win && data->overlay_win != data->paper_win &&
+	  gtk_widget_get_visible (data->overlay_win))
+	gtk_widget_hide (data->overlay_win);
+
+      data->win = data->paper_win;
+      data->hidden = 0;
+      data->paper_window_mode = FALSE;
+      data->paper_view_height_current = (gint) data->height;
+      screenator_window_mode_clear (data);
+      gtk_widget_show (data->paper_win);
+
+      if (!data->paper_window_fullscreen)
+	{
+	  gtk_window_fullscreen (GTK_WINDOW (data->paper_win));
+	  data->paper_window_fullscreen = TRUE;
+	}
+
+      gtk_window_deiconify (GTK_WINDOW (data->paper_win));
+      gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+      gtk_window_present_with_time (GTK_WINDOW (data->paper_win),
+				    gtk_get_current_event_time ());
+      screenator_window_mode_enter (data);
+      paper_refresh_active_cursor (data);
+    }
+  else
+    {
+      if (!data->paper_win)
+	return;
+
+      if (data->paper_window_mode)
+	{
+	  data->paper_window_mode = FALSE;
+	  paper_window_restore_buffer (data);
+	}
+
+      gtk_widget_hide (data->paper_win);
+
+      if (data->overlay_win)
+	{
+	  data->win = data->overlay_win;
+	  screenator_window_mode_leave (data);
+	  paper_refresh_active_cursor (data);
+
+	  if (data->painted)
+	    {
+	      gtk_widget_show (data->overlay_win);
+	      data->hidden = 0;
+	    }
+	  else
+	    {
+	      gtk_widget_hide (data->overlay_win);
+	      data->hidden = 1;
+	    }
+	}
+    }
+}
+
+/* Ctrl+W in Paper mode: switch between fullscreen and Window mode.  In
+ * Window mode the paper page is scaled so its width fits the Paper window,
+ * and the window can be resized or covered normally. */
+void
+screenator_toggle_paper_window_fullscreen (ScreenatorData *data)
+{
+  if (!data || !data->paper_win)
+    return;
+
+  if (!data->paper_window_mode)
+    {
+      ScreenatorPaperDocument *doc = paper_active_document (data);
+      ScreenatorPaperPage *page = paper_current_page (doc);
+      GdkScreen *screen = gtk_widget_get_screen (data->paper_win);
+      GdkRectangle area;
+      gint monitor, canvas_width, window_width, window_height;
+      gdouble scale;
+
+      if (screen)
+	{
+	  monitor = gdk_screen_get_primary_monitor (screen);
+	  if (monitor < 0)
+	    monitor = 0;
+	  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+	}
+      else
+	{
+	  area.x = 0;
+	  area.y = 0;
+	  area.width = data->width;
+	  area.height = data->height;
+	}
+
+      canvas_width = (page && page->canvas_width > 0)
+	? page->canvas_width : (gint) data->width;
+      if (canvas_width <= 0)
+	canvas_width = (gint) data->width;
+
+      window_width = MAX (320, area.width * 4 / 5);
+      scale = (gdouble) window_width / (gdouble) canvas_width;
+      window_height = MAX (240, (gint) round (data->height * scale));
+      window_height = MIN (window_height, area.height * 9 / 10);
+
+      gtk_window_unfullscreen (GTK_WINDOW (data->paper_win));
+      gtk_window_set_decorated (GTK_WINDOW (data->paper_win), TRUE);
+      gtk_window_set_resizable (GTK_WINDOW (data->paper_win), TRUE);
+      gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+      data->paper_window_fullscreen = FALSE;
+      data->paper_window_mode = TRUE;
+
+      gtk_window_resize (GTK_WINDOW (data->paper_win),
+			 window_width, window_height);
+      gtk_window_move (GTK_WINDOW (data->paper_win),
+		       area.x + MAX (0, (area.width - window_width) / 2),
+		       area.y + MAX (0, (area.height - window_height) / 2));
+      gtk_window_present (GTK_WINDOW (data->paper_win));
+      paper_window_ensure_buffer (data);
+    }
+  else
+    {
+      data->paper_window_mode = FALSE;
+      paper_window_restore_buffer (data);
+      update_paper_shortcuts (data, TRUE);
+      gtk_window_fullscreen (GTK_WINDOW (data->paper_win));
+      gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+      data->paper_window_fullscreen = TRUE;
+    }
+
+  paper_refresh_active_cursor (data);
+  paper_repaint (data);
+}
+
+/* Ctrl+D in Paper mode: leave fullscreen just enough for the desktop panel to
+ * appear above the paper.  This is not Window mode: the window is not made
+ * resizable and its paper presentation is unchanged. */
+void
+screenator_toggle_paper_panel (ScreenatorData *data)
+{
+  if (!data || !data->paper_win || data->paper == SCREENATOR_PAPER_NONE ||
+      data->paper_window_mode)
+    return;
+
+  if (data->paper_window_fullscreen)
+    {
+      GdkScreen *screen = gtk_widget_get_screen (data->paper_win);
+      GdkRectangle area;
+      gint monitor = 0;
+
+      if (screen)
+	{
+	  monitor = gdk_screen_get_primary_monitor (screen);
+	  if (monitor < 0)
+	    monitor = 0;
+	  gdk_screen_get_monitor_geometry (screen, monitor, &area);
+	}
+      else
+	{
+	  area.x = 0;
+	  area.y = 0;
+	  area.width = data->width;
+	  area.height = data->height;
+	}
+
+      gtk_window_unfullscreen (GTK_WINDOW (data->paper_win));
+      data->paper_window_fullscreen = FALSE;
+
+      /* Keep the paper exactly as in fullscreen mode: borderless and
+       * non-resizable, covering the monitor.  The desktop panel is in the
+       * window-manager dock layer, so it stays above this normal window. */
+      gtk_window_set_decorated (GTK_WINDOW (data->paper_win), FALSE);
+      gtk_window_set_resizable (GTK_WINDOW (data->paper_win), FALSE);
+      gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+      gtk_window_resize (GTK_WINDOW (data->paper_win), area.width, area.height);
+      gtk_window_move (GTK_WINDOW (data->paper_win), area.x, area.y);
+      gtk_window_present (GTK_WINDOW (data->paper_win));
+    }
+  else
+    {
+      gtk_window_set_decorated (GTK_WINDOW (data->paper_win), TRUE);
+      gtk_window_set_resizable (GTK_WINDOW (data->paper_win), TRUE);
+      gtk_window_fullscreen (GTK_WINDOW (data->paper_win));
+      gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+      data->paper_window_fullscreen = TRUE;
+    }
+
+  paper_refresh_active_cursor (data);
+  paper_repaint (data);
+}
+
+/* Enter Paper Drawing with the selected document. */
+void
+screenator_enter_paper_drawing (ScreenatorData *data,
+				ScreenatorPaperType paper)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+
+  if (paper == SCREENATOR_PAPER_NONE)
+    {
+      screenator_exit_paper_drawing (data);
+      return;
+    }
+
+  screenator_timer_cancel (data);
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      paper_switch_to (data, paper);
+      return;
+    }
+
+  {
+    gboolean loaded_saved = FALSE;
+    gint saved_page = MAX (0, data->paper_pdf_page);
+
+    if (paper == SCREENATOR_PAPER_PDF && data->paper_pdf_path)
+      {
+	gint remembered = paper_pdf_memory_get (data, data->paper_pdf_path);
+
+	if (remembered >= 0)
+	  saved_page = remembered;
+      }
+
+    if (paper == SCREENATOR_PAPER_PDF)
+      {
+	doc = paper_document (data, SCREENATOR_PAPER_PDF);
+	if (!doc || !doc->pdf_loaded)
+	  {
+	    if (data->paper_pdf_path && *data->paper_pdf_path &&
+		g_file_test (data->paper_pdf_path, G_FILE_TEST_IS_REGULAR) &&
+		paper_load_pdf_file (data, data->paper_pdf_path))
+	      loaded_saved = TRUE;
+	    else if (!screenator_paper_open_pdf (data))
+	      return;
+	  }
+      }
+
+    screenator_clear_screenshot_paper (data);
+
+    doc = paper_ensure_document (data, paper);
+    if (!doc)
+      return;
+
+    /* A PDF loaded from the saved path returns to the page that was open
+     * when the application last exited. */
+    if (paper == SCREENATOR_PAPER_PDF && loaded_saved && doc->pdf_loaded &&
+	doc->pages && doc->pages->len > 0)
+      {
+	guint p = MIN ((guint) saved_page, doc->pages->len - 1);
+
+	doc->page = p;
+	data->paper_pdf_page = (gint) p;
+	doc->pdf_scroll_y = 0;
+
+	if (data->paper_continuous_scroll && doc->pdf_page_tops &&
+	    doc->pdf_page_tops->len > p)
+	  doc->pdf_scroll_y = g_array_index (doc->pdf_page_tops, gint, p);
+      }
+  }
+
+  if (paper != SCREENATOR_PAPER_PDF && doc->pages->len == 0)
+    {
+      ScreenatorPaperPage fresh = paper_new_page (data, paper);
+
+      g_array_append_val (doc->pages, fresh);
+      doc->page = 0;
+    }
+
+  if (doc->pages->len == 0)
+    return;
+
+  page = paper_current_page (doc);
+  if (paper == SCREENATOR_PAPER_PDF)
+    paper_ensure_background (data, doc, doc->page, page);
+
+  /* Keep a copy of the Screen Annotation drawings aside and load the current
+   * paper page into the one backbuffer the tools draw on. */
+  data->screen_annotations =
+    cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+				data->width, data->height);
+  copy_surface (data->screen_annotations, data->backbuffer);
+  data->screen_annotations_painted = data->painted;
+
+  data->paper = paper;
+  data->paper_selected = paper;
+  data->hide_drawings = FALSE;
+
+  if (data->paper_continuous_scroll)
+    {
+      paper_build_continuous_layout (data, doc);
+
+      if (doc->pdf_stack_height > 0)
+	{
+	  gint top = (doc->pdf_page_tops &&
+		      doc->page < doc->pdf_page_tops->len)
+	    ? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0;
+
+	  doc->pdf_scroll_y = CLAMP (top, 0,
+				     MAX (0, doc->pdf_stack_height -
+					  (gint) data->height));
+	  paper_pdf_prepare_active (data, doc);
+	}
+      else
+	paper_load_page (data, page);
+    }
+  else
+    paper_load_page (data, page);
+
+  screenator_use_paper_window (data, TRUE);
+  paper_top_bar_restore (data);
+  paper_top_bar_update_active_tool (data);
+  reset_undo_history (data);
+
+  /* A tool selected before leaving Paper mode is activated again when the
+   * paper is reopened. */
+  if (data->forced_context && !screenator_any_grabbed (data))
+    acquire_grab (data, NULL);
+
+  update_paper_shortcuts (data, TRUE);
+  paper_repaint (data);
+
+  if (data->hidden)
+    show_window (data);
+  else
+    {
+      if (gtk_widget_get_window (data->win))
+	gdk_window_raise (gtk_widget_get_window (data->win));
+      raise_icon_window (data);
+    }
+
+  /* Paper Drawing is the active window: it keeps the keyboard, so typing
+   * does not reach the application below. */
+  paper_take_focus (data);
+
+  /* Fullscreen mapping is asynchronous on some window managers.  Present and
+   * raise again after the mode switch so F3 does not leave the paper behind
+   * other applications or minimized in the taskbar. */
+  if (data->paper_win)
+    {
+      gtk_window_deiconify (GTK_WINDOW (data->paper_win));
+      gtk_window_present_with_time (GTK_WINDOW (data->paper_win),
+				    gtk_get_current_event_time ());
+      if (gtk_widget_get_window (data->paper_win))
+	gdk_window_raise (gtk_widget_get_window (data->paper_win));
+    }
+
+  paper_refresh_active_cursor (data);
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
+}
+
+void
+screenator_exit_paper_drawing (ScreenatorData *data)
+{
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  paper_pdf_remember_current (data);
+  screenator_timer_cancel (data);
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+
+  if (data->screen_annotations)
+    {
+      copy_surface (data->backbuffer, data->screen_annotations);
+      cairo_surface_destroy (data->screen_annotations);
+      data->screen_annotations = NULL;
+    }
+
+  data->painted = data->screen_annotations_painted;
+  data->paper = SCREENATOR_PAPER_NONE;
+  paper_background_cache_free (data);
+  data->hide_drawings = FALSE;
+  data->paper_hand_tool = FALSE;
+  paper_top_bar_update_active_tool (data);
+  paper_finish_temporary_eraser (data);
+  screenator_paper_pan_end (data);
+  reset_undo_history (data);
+  screenator_use_paper_window (data, FALSE);
+
+  update_paper_shortcuts (data, FALSE);
+  paper_restore_focus (data);
+  paper_refresh_active_cursor (data);
+  paper_repaint (data);
+
+  if (!data->painted && !screenator_any_grabbed (data))
+    hide_window (data);
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static gint
+paper_pdf_memory_get (ScreenatorData *data, const gchar *path)
+{
+  gchar *canonical;
+  gpointer value;
+
+  if (!data || !path || !*path)
+    return -1;
+
+  if (!data->pdf_page_memory)
+    data->pdf_page_memory = g_hash_table_new_full (g_str_hash, g_str_equal,
+						   g_free, NULL);
+
+  canonical = g_canonicalize_filename (path, NULL);
+  if (!canonical)
+    return -1;
+
+  value = g_hash_table_lookup (data->pdf_page_memory, canonical);
+  g_free (canonical);
+
+  return value ? GPOINTER_TO_INT (value) - 1 : -1;
+}
+
+static void
+paper_pdf_memory_set (ScreenatorData *data, const gchar *path, gint page)
+{
+  gchar *canonical;
+
+  if (!data || !path || !*path)
+    return;
+
+  if (!data->pdf_page_memory)
+    data->pdf_page_memory = g_hash_table_new_full (g_str_hash, g_str_equal,
+						   g_free, NULL);
+
+  canonical = g_canonicalize_filename (path, NULL);
+  if (!canonical)
+    return;
+
+  g_hash_table_insert (data->pdf_page_memory, canonical,
+		       GINT_TO_POINTER (MAX (0, page) + 1));
+}
+
+/* Remember the page of the PDF that is currently shown. */
+static void
+paper_pdf_remember_current (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+
+  if (!data || data->paper != SCREENATOR_PAPER_PDF)
+    return;
+
+  doc = data->paper_docs[SCREENATOR_PAPER_PDF];
+  if (!doc || !doc->pdf_loaded || !doc->pdf_path)
+    return;
+
+  paper_pdf_memory_set (data, doc->pdf_path, (gint) doc->page);
+  data->paper_pdf_page = (gint) doc->page;
+
+  g_free (data->paper_pdf_path);
+  data->paper_pdf_path = g_strdup (doc->pdf_path);
+}
+
+/* Load a PDF and make it the selected paper. */
+static gboolean
+paper_load_pdf_file (ScreenatorData *data, const gchar *path)
+{
+#ifdef HAVE_POPPLER_GLIB
+  PopplerDocument *pdf;
+  ScreenatorPaperDocument *doc;
+  GError *error = NULL;
+  gchar *uri;
+  gint pages, i;
+
+  uri = g_filename_to_uri (path, NULL, NULL);
+  if (!uri)
+    return FALSE;
+
+  pdf = poppler_document_new_from_file (uri, NULL, &error);
+  g_free (uri);
+
+  if (!pdf)
+    {
+      GtkWidget *dialog;
+
+      dialog = gtk_message_dialog_new (NULL,
+				       GTK_DIALOG_MODAL,
+				       GTK_MESSAGE_ERROR,
+				       GTK_BUTTONS_OK,
+				       "Could not open the PDF:\n%s",
+				       error ? error->message : path);
+      gtk_window_set_title (GTK_WINDOW (dialog), "Open PDF");
+      show_dialog_above_drawings (data, dialog);
+      gtk_dialog_run (GTK_DIALOG (dialog));
+      gtk_widget_destroy (dialog);
+      g_clear_error (&error);
+      return FALSE;
+    }
+
+  pages = poppler_document_get_n_pages (pdf);
+  if (pages <= 0)
+    {
+      g_object_unref (pdf);
+      return FALSE;
+    }
+
+  paper_pdf_remember_current (data);
+
+  doc = paper_ensure_document (data, SCREENATOR_PAPER_PDF);
+  g_atomic_int_inc (&data->pdf_render_serial);
+  data->paper_page_dirty = FALSE;
+  screenator_page_history_clear (data);
+  paper_document_clear_pages (doc);
+
+  if (doc->pdf_document)
+    g_object_unref ((PopplerDocument *) doc->pdf_document);
+
+  g_free (doc->pdf_path);
+  doc->pdf_path = g_strdup (path);
+  doc->pdf_document = pdf;
+  doc->pdf_page_count = pages;
+  doc->pdf_loaded = TRUE;
+  {
+    gint remembered = paper_pdf_memory_get (data, path);
+
+    doc->page = remembered >= 0 && remembered < pages
+      ? (guint) remembered : 0;
+  }
+
+  g_free (data->paper_pdf_path);
+  data->paper_pdf_path = g_strdup (path);
+  data->paper_pdf_page = (gint) doc->page;
+
+  for (i = 0; i < pages; i++)
+    {
+      ScreenatorPaperPage fresh = paper_new_page (data, SCREENATOR_PAPER_PDF);
+
+      g_array_append_val (doc->pages, fresh);
+    }
+
+  paper_pdf_build_layout (data, doc);
+  doc->pdf_scroll_y = 0;
+
+  data->paper_selected = SCREENATOR_PAPER_PDF;
+
+  if (data->paper == SCREENATOR_PAPER_PDF)
+    {
+      ScreenatorPaperPage *page = paper_current_page (doc);
+
+      screenator_paper_pan_end (data);
+      if (data->paper_continuous_scroll && doc->pdf_stack_height > 0)
+	{
+	  gint max_scroll = MAX (0, doc->pdf_stack_height -
+				paper_view_height (data));
+
+	  if (doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	    doc->pdf_scroll_y = CLAMP (
+	      g_array_index (doc->pdf_page_tops, gint, doc->page),
+	      0, max_scroll);
+	  paper_pdf_prepare_active (data, doc);
+	}
+      else
+	{
+	  paper_ensure_background (data, doc, doc->page, page);
+	  paper_load_page (data, page);
+	}
+      reset_undo_history (data);
+      paper_repaint (data);
+    }
+  else if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_switch_to (data, SCREENATOR_PAPER_PDF);
+
+  paper_refresh_active_cursor (data);
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+  return TRUE;
+#else
+  GtkWidget *dialog;
+
+  dialog = gtk_message_dialog_new (NULL,
+				   GTK_DIALOG_MODAL,
+				   GTK_MESSAGE_ERROR,
+				   GTK_BUTTONS_OK,
+				   "Screenator was built without PDF support.");
+  gtk_window_set_title (GTK_WINDOW (dialog), "Open PDF");
+  show_dialog_above_drawings (data, dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+  return FALSE;
+#endif
+}
+
+static gboolean
+clear_paper_pdf_chooser_busy (gpointer user_data)
+{
+  ((ScreenatorData *) user_data)->paper_pdf_chooser_busy = FALSE;
+  return G_SOURCE_REMOVE;
+}
+
+/* Ask for a PDF with the desktop's own file chooser. */
+gboolean
+screenator_paper_open_pdf (ScreenatorData *data)
+{
+  GtkFileChooserNative *dialog;
+  GtkFileFilter *filter;
+  ScreenatorPaperDocument *doc =
+    paper_document (data, SCREENATOR_PAPER_PDF);
+  gchar *folder;
+  gchar *path = NULL;
+  gboolean loaded = FALSE;
+  gint response;
+
+  if (data->paper_pdf_chooser_busy)
+    return FALSE;
+
+  data->paper_pdf_chooser_busy = TRUE;
+
+  dialog = gtk_file_chooser_native_new ("Open PDF Paper", NULL,
+					GTK_FILE_CHOOSER_ACTION_OPEN,
+					"Open", "Cancel");
+
+  filter = gtk_file_filter_new ();
+  gtk_file_filter_set_name (filter, "PDF files");
+  gtk_file_filter_add_pattern (filter, "*.pdf");
+  gtk_file_filter_add_pattern (filter, "*.PDF");
+  gtk_file_chooser_add_filter (GTK_FILE_CHOOSER (dialog), filter);
+
+  if (doc && doc->pdf_path)
+    folder = g_path_get_dirname (doc->pdf_path);
+  else
+    {
+      const gchar *pictures =
+	g_get_user_special_dir (G_USER_DIRECTORY_PICTURES);
+
+      folder = g_strdup (pictures && *pictures
+			 ? pictures : g_get_home_dir ());
+    }
+  gtk_file_chooser_set_current_folder (GTK_FILE_CHOOSER (dialog), folder);
+  g_free (folder);
+
+  response = paper_run_native_dialog (data, dialog);
+
+  if (response == GTK_RESPONSE_ACCEPT)
+    path = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (dialog));
+
+  g_object_unref (dialog);
+
+  if (path && *path)
+    loaded = paper_load_pdf_file (data, path);
+  g_free (path);
+  g_idle_add (clear_paper_pdf_chooser_busy, data);
+  return loaded;
+}
+
+/* Open a PDF file and switch to Paper mode with it. */
+gboolean
+screenator_open_pdf_path (ScreenatorData *data, const gchar *path)
+{
+  if (!path || !*path)
+    return FALSE;
+
+  if (!paper_load_pdf_file (data, path))
+    return FALSE;
+
+  data->paper_selected = SCREENATOR_PAPER_PDF;
+  screenator_enter_paper_drawing (data, SCREENATOR_PAPER_PDF);
+  /* The PDF may have replaced a page whose background was already cached. */
+  paper_background_invalidate (data);
+  paper_repaint (data);
+  paper_top_bar_update_active_tool (data);
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+  return TRUE;
+}
+
+/* Choose a paper type.  Every document keeps its own pages, drawings and
+ * PDF file while another type is shown. */
+void
+screenator_paper_select (ScreenatorData *data, ScreenatorPaperType paper)
+{
+  if (paper <= SCREENATOR_PAPER_NONE || paper > SCREENATOR_PAPER_PDF)
+    return;
+
+  if (paper != data->paper_selected)
+    {
+      if (data->paper == data->paper_selected &&
+	  data->paper != SCREENATOR_PAPER_NONE)
+	{
+	  paper_commit_pending (data);
+	  paper_store_active_page (data);
+	}
+    }
+
+  if (paper == SCREENATOR_PAPER_PDF)
+    {
+      ScreenatorPaperDocument *pdf =
+	paper_document (data, SCREENATOR_PAPER_PDF);
+
+      /* Reuse the already opened PDF.  Ask for a file only when no PDF has
+       * been loaded yet. */
+      if (!pdf || !pdf->pdf_loaded)
+	{
+	  if (!screenator_paper_open_pdf (data))
+	    return;
+	}
+    }
+
+  data->paper_selected = paper;
+
+  /* Selecting a paper type, or opening a PDF, always shows that paper. */
+  screenator_enter_paper_drawing (data, paper);
+
+  paper_top_bar_update_active_tool (data);
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Toggle between Screen and Paper modes. */
+void
+screenator_toggle_paper_drawing (ScreenatorData *data)
+{
+  ScreenatorPaperType type;
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      screenator_exit_paper_drawing (data);
+      return;
+    }
+
+  type = data->paper_selected;
+  if (type <= SCREENATOR_PAPER_NONE || type > SCREENATOR_PAPER_PDF)
+    type = SCREENATOR_PAPER_PLAIN;
+
+  screenator_enter_paper_drawing (data, type);
+}
+
+/* Append an action to the given stack.  The action owns its page payload. */
+static void
+paper_page_action_push (ScreenatorData *data, gboolean redo,
+			ScreenatorPageAction action)
+{
+  GArray **stack = redo ? &data->page_redo_stack
+			: &data->page_undo_stack;
+
+  if (!*stack)
+    *stack = g_array_new (FALSE, FALSE, sizeof (ScreenatorPageAction));
+
+  g_array_append_val (*stack, action);
+}
+
+/* Record a new user page operation and discard the old redo branch. */
+static void
+paper_page_action_record (ScreenatorData *data, ScreenatorPageAction action)
+{
+  paper_page_action_stack_clear (data->page_redo_stack);
+  paper_page_action_push (data, FALSE, action);
+}
+
+static gboolean
+paper_page_action_pop (GArray *stack, ScreenatorPageAction *action)
+{
+  if (!stack || stack->len == 0)
+    return FALSE;
+
+  *action = g_array_index (stack, ScreenatorPageAction, stack->len - 1);
+  g_array_set_size (stack, stack->len - 1);
+  return TRUE;
+}
+
+/* Rebuild the view after a page was inserted or removed. */
+static void
+paper_page_action_refresh (ScreenatorData *data,
+			   ScreenatorPaperDocument *doc, guint index)
+{
+  ScreenatorPaperPage page;
+
+  if (!doc || !doc->pages)
+    return;
+
+  if (doc->pages->len == 0)
+    {
+      page = paper_new_page (data, doc->type);
+      g_array_append_val (doc->pages, page);
+      index = 0;
+    }
+
+  doc->page = MIN (index, doc->pages->len - 1);
+  doc->modified = TRUE;
+  data->paper_page_dirty = FALSE;
+  data->paper_pending_ink_valid = FALSE;
+  data->paper_pdf_page = 0;
+
+  if (paper_continuous (data))
+    {
+      paper_build_continuous_layout (data, doc);
+      doc->pdf_scroll_y = CLAMP (
+	(doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0,
+	0, MAX (0, doc->pdf_stack_height - paper_view_height (data)));
+      paper_pdf_prepare_active (data, doc);
+    }
+  else
+    paper_load_page (data, paper_current_page (doc));
+
+  reset_undo_history (data);
+  paper_top_bar_update_active_tool (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Revert (undo) or replay (redo) the most recent page insertion/deletion. */
+static void
+paper_page_action_apply (ScreenatorData *data, gboolean undo)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  GArray *from = undo ? data->page_undo_stack : data->page_redo_stack;
+  ScreenatorPageAction action;
+  ScreenatorPaperPage page;
+  guint index;
+
+  if (!doc || !doc->pages || doc->type == SCREENATOR_PAPER_PDF ||
+      !paper_page_action_pop (from, &action))
+    return;
+
+  if (action.document != doc->type)
+    {
+      paper_page_clear (&action.page);
+      return;
+    }
+
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+
+  index = MIN (action.index, doc->pages->len);
+
+  if (undo)
+    {
+      if (action.type == SCREENATOR_PAGE_ACTION_INSERT)
+	{
+	  if (index >= doc->pages->len)
+	    {
+	      paper_page_clear (&action.page);
+	      return;
+	    }
+
+	  /* The inserted page is empty unless something was drawn on it
+	   * after insertion.  Drawing undo handles those strokes first. */
+	  page = g_array_index (doc->pages, ScreenatorPaperPage, index);
+	  g_array_remove_index (doc->pages, index);
+	  paper_page_clear (&page);
+	}
+      else
+	{
+	  /* A deleted page keeps its annotations in the action payload. */
+	  g_array_insert_val (doc->pages, index, action.page);
+	}
+
+      memset (&action.page, 0, sizeof (action.page));
+      paper_page_action_push (data, TRUE, action);
+    }
+  else
+    {
+      if (action.type == SCREENATOR_PAGE_ACTION_INSERT)
+	{
+	  page = paper_new_page (data, doc->type);
+	  g_array_insert_val (doc->pages, index, page);
+	  memset (&action.page, 0, sizeof (action.page));
+	  paper_page_action_push (data, FALSE, action);
+	}
+      else
+	{
+	  if (index >= doc->pages->len)
+	    {
+	      paper_page_clear (&action.page);
+	      return;
+	    }
+
+	  page = g_array_index (doc->pages, ScreenatorPaperPage, index);
+	  g_array_remove_index (doc->pages, index);
+	  action.page = page;
+	  paper_page_action_push (data, FALSE, action);
+	}
+    }
+
+  paper_page_action_refresh (data, doc, index);
+}
+
+void
+screenator_undo (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  if (data->undo_depth > 0)
+    {
+      undo_drawing (data);
+      return;
+    }
+
+  paper_page_action_apply (data, TRUE);
+}
+
+void
+screenator_redo (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  if (data->redo_depth > 0)
+    {
+      redo_drawing (data);
+      return;
+    }
+
+  paper_page_action_apply (data, FALSE);
+}
+
+/* Insert a new page before or after the current one. */
+void
+screenator_paper_insert_page (ScreenatorData *data, gboolean before)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPageAction action;
+  ScreenatorPaperPage page;
+  guint index;
+
+  if (!doc || doc->type == SCREENATOR_PAPER_PDF)
+    return;
+
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+
+  page = paper_new_page (data, doc->type);
+  index = doc->page + (before ? 0 : 1);
+  g_array_insert_val (doc->pages, index, page);
+
+  memset (&action, 0, sizeof (action));
+  action.type = SCREENATOR_PAGE_ACTION_INSERT;
+  action.document = doc->type;
+  action.index = index;
+  paper_page_action_record (data, action);
+
+  doc->modified = TRUE;
+  doc->page = index;
+
+  if (paper_continuous (data))
+    {
+      paper_build_continuous_layout (data, doc);
+      doc->pdf_scroll_y = CLAMP (
+	(doc->pdf_page_tops && index < doc->pdf_page_tops->len)
+	? g_array_index (doc->pdf_page_tops, gint, index) : 0,
+	0, MAX (0, doc->pdf_stack_height - paper_view_height (data)));
+      paper_pdf_prepare_active (data, doc);
+    }
+  else
+    paper_load_page (data, paper_current_page (doc));
+
+  reset_undo_history (data);
+  paper_top_bar_update_active_tool (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Delete the current Plain/Ruled/Graph page.  PDF pages are left untouched. */
+void
+screenator_paper_delete_page (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPageAction action;
+  ScreenatorPaperPage page;
+  guint index;
+
+  if (!data || !doc || doc->type == SCREENATOR_PAPER_PDF ||
+      !doc->pages || doc->pages->len <= 1)
+    return;
+
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+
+  index = doc->page;
+  if (index >= doc->pages->len)
+    index = doc->pages->len - 1;
+
+  page = g_array_index (doc->pages, ScreenatorPaperPage, index);
+  g_array_remove_index (doc->pages, index);
+
+  memset (&action, 0, sizeof (action));
+  action.type = SCREENATOR_PAGE_ACTION_DELETE;
+  action.document = doc->type;
+  action.index = index;
+  action.page = page;
+  paper_page_action_record (data, action);
+
+  if (index >= doc->pages->len)
+    index = doc->pages->len - 1;
+
+  doc->page = index;
+  doc->modified = TRUE;
+  data->paper_page_dirty = FALSE;
+  data->paper_pending_ink_valid = FALSE;
+  data->paper_pdf_page = 0;
+
+  if (paper_continuous (data))
+    {
+      paper_build_continuous_layout (data, doc);
+      doc->pdf_scroll_y = CLAMP (
+	(doc->pdf_page_tops && index < doc->pdf_page_tops->len)
+	? g_array_index (doc->pdf_page_tops, gint, index) : 0,
+	0, MAX (0, doc->pdf_stack_height - paper_view_height (data)));
+      paper_pdf_prepare_active (data, doc);
+    }
+  else
+    paper_load_page (data, paper_current_page (doc));
+
+  reset_undo_history (data);
+  paper_top_bar_update_active_tool (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+/* Show a page at a given viewport position.  The current page is stored first
+ * and the new page is loaded from its full-page annotation layer. */
+static void
+paper_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		 guint index, gint view_x, gint view_y)
+{
+  ScreenatorPaperPage *page;
+  gint max_x, max_y;
+
+  if (!doc || index >= doc->pages->len)
+    return;
+
+  paper_store_active_page (data);
+
+  doc->page = index;
+  page = paper_current_page (doc);
+  if (!page)
+    return;
+
+  paper_page_view_limits (data, doc, index, page, &max_x, &max_y);
+  page->view_x = CLAMP (view_x, 0, max_x);
+  page->view_y = CLAMP (view_y, 0, max_y);
+
+  paper_load_page (data, page);
+  reset_undo_history (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+void
+screenator_paper_switch_page (ScreenatorData *data, gint delta)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  guint index, count;
+
+  if (!doc)
+    return;
+
+  count = doc->pages->len;
+  if (count < 2)
+    return;
+
+  paper_commit_pending (data);
+  index = (doc->page + count + delta) % count;
+
+  if (paper_continuous (data))
+    paper_pdf_show_page (data, doc, index);
+  else
+    paper_show_page (data, doc, index, 0, 0);
+}
+
+/* Jump directly to a page.  Home and End use this to reach the first and last
+ * page; Page Up and Page Down use screenator_paper_switch_page(). */
+void
+screenator_paper_goto_page (ScreenatorData *data, gint index)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  guint count;
+
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return;
+
+  count = doc->pages->len;
+  if (index < 0)
+    index = 0;
+  if (index >= (gint) count)
+    index = (gint) count - 1;
+
+  paper_commit_pending (data);
+
+  if (paper_continuous (data))
+    paper_pdf_show_page (data, doc, (guint) index);
+  else
+    paper_show_page (data, doc, (guint) index, 0, 0);
+}
+
+/* Scroll the active page.  A PDF page in Continuous scrolling moves smoothly
+ * through the document.  Every other page scrolls within the page and shows
+ * the next or previous page at its top or bottom edge, regardless of the
+ * Continuous scrolling option. */
+void
+screenator_paper_scroll (ScreenatorData *data, gint direction)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page = paper_current_page (doc);
+  gint max_x, max_y, step;
+
+  if (!doc || !page)
+    return;
+
+  paper_commit_pending (data);
+
+  if (paper_continuous (data))
+    {
+      step = MAX (48, paper_view_height (data) / 6);
+      paper_pdf_set_scroll (data, doc->pdf_scroll_y +
+			    direction * step);
+      return;
+    }
+
+  paper_page_view_limits (data, doc, doc->page, page, &max_x, &max_y);
+  step = MAX (48, (gint) data->height / 6);
+
+  if (direction > 0)
+    {
+      if (page->view_y < max_y)
+	paper_set_view (data, page->view_x,
+			MIN (max_y, page->view_y + step));
+      else if (doc->page + 1 < doc->pages->len)
+	paper_show_page (data, doc, doc->page + 1, 0, 0);
+      else
+	paper_set_view (data, page->view_x, max_y);
+    }
+  else
+    {
+      if (page->view_y > 0)
+	paper_set_view (data, page->view_x,
+			MAX (0, page->view_y - step));
+      else if (doc->page > 0)
+	{
+	  ScreenatorPaperPage *previous =
+	    &g_array_index (doc->pages, ScreenatorPaperPage, doc->page - 1);
+	  gint previous_max_x, previous_max_y;
+
+	  paper_page_view_limits (data, doc, doc->page - 1, previous,
+				  &previous_max_x, &previous_max_y);
+	  paper_show_page (data, doc, doc->page - 1, 0, previous_max_y);
+	}
+      else
+	paper_set_view (data, page->view_x, 0);
+    }
+}
+
+
+static void
+paper_show_no_changes (ScreenatorData *data)
+{
+  GtkWidget *dialog;
+
+  dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_MODAL,
+				   GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+				   "This paper has no changes to save.");
+  gtk_window_set_title (GTK_WINDOW (dialog), "Paper saved");
+  show_dialog_above_drawings (data, dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+}
+
+/* Save only the paper that is shown now. */
+gboolean
+screenator_paper_save (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc;
+
+  if (data->paper_saving)
+    return FALSE;
+
+  doc = paper_active_document (data);
+  GList *paths = NULL;
+  gchar *path = NULL;
+
+  if (!doc)
+    {
+      paper_show_no_changes (data);
+      return FALSE;
+    }
+
+  if (data->paper == doc->type)
+    {
+      paper_commit_pending (data);
+      paper_store_active_page (data);
+    }
+
+  if (!doc->modified)
+    {
+      paper_show_no_changes (data);
+      return TRUE;
+    }
+
+  if (!paper_autosave_document (data, doc, &path))
+    {
+      paper_show_save_failure (data);
+      return FALSE;
+    }
+
+  paths = g_list_append (paths, path);
+  paper_show_saved_paths (data, paths);
+  g_list_free_full (paths, g_free);
+  return TRUE;
+}
+
+/* Quit, offering once to save every paper that has changed since its last
+ * save.  Files are written to the Documents folder automatically. */
+gboolean
+screenator_request_quit (ScreenatorData *data)
+{
+  GList *changed = NULL;
+  GList *saved = NULL;
+  ScreenatorPaperType type;
+  gboolean failed = FALSE;
+
+  if (data->paper_saving)
+    return FALSE;
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      paper_commit_pending (data);
+      paper_store_active_page (data);
+    }
+
+  for (type = SCREENATOR_PAPER_PLAIN;
+       type <= SCREENATOR_PAPER_PDF; type++)
+    {
+      ScreenatorPaperDocument *doc = data->paper_docs[type];
+
+      if (doc && doc->modified && doc->pages && doc->pages->len > 0)
+	changed = g_list_append (changed, doc);
+    }
+
+  if (changed)
+    {
+      GtkWidget *dialog;
+      gint response;
+
+      dialog = gtk_message_dialog_new (NULL,
+				       GTK_DIALOG_MODAL,
+				       GTK_MESSAGE_QUESTION,
+				       GTK_BUTTONS_NONE,
+				       "Some changed papers have not been saved.\n"
+				       "Save them in the Documents folder before "
+				       "quitting?");
+      gtk_window_set_title (GTK_WINDOW (dialog), "Quit Screenator");
+      gtk_dialog_add_button (GTK_DIALOG (dialog), "Cancel",
+			     GTK_RESPONSE_CANCEL);
+      gtk_dialog_add_button (GTK_DIALOG (dialog), "Ignore",
+			     GTK_RESPONSE_NO);
+      gtk_dialog_add_button (GTK_DIALOG (dialog), "Save",
+			     GTK_RESPONSE_YES);
+      gtk_dialog_set_default_response (GTK_DIALOG (dialog),
+				       GTK_RESPONSE_CANCEL);
+
+      show_dialog_above_drawings (data, dialog);
+      response = gtk_dialog_run (GTK_DIALOG (dialog));
+      gtk_widget_destroy (dialog);
+
+      if (response == GTK_RESPONSE_CANCEL)
+	{
+	  g_list_free (changed);
+	  return FALSE;
+	}
+
+      if (response == GTK_RESPONSE_YES)
+	{
+	  GList *l;
+
+	  for (l = changed; l; l = l->next)
+	    {
+	      gchar *path = NULL;
+
+	      if (!paper_autosave_document (data, l->data, &path))
+		{
+		  failed = TRUE;
+		  break;
+		}
+	      saved = g_list_append (saved, path);
+	    }
+
+	  if (failed)
+	    {
+	      paper_show_save_failure (data);
+	      g_list_free_full (saved, g_free);
+	      g_list_free (changed);
+	      return FALSE;
+	    }
+
+	  paper_show_saved_paths (data, saved);
+	  g_list_free_full (saved, g_free);
+	}
+    }
+
+  g_list_free (changed);
+  gtk_main_quit ();
+  return TRUE;
+}
+
+/* Scale the existing Plain, Ruled and Graph pages to the paper size chosen in
+ * the settings dialog.  PDF pages keep their own size. */
+static void
+paper_apply_size_settings (ScreenatorData *data)
+{
+  ScreenatorPaperType type;
+  gint new_width, new_height;
+  gdouble new_pdf_width, new_pdf_height;
+  gboolean active_non_pdf =
+    data->paper != SCREENATOR_PAPER_NONE &&
+    data->paper != SCREENATOR_PAPER_PDF;
+
+  paper_size_dimensions (data, &new_width, &new_height,
+			 &new_pdf_width, &new_pdf_height);
+
+  screenator_page_history_clear (data);
+
+  if (active_non_pdf)
+    paper_store_active_page (data);
+
+  for (type = SCREENATOR_PAPER_PLAIN;
+       type <= SCREENATOR_PAPER_GRAPH; type++)
+    {
+      ScreenatorPaperDocument *doc = data->paper_docs[type];
+      guint i;
+
+      if (!doc || !doc->pages)
+	continue;
+
+      for (i = 0; i < doc->pages->len; i++)
+	{
+	  ScreenatorPaperPage *page =
+	    &g_array_index (doc->pages, ScreenatorPaperPage, i);
+	  gint old_width = page->canvas_width;
+	  gint old_height = page->canvas_height;
+	  gint max_x, max_y;
+
+	  if (page->style == SCREENATOR_PAPER_PDF)
+	    continue;
+
+	  if ((!old_width || !old_height) && page->annotations)
+	    {
+	      old_width = cairo_image_surface_get_width (page->annotations);
+	      old_height = cairo_image_surface_get_height (page->annotations);
+	    }
+
+	  if (old_width == new_width && old_height == new_height)
+	    {
+	      page->pdf_width = new_pdf_width;
+	      page->pdf_height = new_pdf_height;
+	      continue;
+	    }
+
+	  paper_scale_vector_surface (page, new_width, new_height, TRUE);
+	  if (page->annotations && old_width > 0 && old_height > 0)
+	    {
+	      cairo_surface_t *scaled =
+		resize_surface_contain (page->annotations, new_width, new_height);
+
+	      cairo_surface_destroy (page->annotations);
+	      page->annotations = scaled;
+	    }
+
+	  if (old_width > 0)
+	    page->view_x = (gint) round ((gdouble) page->view_x *
+					 new_width / old_width);
+	  else
+	    page->view_x = 0;
+	  if (old_height > 0)
+	    page->view_y = (gint) round ((gdouble) page->view_y *
+					 new_height / old_height);
+	  else
+	    page->view_y = 0;
+
+	  page->canvas_width = new_width;
+	  page->canvas_height = new_height;
+	  page->pdf_width = new_pdf_width;
+	  page->pdf_height = new_pdf_height;
+
+	  max_x = MAX (0, new_width - (gint) data->width);
+	  max_y = MAX (0, new_height -
+		       (paper_continuous (data) ? paper_view_height (data)
+			: (gint) data->height));
+	  page->view_x = CLAMP (page->view_x, 0, max_x);
+	  page->view_y = CLAMP (page->view_y, 0, max_y);
+	}
+      if (doc->pages->len > 0)
+	doc->modified = TRUE;
+    }
+
+  if (active_non_pdf)
+    {
+      ScreenatorPaperDocument *doc = paper_active_document (data);
+      ScreenatorPaperPage *page = paper_current_page (doc);
+
+      if (paper_continuous (data))
+	{
+	  paper_build_continuous_layout (data, doc);
+	  doc->pdf_scroll_y = CLAMP (
+	    (doc->pdf_page_tops && doc->page < doc->pdf_page_tops->len)
+	    ? g_array_index (doc->pdf_page_tops, gint, doc->page) : 0,
+	    0, MAX (0, doc->pdf_stack_height - paper_view_height (data)));
+	  paper_pdf_prepare_active (data, doc);
+	}
+      else
+	paper_load_page (data, page);
+
+      reset_undo_history (data);
+      paper_repaint (data);
+    }
+}
+
+typedef struct
+{
+  GtkWidget *custom;
+  GtkWidget *width;
+  GtkWidget *height;
+} PaperSettingsWidgets;
+
+static void
+paper_settings_custom_toggled (GtkToggleButton *button, gpointer user_data)
+{
+  PaperSettingsWidgets *widgets = user_data;
+  gboolean custom = gtk_toggle_button_get_active (button);
+
+  gtk_widget_set_sensitive (widgets->width, custom);
+  gtk_widget_set_sensitive (widgets->height, custom);
+}
+
+typedef struct
+{
+  ScreenatorData *data;
+  GtkWidget      *dialog;
+  gboolean        reset_clicked;
+
+  GtkWidget      *save_check;
+  GtkWidget      *indicator_check;
+  GtkWidget      *icon_size_combo;
+  GtkWidget      *icon_position_radio[4];
+  GtkWidget      *timer_delay_combo;
+
+  GtkWidget      *continuous_check;
+  GtkWidget      *toolbar_size_spin;
+  GtkWidget      *toolbar_direction_combo;
+  GtkWidget      *toolbar_items_view;
+  GtkListStore   *toolbar_items_store;
+  GtkWidget      *screen_radio;
+  GtkWidget      *a4_portrait_radio;
+  GtkWidget      *a4_landscape_radio;
+  GtkWidget      *custom_radio;
+  GtkWidget      *width_spin;
+  GtkWidget      *height_spin;
+  GtkWidget      *shortcut_entries[SCREENATOR_SHORTCUT_COUNT];
+
+  PaperSettingsWidgets paper_widgets;
+} SettingsDialog;
+
+static void
+settings_change_font (GtkButton *button, gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+
+  (void) button;
+  on_icon_change_font (NULL, sd->data);
+}
+
+static void
+settings_reset (GtkButton *button, gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+
+  (void) button;
+  sd->reset_clicked = TRUE;
+  on_icon_reset_settings (NULL, sd->data);
+  gtk_dialog_response (GTK_DIALOG (sd->dialog), GTK_RESPONSE_CLOSE);
+}
+
+enum
+{
+  TOOLBAR_COL_VISIBLE,
+  TOOLBAR_COL_ICON,
+  TOOLBAR_COL_LABEL,
+  TOOLBAR_COL_ID,
+  TOOLBAR_COL_HANDLE,
+  TOOLBAR_COL_COUNT
+};
+
+static GdkPixbuf *
+toolbar_settings_icon (ScreenatorData *data, const ToolbarItemInfo *info)
+{
+  const gint size = 24;
+  GdkPixbuf *pixbuf = NULL;
+
+  if (g_strcmp0 (info->id, "eraser_size") == 0)
+    pixbuf = paper_eraser_size_sample (MAX (1, (guint) data->eraser_width),
+				       size);
+  else if (g_strcmp0 (info->id, "line_color") == 0)
+    pixbuf = paper_color_swatch (&data->pen_color, FALSE, size);
+  else if (g_strcmp0 (info->id, "thickness") == 0)
+    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+  else if (g_strcmp0 (info->id, "fill_color") == 0)
+    pixbuf = paper_color_swatch (&data->shape_fill_color,
+				 !data->shape_fill_enabled, size);
+  else if (info->icon)
+    pixbuf = load_menu_icon_at_size (info->icon, size);
+
+  if (pixbuf &&
+      (gdk_pixbuf_get_width (pixbuf) != size ||
+       gdk_pixbuf_get_height (pixbuf) != size))
+    {
+      GdkPixbuf *scaled = gdk_pixbuf_scale_simple (pixbuf, size, size,
+						    GDK_INTERP_BILINEAR);
+
+      g_object_unref (pixbuf);
+      pixbuf = scaled;
+    }
+
+  return pixbuf;
+}
+
+static void
+toolbar_settings_toggle (GtkCellRendererToggle *renderer, gchar *path,
+			 gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+  GtkTreeIter iter;
+  gboolean active;
+
+  (void) renderer;
+
+  if (!gtk_tree_model_get_iter_from_string (
+	GTK_TREE_MODEL (sd->toolbar_items_store), &iter, path))
+    return;
+
+  gtk_tree_model_get (GTK_TREE_MODEL (sd->toolbar_items_store), &iter,
+		      TOOLBAR_COL_VISIBLE, &active, -1);
+  gtk_list_store_set (sd->toolbar_items_store, &iter,
+		      TOOLBAR_COL_VISIBLE, !active, -1);
+}
+
+static void
+toolbar_settings_add_item (SettingsDialog *sd, const ToolbarItemInfo *info,
+			   gboolean visible)
+{
+  GtkTreeIter iter;
+
+  GdkPixbuf *icon = toolbar_settings_icon (sd->data, info);
+
+  gtk_list_store_append (sd->toolbar_items_store, &iter);
+  gtk_list_store_set (sd->toolbar_items_store, &iter,
+		      TOOLBAR_COL_VISIBLE, visible,
+		      TOOLBAR_COL_ICON, icon,
+		      TOOLBAR_COL_LABEL, info->label,
+		      TOOLBAR_COL_ID, info->id,
+		      TOOLBAR_COL_HANDLE, "☰",
+		      -1);
+
+  if (icon)
+    g_object_unref (icon);
+}
+
+static GtkWidget *
+build_toolbar_settings_page (SettingsDialog *sd)
+{
+  ScreenatorData *data = sd->data;
+  GtkWidget *box, *scroll, *view, *note;
+  GtkCellRenderer *renderer;
+  GtkTreeViewColumn *column;
+  gchar **tokens;
+  gboolean used[G_N_ELEMENTS (toolbar_item_info)] = { FALSE };
+  guint i;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  {
+    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+
+    gtk_box_pack_start (GTK_BOX (row),
+			gtk_label_new ("Tool bar icon size (px)"),
+			FALSE, FALSE, 0);
+    sd->toolbar_size_spin = gtk_spin_button_new_with_range (16, 64, 1);
+    gtk_spin_button_set_value (GTK_SPIN_BUTTON (sd->toolbar_size_spin),
+			       data->paper_toolbar_icon_size);
+    gtk_box_pack_start (GTK_BOX (row), sd->toolbar_size_spin,
+			FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
+
+    row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start (GTK_BOX (row),
+			gtk_label_new ("Tool bar direction"),
+			FALSE, FALSE, 0);
+    sd->toolbar_direction_combo = gtk_combo_box_text_new ();
+    gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (
+				      sd->toolbar_direction_combo), "Vertical");
+    gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (
+				      sd->toolbar_direction_combo), "Horizontal");
+    gtk_combo_box_set_active (GTK_COMBO_BOX (sd->toolbar_direction_combo),
+			      data->paper_toolbar_vertical ? 0 : 1);
+    gtk_box_pack_start (GTK_BOX (row), sd->toolbar_direction_combo,
+			FALSE, FALSE, 0);
+    gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
+  }
+
+  note = gtk_label_new ("Each row shows its tool bar icon. Checked items "
+			"appear on the tool bar; drag the ☰ handle of a row to "
+			"change its position.");
+  gtk_label_set_xalign (GTK_LABEL (note), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (note), 52);
+  gtk_box_pack_start (GTK_BOX (box), note, FALSE, FALSE, 0);
+
+  scroll = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+				  GTK_POLICY_AUTOMATIC,
+				  GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_size_request (scroll, 420, 340);
+
+  sd->toolbar_items_store = gtk_list_store_new (TOOLBAR_COL_COUNT,
+						G_TYPE_BOOLEAN,
+						GDK_TYPE_PIXBUF,
+						G_TYPE_STRING,
+						G_TYPE_STRING,
+						G_TYPE_STRING);
+  view = gtk_tree_view_new_with_model (
+    GTK_TREE_MODEL (sd->toolbar_items_store));
+  sd->toolbar_items_view = view;
+  gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (view), FALSE);
+  gtk_tree_view_set_reorderable (GTK_TREE_VIEW (view), TRUE);
+  gtk_tree_view_set_grid_lines (GTK_TREE_VIEW (view),
+				GTK_TREE_VIEW_GRID_LINES_HORIZONTAL);
+
+  renderer = gtk_cell_renderer_text_new ();
+  g_object_set (renderer, "text", "☰", "xpad", 6, NULL);
+  column = gtk_tree_view_column_new_with_attributes (
+    "", renderer, NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+
+  renderer = gtk_cell_renderer_pixbuf_new ();
+  g_object_set (renderer, "xpad", 4, NULL);
+  column = gtk_tree_view_column_new_with_attributes (
+    "", renderer, "pixbuf", TOOLBAR_COL_ICON, NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+
+  renderer = gtk_cell_renderer_toggle_new ();
+  gtk_cell_renderer_toggle_set_activatable (
+    GTK_CELL_RENDERER_TOGGLE (renderer), TRUE);
+  g_signal_connect (renderer, "toggled",
+		    G_CALLBACK (toolbar_settings_toggle), sd);
+  column = gtk_tree_view_column_new_with_attributes (
+    "Shown", renderer, "active", TOOLBAR_COL_VISIBLE, NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+
+  renderer = gtk_cell_renderer_text_new ();
+  column = gtk_tree_view_column_new_with_attributes (
+    "Item", renderer, "text", TOOLBAR_COL_LABEL, NULL);
+  gtk_tree_view_column_set_expand (column, TRUE);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+
+  gtk_container_add (GTK_CONTAINER (scroll), view);
+  gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
+
+  tokens = g_strsplit (data->paper_toolbar_items
+		       ? data->paper_toolbar_items
+		       : PAPER_TOOLBAR_DEFAULT_ITEMS, ",", -1);
+
+  for (i = 0; tokens[i]; i++)
+    {
+      gchar *id = g_strstrip (tokens[i]);
+      guint j;
+
+      if (!*id)
+	continue;
+
+      for (j = 0; j < G_N_ELEMENTS (toolbar_item_info); j++)
+	{
+	  if (!used[j] &&
+	      g_strcmp0 (toolbar_item_id (id), toolbar_item_info[j].id) == 0)
+	    {
+	      toolbar_settings_add_item (sd, &toolbar_item_info[j], TRUE);
+	      used[j] = TRUE;
+	      break;
+	    }
+	}
+    }
+  g_strfreev (tokens);
+
+  /* Items that are currently hidden stay in the list, unchecked, at the
+   * end so they can be enabled again. */
+  for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
+    if (!used[i])
+      toolbar_settings_add_item (sd, &toolbar_item_info[i], FALSE);
+
+  return box;
+}
+
+static gchar *
+settings_collect_toolbar_items (SettingsDialog *sd)
+{
+  GString *result = g_string_new (NULL);
+  GtkTreeModel *model = GTK_TREE_MODEL (sd->toolbar_items_store);
+  GtkTreeIter iter;
+
+  if (gtk_tree_model_get_iter_first (model, &iter))
+    {
+      do
+	{
+	  gboolean visible;
+	  gchar *id = NULL;
+
+	  gtk_tree_model_get (model, &iter,
+			      TOOLBAR_COL_VISIBLE, &visible,
+			      TOOLBAR_COL_ID, &id,
+			      -1);
+
+	  if (visible && id)
+	    {
+	      if (result->len > 0)
+		g_string_append_c (result, ',');
+	      g_string_append (result, id);
+	    }
+
+	  g_free (id);
+	}
+      while (gtk_tree_model_iter_next (model, &iter));
+    }
+
+  return g_string_free (result, FALSE);
+}
+
+static GtkWidget *
+build_general_settings_page (SettingsDialog *sd)
+{
+  ScreenatorData *data = sd->data;
+  GtkWidget *box, *grid, *label, *combo, *button, *row;
+  static const guint timer_delays[] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
+  guint i;
+  gint timer_active = 0;
+  guint best = G_MAXUINT;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 8);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 12);
+  gtk_box_pack_start (GTK_BOX (box), grid, FALSE, FALSE, 0);
+
+  sd->save_check = gtk_check_button_new_with_label (
+    "Save annotations on exit");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->save_check),
+				data->save_annotations_on_exit);
+  gtk_grid_attach (GTK_GRID (grid), sd->save_check, 0, 0, 2, 1);
+
+  sd->indicator_check = gtk_check_button_new_with_label (
+    "Show settings indicator");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->indicator_check),
+				data->show_settings_indicator);
+  gtk_widget_set_sensitive (sd->indicator_check, data->show_floating_icon);
+  gtk_grid_attach (GTK_GRID (grid), sd->indicator_check, 0, 1, 2, 1);
+
+  label = gtk_label_new ("Timer delay");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 2, 1, 1);
+
+  combo = gtk_combo_box_text_new ();
+  for (i = 0; i < G_N_ELEMENTS (timer_delays); i++)
+    {
+      gchar *text = g_strdup_printf ("%u s", timer_delays[i]);
+      guint diff = ABS ((gint) data->tool_delay_seconds -
+			(gint) timer_delays[i]);
+
+      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo), text);
+      g_free (text);
+
+      if (diff < best)
+	{
+	  best = diff;
+	  timer_active = (gint) i;
+	}
+    }
+  gtk_combo_box_set_active (GTK_COMBO_BOX (combo), timer_active);
+  sd->timer_delay_combo = combo;
+  gtk_grid_attach (GTK_GRID (grid), combo, 1, 2, 1, 1);
+
+  row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
+  button = gtk_button_new_with_label ("Change Font...");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (settings_change_font), sd);
+  gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
+
+
+  gtk_box_pack_start (GTK_BOX (box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
+		      FALSE, FALSE, 0);
+
+  button = gtk_button_new_with_label (
+    "Reset app settings and drawings");
+  gtk_widget_set_halign (button, GTK_ALIGN_START);
+  g_signal_connect (button, "clicked", G_CALLBACK (settings_reset), sd);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  label = gtk_label_new ("Settings are applied when the dialog is closed.");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (label), 48);
+  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+
+  return box;
+}
+
+static GtkWidget *
+build_paper_settings_page (SettingsDialog *sd)
+{
+  ScreenatorData *data = sd->data;
+  GtkWidget *box, *frame, *grid, *note;
+  GtkWidget *active_radio;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  sd->continuous_check = gtk_check_button_new_with_label (
+    "Continuous scrolling");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->continuous_check),
+				data->paper_continuous_scroll);
+  gtk_box_pack_start (GTK_BOX (box), sd->continuous_check, FALSE, FALSE, 0);
+
+  frame = gtk_frame_new ("Paper size");
+  gtk_box_pack_start (GTK_BOX (box), frame, FALSE, FALSE, 0);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 6);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 12);
+  gtk_container_set_border_width (GTK_CONTAINER (grid), 10);
+  gtk_container_add (GTK_CONTAINER (frame), grid);
+
+  sd->screen_radio = gtk_radio_button_new_with_label (NULL, "Screen");
+  sd->a4_portrait_radio = gtk_radio_button_new_with_label_from_widget (
+    GTK_RADIO_BUTTON (sd->screen_radio), "A4 portrait");
+  sd->a4_landscape_radio = gtk_radio_button_new_with_label_from_widget (
+    GTK_RADIO_BUTTON (sd->screen_radio), "A4 landscape");
+  sd->custom_radio = gtk_radio_button_new_with_label_from_widget (
+    GTK_RADIO_BUTTON (sd->screen_radio), "Custom");
+
+  gtk_grid_attach (GTK_GRID (grid), sd->screen_radio, 0, 0, 2, 1);
+  gtk_grid_attach (GTK_GRID (grid), sd->a4_portrait_radio, 0, 1, 2, 1);
+  gtk_grid_attach (GTK_GRID (grid), sd->a4_landscape_radio, 0, 2, 2, 1);
+  gtk_grid_attach (GTK_GRID (grid), sd->custom_radio, 0, 3, 2, 1);
+
+  gtk_grid_attach (GTK_GRID (grid),
+		   gtk_label_new ("Width (mm)"), 0, 4, 1, 1);
+  sd->width_spin = gtk_spin_button_new_with_range (10, 1000, 1);
+  gtk_spin_button_set_digits (GTK_SPIN_BUTTON (sd->width_spin), 1);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (sd->width_spin),
+			     data->paper_custom_width_mm);
+  gtk_grid_attach (GTK_GRID (grid), sd->width_spin, 1, 4, 1, 1);
+
+  gtk_grid_attach (GTK_GRID (grid),
+		   gtk_label_new ("Height (mm)"), 0, 5, 1, 1);
+  sd->height_spin = gtk_spin_button_new_with_range (10, 1000, 1);
+  gtk_spin_button_set_digits (GTK_SPIN_BUTTON (sd->height_spin), 1);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (sd->height_spin),
+			     data->paper_custom_height_mm);
+  gtk_grid_attach (GTK_GRID (grid), sd->height_spin, 1, 5, 1, 1);
+
+  switch (data->paper_size)
+    {
+    case SCREENATOR_PAPER_SIZE_A4_PORTRAIT:
+      active_radio = sd->a4_portrait_radio;
+      break;
+    case SCREENATOR_PAPER_SIZE_A4_LANDSCAPE:
+      active_radio = sd->a4_landscape_radio;
+      break;
+    case SCREENATOR_PAPER_SIZE_CUSTOM:
+      active_radio = sd->custom_radio;
+      break;
+    default:
+      active_radio = sd->screen_radio;
+      break;
+    }
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (active_radio), TRUE);
+
+  sd->paper_widgets.custom = sd->custom_radio;
+  sd->paper_widgets.width = sd->width_spin;
+  sd->paper_widgets.height = sd->height_spin;
+  g_signal_connect (sd->custom_radio, "toggled",
+		    G_CALLBACK (paper_settings_custom_toggled),
+		    &sd->paper_widgets);
+  paper_settings_custom_toggled (GTK_TOGGLE_BUTTON (sd->custom_radio),
+				 &sd->paper_widgets);
+
+  note = gtk_label_new ("Paper size applies to Plain, Ruled and Graph. "
+			"PDF pages keep their own size.");
+  gtk_label_set_xalign (GTK_LABEL (note), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (note), 46);
+  gtk_box_pack_start (GTK_BOX (box), note, FALSE, FALSE, 0);
+
+  return box;
+}
+
+static GtkWidget *
+build_shortcut_settings_page (SettingsDialog *sd)
+{
+  ScreenatorData *data = sd->data;
+  GtkWidget *box, *scroll, *grid, *note;
+  guint i;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  note = gtk_label_new ("Type a shortcut such as F8, Ctrl+S or Alt+F4. "
+			"Type None to disable one. Changes take effect when "
+			"the dialog is closed.");
+  gtk_label_set_xalign (GTK_LABEL (note), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (note), 52);
+  gtk_box_pack_start (GTK_BOX (box), note, FALSE, FALSE, 0);
+
+  scroll = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+				  GTK_POLICY_NEVER,
+				  GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_size_request (scroll, 420, 360);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 5);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 10);
+  gtk_container_set_border_width (GTK_CONTAINER (grid), 4);
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      GtkWidget *label = gtk_label_new (screenator_shortcut_labels[i]);
+      GtkWidget *entry = gtk_entry_new ();
+
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_entry_set_text (GTK_ENTRY (entry),
+			  data->shortcuts[i].text
+			  ? data->shortcuts[i].text
+			  : screenator_shortcut_defaults[i]);
+      gtk_entry_set_width_chars (GTK_ENTRY (entry), 20);
+      gtk_grid_attach (GTK_GRID (grid), label, 0, i, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), entry, 1, i, 1, 1);
+      sd->shortcut_entries[i] = entry;
+    }
+
+  gtk_container_add (GTK_CONTAINER (scroll), grid);
+  gtk_box_pack_start (GTK_BOX (box), scroll, TRUE, TRUE, 0);
+
+  return box;
+}
+
+static GtkWidget *
+build_icon_settings_page (SettingsDialog *sd)
+{
+  ScreenatorData *data = sd->data;
+  GtkWidget *box, *grid, *label, *combo, *frame;
+  static const guint sizes[] = { 16, 32, 48, 64, 128, 256 };
+  static const gchar * const size_labels[] =
+    { "16x16", "32x32", "48x48", "64x64", "128x128", "256x256" };
+  static const gchar * const position_labels[] =
+    { "Top Right", "Top Left", "Bottom Right", "Bottom Left" };
+  gint active = 2;
+  guint i;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 8);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 12);
+  gtk_box_pack_start (GTK_BOX (box), grid, FALSE, FALSE, 0);
+
+  label = gtk_label_new ("Floating icon size");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 0, 1, 1);
+
+  combo = gtk_combo_box_text_new ();
+  for (i = 0; i < G_N_ELEMENTS (sizes); i++)
+    {
+      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+				      size_labels[i]);
+      if (sizes[i] == data->icon_size)
+	active = (gint) i;
+    }
+  gtk_combo_box_set_active (GTK_COMBO_BOX (combo), active);
+  sd->icon_size_combo = combo;
+  gtk_grid_attach (GTK_GRID (grid), combo, 1, 0, 1, 1);
+
+  frame = gtk_frame_new ("Floating icon position");
+  gtk_box_pack_start (GTK_BOX (box), frame, FALSE, FALSE, 0);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 5);
+  gtk_container_set_border_width (GTK_CONTAINER (grid), 10);
+  gtk_container_add (GTK_CONTAINER (frame), grid);
+
+  for (i = 0; i < G_N_ELEMENTS (position_labels); i++)
+    {
+      GtkWidget *radio = gtk_radio_button_new_with_label (
+	i == 0 ? NULL : gtk_radio_button_get_group (
+	  GTK_RADIO_BUTTON (sd->icon_position_radio[0])),
+	position_labels[i]);
+
+      sd->icon_position_radio[i] = radio;
+      if ((guint) data->icon_position == i)
+	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (radio), TRUE);
+      gtk_grid_attach (GTK_GRID (grid), radio, 0, i, 1, 1);
+    }
+
+  return box;
+}
+
+/* One tabbed dialog for every setting. */
+static void
+show_settings_dialog (ScreenatorData *data)
+{
+  SettingsDialog *sd;
+  GtkWidget *dialog, *content, *notebook, *general, *paper, *toolbar,
+    *icons, *shortcuts;
+  static const guint icon_sizes[] = { 16, 32, 48, 64, 128, 256 };
+  static const guint timer_delays[] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
+  gint response;
+
+  if (data->top_dialog)
+    return;
+
+  sd = g_new0 (SettingsDialog, 1);
+  sd->data = data;
+
+  dialog = gtk_dialog_new_with_buttons ("Settings", NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"Close", GTK_RESPONSE_CLOSE,
+					NULL);
+  sd->dialog = dialog;
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
+
+  /* Keep the hints window at one stable size.  Without the maximum size the
+   * dialog grows with its text and is then moved again by the map handlers. */
+  {
+    GdkGeometry geometry;
+
+    memset (&geometry, 0, sizeof geometry);
+    geometry.min_width = 700;
+    geometry.max_width = 700;
+    geometry.min_height = 500;
+    geometry.max_height = 500;
+    gtk_window_set_geometry_hints (GTK_WINDOW (dialog), NULL, &geometry,
+				   GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+  }
+
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  notebook = gtk_notebook_new ();
+  gtk_container_set_border_width (GTK_CONTAINER (notebook), 8);
+  gtk_container_add (GTK_CONTAINER (content), notebook);
+
+  general = build_general_settings_page (sd);
+  paper = build_paper_settings_page (sd);
+  toolbar = build_toolbar_settings_page (sd);
+  icons = build_icon_settings_page (sd);
+  shortcuts = build_shortcut_settings_page (sd);
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), general,
+			    gtk_label_new ("General"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), paper,
+			    gtk_label_new ("Paper"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), toolbar,
+			    gtk_label_new ("Toolbar"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), icons,
+			    gtk_label_new ("Floating Icon"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), shortcuts,
+			    gtk_label_new ("Shortcuts"));
+
+  gtk_widget_show_all (dialog);
+  response = gtk_dialog_run (GTK_DIALOG (dialog));
+
+  if (!sd->reset_clicked)
+    {
+      gboolean new_save =
+	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->save_check));
+      gboolean new_indicator =
+	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->indicator_check));
+      gint icon_index = gtk_combo_box_get_active (
+	GTK_COMBO_BOX (sd->icon_size_combo));
+      guint new_icon_size =
+	(icon_index >= 0 &&
+	 icon_index < (gint) G_N_ELEMENTS (icon_sizes))
+	? icon_sizes[icon_index] : data->icon_size;
+      gint timer_index = gtk_combo_box_get_active (
+	GTK_COMBO_BOX (sd->timer_delay_combo));
+      guint new_timer_delay =
+	(timer_index >= 0 &&
+	 timer_index < (gint) G_N_ELEMENTS (timer_delays))
+	? timer_delays[timer_index] : data->tool_delay_seconds;
+      guint new_toolbar_size =
+	(guint) gtk_spin_button_get_value_as_int (
+	  GTK_SPIN_BUTTON (sd->toolbar_size_spin));
+      gint toolbar_direction =
+	gtk_combo_box_get_active (GTK_COMBO_BOX (
+				    sd->toolbar_direction_combo));
+      gboolean new_toolbar_vertical = toolbar_direction != 1;
+      gboolean new_continuous =
+	gtk_toggle_button_get_active (
+	  GTK_TOGGLE_BUTTON (sd->continuous_check));
+      ScreenatorPaperSize new_size = SCREENATOR_PAPER_SIZE_SCREEN;
+      gdouble new_width = gtk_spin_button_get_value (
+	GTK_SPIN_BUTTON (sd->width_spin));
+      gdouble new_height = gtk_spin_button_get_value (
+	GTK_SPIN_BUTTON (sd->height_spin));
+      gboolean size_changed;
+
+      if (new_save != data->save_annotations_on_exit)
+	{
+	  data->save_annotations_on_exit = new_save;
+
+	  /* Do not bring back older drawings after the option is off. */
+	  if (!new_save)
+	    remove_saved_annotations ();
+	}
+
+      if (new_indicator != data->show_settings_indicator)
+	{
+	  data->show_settings_indicator = new_indicator;
+	  update_settings_indicator (data);
+	}
+
+      if (new_icon_size != data->icon_size)
+	apply_icon_size (data, new_icon_size);
+
+      {
+	gint new_position = data->icon_position;
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS (sd->icon_position_radio); i++)
+	  if (sd->icon_position_radio[i] &&
+	      gtk_toggle_button_get_active (
+		GTK_TOGGLE_BUTTON (sd->icon_position_radio[i])))
+	    {
+	      new_position = (gint) i;
+	      break;
+	    }
+
+	if (new_position != (gint) data->icon_position)
+	  {
+	    data->icon_position = (ScreenatorIconPosition) new_position;
+	    screenator_position_icon (data);
+	    update_settings_indicator (data);
+	  }
+      }
+
+      data->tool_delay_seconds = new_timer_delay;
+
+      if (new_toolbar_size != data->paper_toolbar_icon_size ||
+	  new_toolbar_vertical != data->paper_toolbar_vertical)
+	{
+	  data->paper_toolbar_icon_size =
+	    CLAMP (new_toolbar_size, 16, 64);
+	  data->paper_toolbar_vertical = new_toolbar_vertical;
+	  paper_top_bar_rebuild (data);
+	}
+
+      {
+	gchar *new_items = settings_collect_toolbar_items (sd);
+
+	if (g_strcmp0 (new_items, data->paper_toolbar_items) != 0)
+	  {
+	    g_free (data->paper_toolbar_items);
+	    data->paper_toolbar_items = new_items;
+	    paper_top_bar_rebuild (data);
+	  }
+	else
+	  g_free (new_items);
+      }
+
+      {
+	gchar *new_texts[SCREENATOR_SHORTCUT_COUNT];
+	guint i;
+
+	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	  new_texts[i] = g_strdup (
+	    gtk_entry_get_text (GTK_ENTRY (sd->shortcut_entries[i])));
+	screenator_apply_shortcuts (data, new_texts);
+	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	  g_free (new_texts[i]);
+      }
+
+      paper_set_continuous_scrolling (data, new_continuous);
+
+      if (gtk_toggle_button_get_active (
+	    GTK_TOGGLE_BUTTON (sd->a4_portrait_radio)))
+	new_size = SCREENATOR_PAPER_SIZE_A4_PORTRAIT;
+      else if (gtk_toggle_button_get_active (
+		 GTK_TOGGLE_BUTTON (sd->a4_landscape_radio)))
+	new_size = SCREENATOR_PAPER_SIZE_A4_LANDSCAPE;
+      else if (gtk_toggle_button_get_active (
+		 GTK_TOGGLE_BUTTON (sd->custom_radio)))
+	new_size = SCREENATOR_PAPER_SIZE_CUSTOM;
+
+      size_changed = new_size != data->paper_size ||
+	(new_size == SCREENATOR_PAPER_SIZE_CUSTOM &&
+	 (new_width != data->paper_custom_width_mm ||
+	  new_height != data->paper_custom_height_mm));
+
+      data->paper_size = new_size;
+      data->paper_custom_width_mm = new_width;
+      data->paper_custom_height_mm = new_height;
+
+      if (size_changed)
+	paper_apply_size_settings (data);
+
+      write_keyfile (data);
+      schedule_tray_menu_refresh (data);
+    }
+
+  gtk_widget_destroy (dialog);
+  g_free (sd);
+
+  (void) response;
+}
+
+static void
+on_icon_settings (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  show_settings_dialog ((ScreenatorData *) user_data);
 }
 
 static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
@@ -6742,15 +13250,216 @@ static void on_icon_paper (GtkMenuItem *menuitem, gpointer user_data)
     (ScreenatorPaperType) GPOINTER_TO_INT (
       g_object_get_data (G_OBJECT (menuitem), "icon-paper-type"));
 
-  set_screen_paper (data, paper);
+  if (!gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem)))
+    return;
+
+  screenator_paper_select (data, paper);
+
+  /* A cancelled PDF chooser leaves the clicked radio item active even though
+   * nothing was selected.  Put the radio group back on the real selection so
+   * the next click cannot be interpreted as another PDF request. */
+  if (data->paper_selected != paper)
+    {
+      GSList *group = gtk_radio_menu_item_get_group (
+	GTK_RADIO_MENU_ITEM (menuitem));
+      GSList *l;
+
+      for (l = group; l; l = l->next)
+	{
+	  GtkWidget *radio = GTK_WIDGET (l->data);
+
+	  if (GPOINTER_TO_INT (g_object_get_data (G_OBJECT (radio),
+						  "icon-paper-type")) ==
+	      (gint) data->paper_selected)
+	    {
+	      gtk_check_menu_item_set_active (
+		GTK_CHECK_MENU_ITEM (radio), TRUE);
+	      break;
+	    }
+	}
+    }
 }
 
-/* Leave the screen paper from the Ctrl+Q shortcut. */
-void
-screenator_exit_screen_paper (ScreenatorData *data)
+/* Ask whether to save the current paper before resetting it or replacing its
+ * PDF.  Returns FALSE when the user cancels or saving fails. */
+static gboolean
+paper_confirm_reset_current (ScreenatorData *data, ScreenatorPaperDocument *doc)
 {
-  if (data->paper != SCREENATOR_PAPER_NONE)
-    set_screen_paper (data, SCREENATOR_PAPER_NONE);
+  GtkWidget *dialog;
+  gint response;
+  const gchar *name = "paper";
+
+  if (!doc || !doc->modified || !doc->pages || doc->pages->len == 0)
+    return TRUE;
+
+  if (data->paper == doc->type)
+    {
+      paper_commit_pending (data);
+      paper_store_active_page (data);
+    }
+
+  switch (doc->type)
+    {
+    case SCREENATOR_PAPER_PLAIN: name = "Plain"; break;
+    case SCREENATOR_PAPER_RULED: name = "Ruled"; break;
+    case SCREENATOR_PAPER_GRAPH: name = "Graph"; break;
+    case SCREENATOR_PAPER_PDF:   name = "PDF";   break;
+    default: break;
+    }
+
+  dialog = gtk_message_dialog_new (NULL,
+				   GTK_DIALOG_MODAL,
+				   GTK_MESSAGE_QUESTION,
+				   GTK_BUTTONS_NONE,
+				   "The current %s paper has unsaved changes.\n"
+				   "Save it in the Documents folder before "
+				   "resetting or replacing it?",
+				   name);
+  gtk_window_set_title (GTK_WINDOW (dialog), "Reset paper");
+  gtk_dialog_add_button (GTK_DIALOG (dialog), "Cancel",
+			 GTK_RESPONSE_CANCEL);
+  gtk_dialog_add_button (GTK_DIALOG (dialog), "Ignore",
+			 GTK_RESPONSE_NO);
+  gtk_dialog_add_button (GTK_DIALOG (dialog), "Save",
+			 GTK_RESPONSE_YES);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CANCEL);
+
+  show_dialog_above_drawings (data, dialog);
+  response = gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+
+  if (response == GTK_RESPONSE_CANCEL)
+    return FALSE;
+
+  if (response == GTK_RESPONSE_YES)
+    {
+      gchar *path = NULL;
+
+      if (!paper_autosave_document (data, doc, &path))
+	{
+	  paper_show_save_failure (data);
+	  return FALSE;
+	}
+
+      {
+	GList *paths = g_list_append (NULL, path);
+
+	paper_show_saved_paths (data, paths);
+	g_list_free_full (paths, g_free);
+      }
+    }
+
+  return TRUE;
+}
+
+/* Reset a Plain/Ruled/Graph paper to one fresh empty page. */
+static void
+paper_reset_document (ScreenatorData *data, ScreenatorPaperType type)
+{
+  ScreenatorPaperDocument *doc = paper_document (data, type);
+  ScreenatorPaperPage page;
+
+  if (!doc || type == SCREENATOR_PAPER_PDF)
+    return;
+
+  if (data->paper == type)
+    {
+      paper_commit_pending (data);
+      paper_store_active_page (data);
+    }
+
+  screenator_page_history_clear (data);
+  paper_document_clear_pages (doc);
+  page = paper_new_page (data, type);
+  g_array_append_val (doc->pages, page);
+  doc->page = 0;
+  doc->modified = FALSE;
+
+  data->paper_pending_ink_valid = FALSE;
+  data->paper_page_dirty = FALSE;
+  data->paper_pdf_page = 0;
+  paper_background_invalidate (data);
+
+  if (data->paper == type)
+    {
+      if (paper_continuous (data))
+	{
+	  paper_build_continuous_layout (data, doc);
+	  doc->pdf_scroll_y = 0;
+	  paper_pdf_prepare_active (data, doc);
+	}
+      else
+	paper_load_page (data, paper_current_page (doc));
+
+      reset_undo_history (data);
+      data->painted = 0;
+      paper_repaint (data);
+    }
+
+  paper_refresh_active_cursor (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void on_icon_reset_or_open_pdf (GtkMenuItem *menuitem,
+				       gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  ScreenatorPaperType type;
+  ScreenatorPaperDocument *doc;
+
+  (void) menuitem;
+
+  type = data->paper != SCREENATOR_PAPER_NONE
+    ? data->paper : data->paper_selected;
+  if (type <= SCREENATOR_PAPER_NONE || type > SCREENATOR_PAPER_PDF)
+    type = SCREENATOR_PAPER_PLAIN;
+
+  doc = paper_document (data, type);
+
+  if (!paper_confirm_reset_current (data, doc))
+    return;
+
+  if (type == SCREENATOR_PAPER_PDF)
+    {
+      if (!screenator_paper_open_pdf (data))
+	return;
+
+      data->paper_selected = SCREENATOR_PAPER_PDF;
+      screenator_enter_paper_drawing (data, SCREENATOR_PAPER_PDF);
+    }
+  else
+    {
+      paper_reset_document (data, type);
+
+      if (data->paper == SCREENATOR_PAPER_NONE)
+	screenator_enter_paper_drawing (data, type);
+      else if (data->paper == type)
+	paper_top_bar_update_active_tool (data);
+    }
+
+  paper_top_bar_update_active_tool (data);
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void on_icon_paper_insert (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  screenator_paper_insert_page
+    (data, GPOINTER_TO_INT (g_object_get_data (G_OBJECT (menuitem),
+					       "paper-before")) != 0);
+}
+
+static void on_icon_paper_delete (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  screenator_paper_delete_page ((ScreenatorData *) user_data);
+}
+
+static void on_icon_paper_save (GtkMenuItem *menuitem, gpointer user_data)
+{
+  screenator_paper_save ((ScreenatorData *) user_data);
 }
 
 static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
@@ -6762,6 +13471,7 @@ static void on_icon_thickness (GtkMenuItem *menuitem, gpointer user_data)
   data->pen_width = width;
 
   apply_pen_settings (data);
+  paper_top_bar_update_images (data);
 
   schedule_tray_menu_refresh (data);
 }
@@ -6835,6 +13545,23 @@ static void on_icon_opacity (GtkMenuItem *menuitem, gpointer user_data)
   schedule_tray_menu_refresh (data);
 }
 
+static void on_icon_marker_opacity (GtkMenuItem *menuitem, gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  gint opacity_int = GPOINTER_TO_INT (
+    g_object_get_data (G_OBJECT (menuitem), "icon-marker-opacity"));
+
+  data->marker_opacity = opacity_int / 100.0;
+  data->marker_color.alpha = data->marker_opacity;
+
+  if (data->default_marker)
+    gdk_cairo_set_source_rgba (data->default_marker->paint_ctx,
+			       &data->marker_color);
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
 static gboolean
 icon_reposition_timeout (gpointer user_data)
 {
@@ -6889,17 +13616,6 @@ icon_startup_settle (gpointer user_data)
     screenator_position_icon (data);
 
   return G_SOURCE_REMOVE;
-}
-
-static void on_icon_tool_delay (GtkMenuItem *menuitem, gpointer user_data)
-{
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  guint delay = GPOINTER_TO_UINT (
-    g_object_get_data (G_OBJECT (menuitem), "tool-delay-seconds"));
-
-  data->tool_delay_seconds = delay;
-  write_keyfile (data);
-  schedule_tray_menu_refresh (data);
 }
 
 static void
@@ -6972,11 +13688,8 @@ screenator_position_icon (ScreenatorData *data)
   raise_icon_window (data);
 }
 
-static void on_icon_size (GtkMenuItem *menuitem, gpointer user_data)
+static void apply_icon_size (ScreenatorData *data, guint new_size)
 {
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  guint new_size = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (menuitem),
-                                                        "icon-size-value"));
   data->icon_size = new_size;
 
   /* Redraw at the new size first, as before.  Move the window afterwards so
@@ -7040,96 +13753,15 @@ static void on_icon_toggle_floating (GtkMenuItem *menuitem, gpointer user_data)
 			       GTK_CHECK_MENU_ITEM (menuitem)));
 }
 
-static void on_icon_toggle_save_annotations (GtkMenuItem *menuitem,
-					      gpointer user_data)
+static void on_icon_toggle_toolbar (GtkMenuItem *menuitem, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
+  gboolean shown = data->paper_top_bar != NULL;
+  gboolean wanted = gtk_check_menu_item_get_active (
+    GTK_CHECK_MENU_ITEM (menuitem));
 
-  data->save_annotations_on_exit =
-    gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
-
-  /* Do not bring back older drawings after the option has been turned off. */
-  if (!data->save_annotations_on_exit)
-    remove_saved_annotations ();
-
-  write_keyfile (data);
-  schedule_tray_menu_refresh (data);
-}
-
-static void on_icon_toggle_settings_indicator (GtkMenuItem *menuitem,
-					       gpointer user_data)
-{
-  ScreenatorData *data = (ScreenatorData *) user_data;
-
-  data->show_settings_indicator =
-    gtk_check_menu_item_get_active (GTK_CHECK_MENU_ITEM (menuitem));
-
-  update_settings_indicator (data);
-  write_keyfile (data);
-  schedule_tray_menu_refresh (data);
-}
-
-static void on_icon_position (GtkMenuItem *menuitem, gpointer user_data)
-{
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  static const gchar * const labels[] = {
-    "Top Right", "Top Left", "Bottom Right", "Bottom Left"
-  };
-  GtkWidget *dialog, *content, *box, *label;
-  GtkWidget *buttons[G_N_ELEMENTS (labels)];
-  gint response, selected = 0;
-  guint i;
-
-  dialog = gtk_dialog_new_with_buttons ("Floating Icon Position", NULL,
-					GTK_DIALOG_MODAL |
-					GTK_DIALOG_DESTROY_WITH_PARENT,
-					"Cancel", GTK_RESPONSE_CANCEL,
-					"OK", GTK_RESPONSE_OK,
-					NULL);
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
-  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
-  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
-  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_OK);
-
-  show_dialog_above_drawings (data, dialog);
-
-  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
-  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
-  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
-  gtk_container_add (GTK_CONTAINER (content), box);
-
-  label = gtk_label_new ("Choose where the floating icon is placed:");
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
-
-  for (i = 0; i < G_N_ELEMENTS (labels); i++)
-    {
-      buttons[i] = gtk_radio_button_new_with_label (
-	i == 0 ? NULL : gtk_radio_button_get_group (GTK_RADIO_BUTTON (buttons[0])),
-	labels[i]);
-      gtk_box_pack_start (GTK_BOX (box), buttons[i], FALSE, FALSE, 0);
-      if ((guint) data->icon_position == i)
-	gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (buttons[i]), TRUE);
-    }
-
-  gtk_widget_show_all (dialog);
-  response = gtk_dialog_run (GTK_DIALOG (dialog));
-  if (response == GTK_RESPONSE_OK)
-    {
-      for (i = 0; i < G_N_ELEMENTS (buttons); i++)
-	if (gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (buttons[i])))
-	  {
-	    selected = (gint) i;
-	    break;
-	  }
-
-      data->icon_position = (ScreenatorIconPosition) selected;
-      write_keyfile (data);
-      screenator_position_icon (data);
-      schedule_tray_menu_refresh (data);
-    }
-
-  gtk_widget_destroy (dialog);
+  if (shown != wanted)
+    screenator_toggle_paper_top_bar (data);
 }
 
 static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
@@ -7137,31 +13769,75 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
   ScreenatorData *data = (ScreenatorData *) user_data;
   GHashTableIter it;
   gpointer value;
+  gchar *config_path;
+  ScreenatorPaperType type;
 
-  data->pen_width = KEY_DFLT_PEN_WIDTH;
-  data->eraser_width = KEY_DFLT_ERASER_WIDTH;
-  gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
-  data->pen_color.alpha = 1.0;
-  data->opacity = DEFAULT_OPACITY;
-  data->marker_opacity = 0.40;
-  data->icon_size = KEY_DFLT_ICON_SIZE;
-  data->icon_position = SCREENATOR_ICON_TOP_RIGHT;
-  data->tool_delay_seconds = 0;
-  data->pen_tool = 1;
+  (void) menuitem;
+
+  screenator_timer_cancel (data);
+
+  /* Leave Paper Drawing and forget every paper page and PDF. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    screenator_exit_paper_drawing (data);
+
+  for (type = SCREENATOR_PAPER_PLAIN;
+       type <= SCREENATOR_PAPER_PDF; type++)
+    {
+      ScreenatorPaperDocument *doc = data->paper_docs[type];
+
+      if (!doc)
+	continue;
+
+      if (type == SCREENATOR_PAPER_PDF && doc->pdf_document)
+	{
+	  g_object_unref (doc->pdf_document);
+	  doc->pdf_document = NULL;
+	  g_free (doc->pdf_path);
+	  doc->pdf_path = NULL;
+	  doc->pdf_loaded = FALSE;
+	  doc->pdf_page_count = 0;
+	}
+
+      paper_document_clear_pages (doc);
+      doc->page = 0;
+    }
+
+  screenator_page_history_clear (data);
+
+  g_free (data->paper_pdf_path);
+  data->paper_pdf_path = NULL;
+  data->paper_pdf_page = 0;
+  data->start_paper = FALSE;
+
+  /* Delete the saved drawing and the configuration file. */
+  remove_saved_annotations ();
+  config_path = screenator_config_path ("screenator.ini");
+  g_remove (config_path);
+  g_free (config_path);
+
+  /* Rebuild every setting from the defaults. */
   g_free (data->font);
-  data->font = g_strdup (KEY_DFLT_FONT);
-  data->shape_fill_enabled = FALSE;
-  gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
-  data->shape_fill_color.alpha = 1.0;
+  data->font = NULL;
+  g_free (data->math_expression);
+  data->math_expression = NULL;
+  g_free (data->math_polar_expression);
+  data->math_polar_expression = NULL;
 
-  /* Reset Settings also puts the normal desktop back. */
+  read_keyfile (data);
+  data->paper_selected = SCREENATOR_PAPER_PLAIN;
   data->paper = SCREENATOR_PAPER_NONE;
-  update_window_shape (data);
-  if (!data->painted && !screenator_any_grabbed (data))
-    hide_window (data);
+  data->paper_hand_tool = FALSE;
+  data->pen_tool = 1;
+  data->stylus_mode = SCREENATOR_STYLUS_COLOR;
+  data->wheel_mode = SCREENATOR_WHEEL_COLOR;
+
+  if (data->paper_top_bar)
+    paper_top_bar_destroy (data);
 
   apply_pen_settings (data);
   update_eraser_cursor (data);
+  set_floating_icon_visible (data, TRUE);
+  paper_top_bar_restore (data);
 
   /* Let select_tool() pick up the reset tool on the next event. */
   if (data->devdatatable)
@@ -7175,9 +13851,16 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
 		     data->icon_size);
   update_icon_image (data);
   screenator_position_icon (data);
+  clear_screen (data);
+  remove_saved_annotations ();
+
+  if (!data->painted && !screenator_any_grabbed (data))
+    hide_window (data);
+
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
 }
+
 
 static gboolean on_icon_draw (GtkWidget *widget,
 			      cairo_t *cr,
@@ -7566,6 +14249,7 @@ create_settings_indicator (ScreenatorData *data)
   gtk_widget_add_events (data->settings_win,
 			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
 			 GDK_SCROLL_MASK);
+  paper_controls_attach_hover (data, data->settings_win);
   g_signal_connect (data->settings_win, "button-press-event",
 		    G_CALLBACK (on_settings_indicator_button), data);
   g_signal_connect (data->settings_win, "button-release-event",
@@ -7618,6 +14302,7 @@ void create_icon_window (ScreenatorData *data)
   gtk_widget_add_events (data->icon_win,
 			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
 			 GDK_POINTER_MOTION_MASK);
+  paper_controls_attach_hover (data, data->icon_win);
 
   g_signal_connect (data->icon_win, "button-press-event",
 		    G_CALLBACK (on_icon_button_press), data);
@@ -7669,6 +14354,9 @@ void create_icon_window (ScreenatorData *data)
       if (data->settings_win)
 	gtk_widget_hide (data->settings_win);
     }
+
+  /* The tool bar works in both screen and paper modes. */
+  paper_top_bar_restore (data);
 }
 
 static void icon_menu_position_func (GtkMenu  *menu,
@@ -7688,14 +14376,14 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   GtkWidget *item;
   GtkWidget *submenu;
 
-  item = gtk_image_menu_item_new_with_label ("Pen (F8)");
+  item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_PEN, "Pen");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("pen.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_pen), data);
 
-  item = gtk_image_menu_item_new_with_label ("Text (F7)");
+  item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_TEXT, "Text");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("text.png")));
@@ -7708,6 +14396,23 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
                                    load_menu_icon ("eraser.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_eraser), data);
+
+  item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_ARROW, "Arrow");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("arrow.png")));
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  g_signal_connect (item, "activate", G_CALLBACK (on_icon_arrow), data);
+
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    {
+      item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_TIMER, "Timer");
+      gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+				     gtk_image_new_from_pixbuf (
+				       load_menu_icon ("timer.png")));
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      g_signal_connect (item, "activate", G_CALLBACK (on_icon_timer), data);
+    }
 
   /* --- shapes submenu --- */
   item = gtk_image_menu_item_new_with_label ("Shapes");
@@ -7728,7 +14433,6 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	{ "Spline",             "spline.png",             G_CALLBACK (on_icon_spline) },
 	{ "Polygon",            "polygon.png",            G_CALLBACK (on_icon_polygon) },
 	{ "Triangle",           "triangle.png",           G_CALLBACK (on_icon_triangle) },
-	{ "Arrow (F6)",         "arrow.png",              G_CALLBACK (on_icon_arrow) },
 	{ "Ellipse",            "ellipse.png",            G_CALLBACK (on_icon_ellipse) },
 	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
 	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) },
@@ -7754,38 +14458,103 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
-  /* --- delayed tool activation submenu --- */
-  item = gtk_menu_item_new_with_label ("Tool Activation Delay");
+  /* --- actions submenu, directly below Shapes --- */
+  item = gtk_image_menu_item_new_with_label ("Actions");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("actions.png")));
   submenu = gtk_menu_new ();
   {
-    GSList *group = NULL;
-    static const guint delays[] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
-    static const gchar * const labels[] = {
-      "0 s", "1 s", "2 s", "3 s", "4 s", "5 s", "7 s", "9 s", "11 s"
-    };
-    GtkWidget *items[G_N_ELEMENTS (delays)];
-    GtkWidget *active_item = NULL;
-    guint i;
+    GtkWidget *action;
+    gchar *label;
 
-    for (i = 0; i < G_N_ELEMENTS (delays); i++)
-      {
-	GtkWidget *subitem = gtk_radio_menu_item_new_with_label (group,
-								 labels[i]);
-	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
-	gtk_widget_show (subitem);
-	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
-	g_object_set_data (G_OBJECT (subitem), "tool-delay-seconds",
-			   GUINT_TO_POINTER (delays[i]));
-	items[i] = subitem;
-	if (data->tool_delay_seconds == delays[i])
-	  active_item = subitem;
-      }
-    if (active_item)
-      gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
-    for (i = 0; i < G_N_ELEMENTS (delays); i++)
-      g_signal_connect (items[i], "activate",
-			G_CALLBACK (on_icon_tool_delay), data);
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SWITCH_MODE, "Switch Mode");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("switch_mode.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_icon_switch_mode), data);
+
+    action = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_UNDO, "Undo");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("undo.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate", G_CALLBACK (on_undo), data);
+
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_REDO, "Redo");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("redo.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate", G_CALLBACK (on_redo), data);
+
+    action = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+
+    action = gtk_image_menu_item_new_with_label ("Clear Screen");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("trash.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate", G_CALLBACK (on_clear), data);
+
+    action = gtk_image_menu_item_new_with_label ("Toggle Visibility (Ctrl+T)");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("hide.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_toggle_vis), data);
+
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SCREENSHOT, "Screenshot");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("screenshot.png")));
+    gtk_widget_set_sensitive (action,
+			      data->paper == SCREENATOR_PAPER_NONE);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_action_screenshot), data);
+
+    action = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+
+    {
+      gchar *label = shortcut_label (data, SCREENATOR_SHORTCUT_TOOLBAR,
+				     "Show toolbar");
+      action = gtk_check_menu_item_new_with_label (label);
+      g_free (label);
+    }
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (action),
+				    data->paper_top_bar != NULL);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_icon_toggle_toolbar), data);
+
+    label = shortcut_label (data, SCREENATOR_SHORTCUT_FLOATING_ICON,
+			    "Show Floating Icon");
+
+    action = gtk_check_menu_item_new_with_label (label);
+    g_free (label);
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (action),
+				    data->show_floating_icon);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_icon_toggle_floating), data);
+
+    action = gtk_image_menu_item_new_with_label ("Show Hints");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("hint.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate", G_CALLBACK (on_show_hints), data);
   }
+  gtk_widget_show_all (submenu);
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
@@ -7969,8 +14738,8 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
-  /* --- screen paper submenu --- */
-  item = gtk_image_menu_item_new_with_label ("Screen Paper");
+  /* --- Paper submenu --- */
+  item = gtk_image_menu_item_new_with_label ("Paper");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
                                    load_menu_icon ("paper.png")));
@@ -7983,13 +14752,32 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
       ScreenatorPaperType paper;
     } papers[] =
       {
-	{ "None",  SCREENATOR_PAPER_NONE },
 	{ "Plain", SCREENATOR_PAPER_PLAIN },
 	{ "Ruled", SCREENATOR_PAPER_RULED },
-	{ "Graph", SCREENATOR_PAPER_GRAPH }
+	{ "Graph", SCREENATOR_PAPER_GRAPH },
+	{ "PDF",   SCREENATOR_PAPER_PDF }
       };
+    ScreenatorPaperDocument *active_doc = paper_active_document (data);
+    gboolean active = data->paper != SCREENATOR_PAPER_NONE;
+    gboolean pdf_active = data->paper == SCREENATOR_PAPER_PDF;
+    guint page_count = (active_doc && active_doc->pages)
+      ? active_doc->pages->len : 0;
     GtkWidget *items[G_N_ELEMENTS (papers)];
+    GtkWidget *widget;
     guint i;
+
+    if (active && page_count > 0)
+      {
+	gchar *page_label =
+	  g_strdup_printf ("Page %u of %u",
+			   active_doc->page + 1, page_count);
+	GtkWidget *info = gtk_menu_item_new_with_label (page_label);
+
+	gtk_widget_set_sensitive (info, FALSE);
+	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), info);
+	gtk_widget_show (info);
+	g_free (page_label);
+      }
 
     for (i = 0; i < G_N_ELEMENTS (papers); i++)
       {
@@ -8003,12 +14791,74 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
 
-	if (papers[i].paper == data->paper)
+	if (papers[i].paper == data->paper_selected)
 	  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (subitem), TRUE);
       }
     for (i = 0; i < G_N_ELEMENTS (papers); i++)
       g_signal_connect (items[i], "activate",
 			G_CALLBACK (on_icon_paper), data);
+
+    widget = gtk_image_menu_item_new_with_label ("Reset/Open PDF.");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("paper.png")));
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_reset_or_open_pdf), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_INSERT_BEFORE, "Insert Page Before");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("add_before.png")));
+    gtk_widget_set_sensitive (widget, active && !pdf_active);
+    g_object_set_data (G_OBJECT (widget), "paper-before",
+		       GINT_TO_POINTER (1));
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_paper_insert), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = gtk_image_menu_item_new_with_label ("Delete Page");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("delete-page.png")));
+    gtk_widget_set_sensitive (widget,
+			      active && !pdf_active && page_count > 1);
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_paper_delete), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_INSERT_AFTER, "Insert Page After");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("add_after.png")));
+    gtk_widget_set_sensitive (widget, active && !pdf_active);
+    g_object_set_data (G_OBJECT (widget), "paper-before",
+		       GINT_TO_POINTER (0));
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_paper_insert), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = gtk_separator_menu_item_new ();
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
+
+    widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SAVE, "Save current paper");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("save.png")));
+    gtk_widget_set_sensitive (widget, active);
+    g_signal_connect (widget, "activate",
+		      G_CALLBACK (on_icon_paper_save), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
+    gtk_widget_show (widget);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
@@ -8059,14 +14909,18 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
   /* --- opacity submenu --- */
-  item = gtk_menu_item_new_with_label ("Opacity");
+  item = gtk_image_menu_item_new_with_label ("Opacity");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("opacity.png")));
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
     static const gdouble opacities[] =
-      { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9 };
+      { 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0 };
     static const gchar * const labels[] =
-      { "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%" };
+      { "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
+	"100%" };
     GtkWidget *items[G_N_ELEMENTS (opacities)];
     GtkWidget *active_item = NULL;
     guint i;
@@ -8104,261 +14958,76 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
-  /* --- floating icon size submenu --- */
-  item = gtk_menu_item_new_with_label ("Floating Icon Size");
+  /* --- marker opacity submenu --- */
+  item = gtk_image_menu_item_new_with_label ("Marker Opacity");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("marker_opacity.png")));
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
-    static const guint sizes[] = { 16, 32, 48, 64, 128, 256 };
-    static const gchar * const labels[] =
-      { "16x16", "32x32", "48x48", "64x64", "128x128", "256x256" };
-    GtkWidget *items[G_N_ELEMENTS (sizes)];
+    static const gint percents[] = { 10, 20, 30, 40, 50, 60, 70, 80, 90 };
+    GtkWidget *items[G_N_ELEMENTS (percents)];
     GtkWidget *active_item = NULL;
-    guint i;
+    guint i, closest = 0;
+    gdouble closest_diff =
+      ABS (data->marker_opacity - percents[0] / 100.0);
 
-    for (i = 0; i < G_N_ELEMENTS (sizes); i++)
+    for (i = 1; i < G_N_ELEMENTS (percents); i++)
       {
-	GtkWidget *subitem = gtk_radio_menu_item_new_with_label (group, labels[i]);
+	gdouble diff = ABS (data->marker_opacity - percents[i] / 100.0);
+
+	if (diff < closest_diff)
+	  {
+	    closest = i;
+	    closest_diff = diff;
+	  }
+      }
+
+    for (i = 0; i < G_N_ELEMENTS (percents); i++)
+      {
+	gchar *label = g_strdup_printf ("%d%%", percents[i]);
+	GtkWidget *subitem =
+	  gtk_radio_menu_item_new_with_label (group, label);
+
+	g_free (label);
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
-	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
-	g_object_set_data (G_OBJECT (subitem), "icon-size-value",
-			   GUINT_TO_POINTER (sizes[i]));
+	group = gtk_radio_menu_item_get_group (
+	  GTK_RADIO_MENU_ITEM (subitem));
+	g_object_set_data (G_OBJECT (subitem), "icon-marker-opacity",
+			   GINT_TO_POINTER (percents[i]));
 	items[i] = subitem;
-	if (data->icon_size == sizes[i])
+	if (i == closest)
 	  active_item = subitem;
       }
+
     if (active_item)
-      gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
-    for (i = 0; i < G_N_ELEMENTS (sizes); i++)
-      g_signal_connect (items[i], "activate", G_CALLBACK (on_icon_size), data);
+      gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item),
+				      TRUE);
+
+    for (i = 0; i < G_N_ELEMENTS (percents); i++)
+      g_signal_connect (items[i], "activate",
+			G_CALLBACK (on_icon_marker_opacity), data);
   }
   gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
 
-  /* --- undo / redo (above Change Font) --- */
-  item = gtk_image_menu_item_new_with_label ("Undo");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("undo.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_undo), data);
-
-  item = gtk_image_menu_item_new_with_label ("Redo");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("redo.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_redo), data);
-
-}
-
-/* The settings items, either in a submenu of the floating icon menu or
- * directly in the tray menu. */
-static void
-append_settings_items (ScreenatorData *data, GtkWidget *shell)
-{
-  GtkWidget *item;
-
-  item = gtk_check_menu_item_new_with_label ("Save annotations on exit");
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->save_annotations_on_exit);
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_save_annotations), data);
-
-  item = gtk_separator_menu_item_new ();
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-
-  item = gtk_image_menu_item_new_with_label ("Change Font...");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("font-settings.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_icon_change_font), data);
-
-  item = gtk_check_menu_item_new_with_label ("Show Settings Indicator");
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->show_settings_indicator);
-  /* The indicator sits next to the icon, so it can only be shown with it. */
-  gtk_widget_set_sensitive (item, data->show_floating_icon);
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_settings_indicator), data);
-
-  item = gtk_image_menu_item_new_with_label ("Floating Icon Position...");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("screenator.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_position), data);
-
-  item = gtk_separator_menu_item_new ();
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-
-  item = gtk_image_menu_item_new_with_label ("Reset Settings");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("reset-settings.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (shell), item);
-  gtk_widget_show (item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_reset_settings), data);
-}
-
-/* A menu that appears on the right half of the screen opens its submenus to
- * the left, towards the centre, so they stay fully visible.  The submenu
- * direction is set when the menu is mapped: at build time the tray menu has no
- * position yet, which made the first one open towards the screen edge. */
-static void
-set_settings_submenu_direction (GtkWidget *menu, GtkWidget *submenu)
-{
-  GdkWindow *window = gtk_widget_get_window (menu);
-  GdkScreen *screen = gdk_screen_get_default ();
-  GtkTextDirection direction = GTK_TEXT_DIR_LTR;
-  GList *children;
-  gint x = 0, y = 0;
-
-  if (!submenu)
-    return;
-
-  if (window)
-    gdk_window_get_origin (window, &x, &y);
-
-  if (screen)
-    {
-      GdkRectangle geometry;
-      gint monitor = gdk_screen_get_monitor_at_point (screen, x, y);
-
-      gdk_screen_get_monitor_geometry (screen, monitor, &geometry);
-      if (x > geometry.x + geometry.width / 2)
-	direction = GTK_TEXT_DIR_RTL;
-    }
-
-  gtk_widget_set_direction (submenu, direction);
-  for (children = gtk_container_get_children (GTK_CONTAINER (submenu));
-       children; children = children->next)
-    gtk_widget_set_direction (GTK_WIDGET (children->data),
-			      GTK_TEXT_DIR_LTR);
-  g_list_free (children);
-}
-
-/* The submenu is shown just before GTK places it, and the parent menu already
- * has its final position by then.  Deciding the direction here works for the
- * first tray menu as well. */
-static void
-on_settings_submenu_show (GtkWidget *submenu, gpointer user_data)
-{
-  set_settings_submenu_direction (GTK_WIDGET (user_data), submenu);
-}
-
-static gboolean
-set_settings_direction_idle (gpointer user_data)
-{
-  GtkWidget *menu = GTK_WIDGET (user_data);
-  GtkWidget *submenu = g_object_get_data (G_OBJECT (menu),
-					  "screenator-settings-submenu");
-
-  set_settings_submenu_direction (menu, submenu);
-  return G_SOURCE_REMOVE;
-}
-
-static gboolean
-on_menu_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
-{
-  GtkWidget *submenu = g_object_get_data (G_OBJECT (widget),
-					  "screenator-settings-submenu");
-
-  set_settings_submenu_direction (widget, submenu);
-
-  /* Some menus are mapped before their final position is known.  Repeat the
-   * choice once the position has settled, which is still before the user can
-   * open the submenu. */
-  g_idle_add_full (G_PRIORITY_DEFAULT_IDLE, set_settings_direction_idle,
-		   g_object_ref (widget), g_object_unref);
-  return FALSE;
 }
 
 GtkWidget *build_icon_menu (ScreenatorData *data)
 {
   GtkWidget *menu = gtk_menu_new ();
   GtkWidget *item;
-  GtkWidget *submenu;
 
   append_icon_tool_items (data, menu);
 
-  item = gtk_image_menu_item_new_with_label ("Clear Screen");
+  item = gtk_image_menu_item_new_with_label ("Settings...");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("trash.png")));
+                                   load_menu_icon ("settings.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_clear), data);
-
-  item = gtk_image_menu_item_new_with_label ("Toggle Visibility");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("hide.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_toggle_vis), data);
-
-  {
-    gchar *label;
-
-    if (data->hot_keyval && *data->hot_keyval &&
-	g_ascii_strcasecmp (data->hot_keyval, "none") != 0)
-      label = g_strdup_printf ("Show Floating Icon (%s)", data->hot_keyval);
-    else
-      label = g_strdup ("Show Floating Icon");
-
-    item = gtk_check_menu_item_new_with_label (label);
-    g_free (label);
-  }
-  gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item),
-				  data->show_floating_icon);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate",
-		    G_CALLBACK (on_icon_toggle_floating), data);
-
-  item = gtk_image_menu_item_new_with_label ("Show Hints");
-  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
-                                 gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("hint.png")));
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (on_show_hints), data);
-
-  item = gtk_menu_item_new_with_label ("Settings");
-  submenu = gtk_menu_new ();
-  append_settings_items (data, submenu);
-
-  /* The direction is chosen when the menu is mapped, from where it actually
-   * appears on the screen, and the items always keep their normal
-   * left-to-right layout. */
-  {
-    GList *children;
-
-    gtk_widget_set_direction (submenu, GTK_TEXT_DIR_LTR);
-    for (children = gtk_container_get_children (GTK_CONTAINER (submenu));
-	 children; children = children->next)
-      gtk_widget_set_direction (GTK_WIDGET (children->data),
-				GTK_TEXT_DIR_LTR);
-    g_list_free (children);
-  }
-
-  g_object_set_data (G_OBJECT (menu), "screenator-settings-submenu",
-		     submenu);
-  g_signal_connect (menu, "map-event", G_CALLBACK (on_menu_map), NULL);
-  g_signal_connect (submenu, "show", G_CALLBACK (on_settings_submenu_show),
-		    menu);
-
-  gtk_menu_item_set_submenu (GTK_MENU_ITEM (item), submenu);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+  g_signal_connect (item, "activate", G_CALLBACK (on_icon_settings), data);
 
   {
     GtkWidget *sep = gtk_separator_menu_item_new ();
@@ -8369,9 +15038,12 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_about), data);
 
-  item = gtk_menu_item_new_with_label ("Quit");
+  item = gtk_image_menu_item_new_with_label ("Quit");
+  gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+                                 gtk_image_new_from_pixbuf (
+                                   load_menu_icon ("quit.png")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-  g_signal_connect (item, "activate", G_CALLBACK (gtk_main_quit), NULL);
+  g_signal_connect (item, "activate", G_CALLBACK (on_quit), data);
 
   return menu;
 }
@@ -8836,13 +15508,12 @@ screenator_show_quick_menu (ScreenatorData *data)
   if (data->quick_menu)
     return;
 
-  /* The quick menu is an immediate selection, so drop any pending delayed
-   * activation or blocked-grab fallback first. */
-  if (data->tool_delay_id)
-    {
-      g_source_remove (data->tool_delay_id);
-      data->tool_delay_id = 0;
-    }
+  paper_finish_temporary_eraser (data);
+  screenator_paper_pan_end (data);
+
+  /* The quick menu is an immediate selection, so drop any running timer or
+   * blocked-grab fallback first. */
+  screenator_timer_cancel (data);
   if (data->tool_grab_retry_id)
     {
       g_source_remove (data->tool_grab_retry_id);
@@ -8934,6 +15605,2245 @@ screenator_show_quick_menu (ScreenatorData *data)
 		    G_CALLBACK (quick_menu_map), menu);
 
   gtk_widget_show_all (window);
+}
+
+/* ------------------------------------------------------------------
+ * Paper Drawing tool bar
+ *
+ * F10 shows a persistent strip of tool icons while Paper Drawing is active.
+ * The bar is vertical on the right edge by default; it can be switched to a
+ * horizontal bar on the top edge in Settings > General.  Selecting a
+ * tool or a menu entry intentionally leaves the bar open; only F10 or leaving
+ * Paper Drawing closes it.  The bar is a window of this application, so the
+ * paper grab uses owner-events while it is visible: pointer events over the
+ * bar reach its buttons, while events over any other application still reach
+ * the full-screen drawing window.
+ * ------------------------------------------------------------------ */
+
+#define PAPER_TOOLBAR_DEFAULT_ICON_SIZE 32
+#define PAPER_TOOLBAR_MARGIN 0
+#define PAPER_TOOLBAR_SPACING 2
+
+typedef struct
+{
+  ScreenatorData *data;
+  GtkWidget      *window;
+  GtkWidget      *box;
+  GtkWidget      *cursor_button;
+  GtkWidget      *pen_button;
+  GtkWidget      *text_button;
+  GtkWidget      *eraser_button;
+  GtkWidget      *arrow_button;
+  GtkWidget      *timer_button;
+  GtkWidget      *visibility_button;
+  GtkWidget      *shapes_button;
+  GtkWidget      *add_before_button;
+  GtkWidget      *delete_page_button;
+  GtkWidget      *add_after_button;
+  GtkWidget      *line_image;
+  GtkWidget      *fill_image;
+  GtkWidget      *thickness_image;
+  GtkWidget      *eraser_image;
+  GtkWidget      *save_button;
+  GtkWidget      *save_image;
+
+  GtkWidget      *tooltip_window;
+  GtkWidget      *tooltip_label;
+  GtkWidget      *tooltip_button;
+  guint           tooltip_timeout;
+
+  gboolean        drag_pending;
+  gboolean        dragging;
+  gboolean        drag_was_grabbed;
+  gboolean        drag_seat_grabbed;
+  gint            drag_start_root_x;
+  gint            drag_start_root_y;
+  gint            drag_window_x;
+  gint            drag_window_y;
+  GtkWidget      *drag_widget;
+} PaperTopBar;
+
+typedef struct
+{
+  ScreenatorData *data;
+  gboolean        was_grabbed;
+} PaperTopBarMenu;
+
+static void
+paper_toolbar_set_tooltip_text (GtkWidget *button, const gchar *text)
+{
+  g_object_set_data_full (G_OBJECT (button), "paper-tooltip-text",
+			  g_strdup (text ? text : ""), g_free);
+}
+
+static void
+paper_toolbar_tooltip_hide (ScreenatorData *data)
+{
+  PaperTopBar *bar;
+
+  if (!data)
+    return;
+
+  bar = data->paper_top_bar_data;
+  if (!bar)
+    return;
+
+  if (bar->tooltip_timeout)
+    {
+      g_source_remove (bar->tooltip_timeout);
+      bar->tooltip_timeout = 0;
+    }
+
+  bar->tooltip_button = NULL;
+
+  if (bar->tooltip_window)
+    gtk_widget_hide (bar->tooltip_window);
+}
+
+/* The tooltip window must never take pointer or keyboard input. */
+static void
+paper_toolbar_tooltip_realize (GtkWidget *widget, gpointer user_data)
+{
+  GdkWindow *window = gtk_widget_get_window (widget);
+  cairo_region_t *empty;
+
+  (void) user_data;
+
+  if (!window)
+    return;
+
+  empty = cairo_region_create ();
+  gdk_window_input_shape_combine_region (window, empty, 0, 0);
+  cairo_region_destroy (empty);
+}
+
+static void
+paper_toolbar_tooltip_create (PaperTopBar *bar)
+{
+  static GtkCssProvider *provider = NULL;
+  GtkWidget *label;
+  GtkStyleContext *context;
+
+  bar->tooltip_window = gtk_window_new (GTK_WINDOW_POPUP);
+  gtk_window_set_decorated (GTK_WINDOW (bar->tooltip_window), FALSE);
+  gtk_window_set_resizable (GTK_WINDOW (bar->tooltip_window), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (bar->tooltip_window), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (bar->tooltip_window), TRUE);
+  gtk_window_set_accept_focus (GTK_WINDOW (bar->tooltip_window), FALSE);
+  gtk_window_set_focus_on_map (GTK_WINDOW (bar->tooltip_window), FALSE);
+  gtk_window_set_keep_above (GTK_WINDOW (bar->tooltip_window), TRUE);
+  gtk_window_set_type_hint (GTK_WINDOW (bar->tooltip_window),
+			    GDK_WINDOW_TYPE_HINT_TOOLTIP);
+
+  label = gtk_label_new (NULL);
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_widget_set_margin_start (label, 6);
+  gtk_widget_set_margin_end (label, 6);
+  gtk_widget_set_margin_top (label, 2);
+  gtk_widget_set_margin_bottom (label, 2);
+  gtk_container_add (GTK_CONTAINER (bar->tooltip_window), label);
+  bar->tooltip_label = label;
+  gtk_widget_show (label);
+
+  if (!provider)
+    {
+      provider = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (provider,
+	"window.paper-tooltip { background-color: #ffffe1; "
+	"border: 1px solid #767676; }\n", -1, NULL);
+    }
+
+  context = gtk_widget_get_style_context (bar->tooltip_window);
+  gtk_style_context_add_provider (context, GTK_STYLE_PROVIDER (provider),
+				  GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+  gtk_style_context_add_class (context, "paper-tooltip");
+
+  g_signal_connect (bar->tooltip_window, "realize",
+		    G_CALLBACK (paper_toolbar_tooltip_realize), NULL);
+
+  /* Realize it now (without mapping) so the first tooltip is measured and
+   * positioned correctly. */
+  gtk_widget_realize (bar->tooltip_window);
+}
+
+static gboolean
+paper_toolbar_tooltip_show (ScreenatorData *data)
+{
+  PaperTopBar *bar = data ? data->paper_top_bar_data : NULL;
+  GtkWidget *button;
+  const gchar *text;
+  GtkRequisition req;
+  GtkAllocation alloc;
+  GdkWindow *bar_window;
+  GdkScreen *screen;
+  GdkRectangle area;
+  gint bx = 0, by = 0, wx = 0, wy = 0;
+  gint root_x, root_y, x, y, monitor;
+
+  if (!bar || !bar->tooltip_window || !bar->tooltip_button)
+    return G_SOURCE_REMOVE;
+
+  button = bar->tooltip_button;
+  text = g_object_get_data (G_OBJECT (button), "paper-tooltip-text");
+  if (!text || !*text)
+    return G_SOURCE_REMOVE;
+
+  gtk_label_set_text (GTK_LABEL (bar->tooltip_label), text);
+
+  gtk_widget_get_preferred_size (bar->tooltip_window, NULL, &req);
+  gtk_widget_get_allocation (button, &alloc);
+  gtk_widget_translate_coordinates (button, bar->window, 0, 0, &bx, &by);
+
+  bar_window = gtk_widget_get_window (bar->window);
+  if (bar_window)
+    gdk_window_get_origin (bar_window, &wx, &wy);
+
+  root_x = wx + bx;
+  root_y = wy + by;
+
+  if (data->paper_toolbar_vertical)
+    {
+      /* Beside the icon, on the inner side of the vertical bar. */
+      x = root_x - req.width - 8;
+      y = root_y + (alloc.height - req.height) / 2;
+    }
+  else
+    {
+      /* Below the icon, horizontally centred on it. */
+      x = root_x + (alloc.width - req.width) / 2;
+      y = root_y + alloc.height + 8;
+    }
+
+  screen = bar_window ? gdk_window_get_screen (bar_window) : NULL;
+  if (screen)
+    {
+      monitor = gdk_screen_get_monitor_at_point (screen, root_x, root_y);
+      if (monitor < 0)
+	monitor = 0;
+      gdk_screen_get_monitor_workarea (screen, monitor, &area);
+
+      /* Flip to the other side when the preferred side has no room. */
+      if (data->paper_toolbar_vertical && x < area.x)
+	x = root_x + alloc.width + 8;
+      else if (!data->paper_toolbar_vertical &&
+	       y + req.height > area.y + area.height)
+	y = root_y - req.height - 8;
+
+      x = CLAMP (x, area.x, area.x + MAX (0, area.width - req.width));
+      y = CLAMP (y, area.y, area.y + MAX (0, area.height - req.height));
+    }
+
+  gtk_window_move (GTK_WINDOW (bar->tooltip_window), x, y);
+  gtk_widget_show (bar->tooltip_window);
+
+  if (gtk_widget_get_window (bar->tooltip_window))
+    gdk_window_raise (gtk_widget_get_window (bar->tooltip_window));
+
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+paper_toolbar_tooltip_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  PaperTopBar *bar = data->paper_top_bar_data;
+
+  if (bar)
+    bar->tooltip_timeout = 0;
+
+  paper_toolbar_tooltip_show (data);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+paper_toolbar_tooltip_enter (GtkWidget *widget, GdkEventCrossing *event,
+			     gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  PaperTopBar *bar = data ? data->paper_top_bar_data : NULL;
+
+  (void) event;
+
+  if (!bar)
+    return FALSE;
+
+  paper_toolbar_tooltip_hide (data);
+  bar->tooltip_button = widget;
+  bar->tooltip_timeout =
+    g_timeout_add (600, paper_toolbar_tooltip_timeout, data);
+  return FALSE;
+}
+
+static gboolean
+paper_toolbar_tooltip_leave (GtkWidget *widget, GdkEventCrossing *event,
+			     gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  PaperTopBar *bar = data ? data->paper_top_bar_data : NULL;
+
+  (void) event;
+
+  if (bar && bar->tooltip_button == widget)
+    paper_toolbar_tooltip_hide (data);
+
+  return FALSE;
+}
+
+static void paper_top_bar_update_images (ScreenatorData *data);
+static void paper_top_bar_destroy (ScreenatorData *data);
+
+static gint
+paper_top_bar_icon_size (ScreenatorData *data)
+{
+  guint size = data->paper_toolbar_icon_size;
+
+  if (size < 16 || size > 64)
+    size = PAPER_TOOLBAR_DEFAULT_ICON_SIZE;
+
+  return (gint) size;
+}
+
+static void
+paper_toolbar_install_style (GtkWidget *window)
+{
+  static GtkCssProvider *provider = NULL;
+  GtkStyleContext *context;
+  GdkScreen *screen;
+
+  if (!provider)
+    {
+      provider = gtk_css_provider_new ();
+      gtk_css_provider_load_from_data (provider,
+	"window.paper-toolbar { background-color: #f4f4f4; "
+	"border: none; border-image: none; padding: 0; margin: 0; "
+	"box-shadow: none; }\n"
+	"window.paper-toolbar decoration { border: none; border-image: none; "
+	"padding: 0; margin: 0; box-shadow: none; }\n"
+	"button.paper-toolbar-button { background-image: none; "
+	"background-color: transparent; border: 1px solid #7a7a7a; "
+	"border-image: none; border-radius: 0; padding: 0; margin: 0; "
+	"min-width: 0; min-height: 0; box-shadow: none; "
+	"text-shadow: none; }\n"
+	"button.paper-toolbar-button:hover { background-color: #cde4fc; }\n"
+	"button.paper-toolbar-button-active { background-color: #8fbfea; }\n",
+	-1, NULL);
+      screen = gtk_widget_get_screen (window);
+      gtk_style_context_add_provider_for_screen (
+	screen ? screen : gdk_screen_get_default (),
+	GTK_STYLE_PROVIDER (provider),
+	GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    }
+
+  context = gtk_widget_get_style_context (window);
+  gtk_style_context_add_class (context, "paper-toolbar");
+}
+
+static GdkPixbuf *
+paper_color_swatch (const GdkRGBA *color, gboolean none, gint size)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  GdkPixbuf *pixbuf;
+
+  size = MAX (4, size);
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, size, size);
+  cr = cairo_create (surface);
+
+  if (none)
+    {
+      cairo_set_source_rgb (cr, 1.0, 1.0, 1.0);
+      cairo_paint (cr);
+      cairo_set_source_rgb (cr, 0.85, 0.1, 0.1);
+      cairo_set_line_width (cr, MAX (1.0, size / 10.0));
+      cairo_move_to (cr, 2, 2);
+      cairo_line_to (cr, size - 2, size - 2);
+      cairo_stroke (cr);
+    }
+  else
+    {
+      cairo_set_source_rgba (cr, color->red, color->green, color->blue, 1.0);
+      cairo_rectangle (cr, 0.5, 0.5, size - 1.0, size - 1.0);
+      cairo_fill (cr);
+    }
+
+  cairo_set_source_rgba (cr, 0.25, 0.25, 0.25, 1.0);
+  cairo_set_line_width (cr, 1.0);
+  cairo_rectangle (cr, 0.5, 0.5, size - 1.0, size - 1.0);
+  cairo_stroke (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (surface);
+
+  pixbuf = gdk_pixbuf_get_from_surface (surface, 0, 0, size, size);
+  cairo_surface_destroy (surface);
+  return pixbuf;
+}
+
+static GdkPixbuf *
+paper_thickness_sample (guint width, gint size)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  GdkPixbuf *pixbuf;
+  gint box = MAX (24, MIN ((gint) width + 10, 56));
+  gdouble line = MAX (1.0, MIN ((gdouble) width, box - 6.0));
+
+  size = MAX (16, size);
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, size, box);
+  cr = cairo_create (surface);
+  cairo_set_source_rgba (cr, 0.1, 0.1, 0.1, 1.0);
+  cairo_set_line_width (cr, line);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_move_to (cr, 5, box / 2.0);
+  cairo_line_to (cr, size - 5, box / 2.0);
+  cairo_stroke (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (surface);
+
+  pixbuf = gdk_pixbuf_get_from_surface (surface, 0, 0, size, box);
+  cairo_surface_destroy (surface);
+  return pixbuf;
+}
+
+static GdkPixbuf *
+paper_eraser_size_sample (guint width, gint size)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  GdkPixbuf *pixbuf;
+  gdouble diameter;
+
+  size = MAX (16, size);
+  diameter = CLAMP ((gdouble) width * size / 150.0,
+		    3.0, (gdouble) size - 2.0);
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, size, size);
+  cr = cairo_create (surface);
+  cairo_arc (cr, size / 2.0, size / 2.0, diameter / 2.0, 0, 2.0 * G_PI);
+  cairo_set_source_rgba (cr, 0.85, 0.85, 0.85, 1.0);
+  cairo_fill_preserve (cr);
+  cairo_set_source_rgba (cr, 0.25, 0.25, 0.25, 1.0);
+  cairo_set_line_width (cr, 1.0);
+  cairo_stroke (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (surface);
+
+  pixbuf = gdk_pixbuf_get_from_surface (surface, 0, 0, size, size);
+  cairo_surface_destroy (surface);
+  return pixbuf;
+}
+
+static GtkWidget *
+paper_add_eraser_size_item (GtkWidget *menu, GSList **group,
+			    guint width, gint icon_size)
+{
+  GtkWidget *item = gtk_radio_menu_item_new (*group);
+  GdkPixbuf *pixbuf = paper_eraser_size_sample (width, icon_size);
+  GtkWidget *image = gtk_image_new_from_pixbuf (pixbuf);
+
+  *group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+  gtk_container_add (GTK_CONTAINER (item), image);
+  g_object_set_data (G_OBJECT (item), "icon-eraser-width",
+		     GUINT_TO_POINTER (width));
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  return item;
+}
+
+static void paper_toolbar_set_tooltip_text (GtkWidget *button,
+					    const gchar *text);
+static gboolean paper_toolbar_tooltip_enter (GtkWidget *widget,
+					     GdkEventCrossing *event,
+					     gpointer user_data);
+static gboolean paper_toolbar_tooltip_leave (GtkWidget *widget,
+					     GdkEventCrossing *event,
+					     gpointer user_data);
+static gboolean paper_toolbar_tooltip_timeout (gpointer user_data);
+
+static GtkWidget *
+paper_top_bar_button (ScreenatorData *data, GdkPixbuf *pixbuf,
+		      const gchar *tooltip)
+{
+  GtkWidget *button = gtk_button_new ();
+  GtkWidget *image;
+
+  gtk_style_context_add_class (gtk_widget_get_style_context (button),
+			       "paper-toolbar-button");
+  gtk_button_set_relief (GTK_BUTTON (button), GTK_RELIEF_NONE);
+  gtk_widget_set_can_focus (button, FALSE);
+
+  /* The tooltip is positioned by the toolbar, next to the hovered icon, so
+   * it stays aligned in both horizontal and vertical layouts. */
+  paper_toolbar_set_tooltip_text (button, tooltip);
+  gtk_widget_add_events (button,
+			 GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
+  g_signal_connect (button, "enter-notify-event",
+		    G_CALLBACK (paper_toolbar_tooltip_enter), data);
+  g_signal_connect (button, "leave-notify-event",
+		    G_CALLBACK (paper_toolbar_tooltip_leave), data);
+
+  image = pixbuf ? gtk_image_new_from_pixbuf (pixbuf)
+		 : gtk_image_new_from_icon_name ("image-missing",
+						 GTK_ICON_SIZE_SMALL_TOOLBAR);
+  gtk_container_add (GTK_CONTAINER (button), image);
+  /* One pixel of border on each side, with no padding. */
+  gtk_widget_set_size_request (button, paper_top_bar_icon_size (data) + 2, -1);
+  return button;
+}
+
+static GtkWidget *
+paper_top_bar_icon_button (ScreenatorData *data, const gchar *icon,
+			   const gchar *tooltip)
+{
+  GdkPixbuf *pixbuf =
+    load_menu_icon_at_size (icon, paper_top_bar_icon_size (data));
+  GtkWidget *button = paper_top_bar_button (data, pixbuf, tooltip);
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  return button;
+}
+
+/* One row in a colour menu: a coloured square and no text. */
+static GtkWidget *
+paper_add_swatch_item (GtkWidget *menu, GSList **group,
+		       const GdkRGBA *color, gboolean none,
+		       gint swatch_size, const gchar *name)
+{
+  GtkWidget *item = gtk_radio_menu_item_new (*group);
+  GdkPixbuf *pixbuf = paper_color_swatch (color, none, swatch_size);
+  GtkWidget *image = gtk_image_new_from_pixbuf (pixbuf);
+
+  *group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+  gtk_container_add (GTK_CONTAINER (item), image);
+  g_object_set_data (G_OBJECT (item), "icon-color-name", (gpointer) name);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  return item;
+}
+
+static GtkWidget *
+paper_add_fill_item (GtkWidget *menu, GSList **group,
+		     const GdkRGBA *color, gboolean none,
+		     gint swatch_size, const gchar *name)
+{
+  GtkWidget *item = gtk_radio_menu_item_new (*group);
+  GdkPixbuf *pixbuf = paper_color_swatch (color, none, swatch_size);
+  GtkWidget *image = gtk_image_new_from_pixbuf (pixbuf);
+
+  *group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+  gtk_container_add (GTK_CONTAINER (item), image);
+  g_object_set_data (G_OBJECT (item), "icon-shape-fill-name",
+		     (gpointer) name);
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  return item;
+}
+
+static GtkWidget *
+paper_add_thickness_item (GtkWidget *menu, GSList **group,
+			  guint width, gint icon_size)
+{
+  GtkWidget *item = gtk_radio_menu_item_new (*group);
+  GdkPixbuf *pixbuf = paper_thickness_sample (width, icon_size);
+  GtkWidget *image = gtk_image_new_from_pixbuf (pixbuf);
+
+  *group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+  gtk_container_add (GTK_CONTAINER (item), image);
+  g_object_set_data (G_OBJECT (item), "icon-thickness-width",
+		     GUINT_TO_POINTER (width));
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  return item;
+}
+
+static void
+paper_top_bar_menu_finished (GtkMenuShell *menu, gpointer user_data)
+{
+  PaperTopBarMenu *state;
+
+  (void) user_data;
+
+  if (g_object_get_data (G_OBJECT (menu), "paper-menu-finished"))
+    return;
+  g_object_set_data (G_OBJECT (menu), "paper-menu-finished",
+		     GINT_TO_POINTER (1));
+
+  state = g_object_get_data (G_OBJECT (menu), "paper-menu-state");
+  if (!state)
+    return;
+
+  paper_refresh_controls_hover (state->data);
+  if (state->was_grabbed)
+    acquire_grab (state->data, NULL);
+
+  if (state->data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (state->data);
+
+  if (state->data->paper_hand_tool)
+    restore_paper_cursor (state->data);
+
+  if (state->data->paper_top_bar &&
+      gtk_widget_get_window (state->data->paper_top_bar))
+    gdk_window_raise (gtk_widget_get_window (state->data->paper_top_bar));
+
+  g_object_set_data (G_OBJECT (menu), "paper-menu-state", NULL);
+}
+
+/* Release the painting grab while a menu is open, so GTK can own the pointer,
+ * and restore it when the menu closes. */
+static void
+paper_top_bar_popup_menu (ScreenatorData *data, GtkWidget *button,
+			  GtkWidget *menu)
+{
+  PaperTopBarMenu *state = g_new0 (PaperTopBarMenu, 1);
+  gboolean was_grabbed = screenator_any_grabbed (data);
+
+  state->data = data;
+  state->was_grabbed = was_grabbed;
+
+  paper_finish_temporary_eraser (data);
+  if (was_grabbed)
+    release_grab (data, NULL);
+
+  /* The menu is reused every time it is opened. */
+  g_object_set_data (G_OBJECT (menu), "paper-menu-finished", NULL);
+  g_object_set_data_full (G_OBJECT (menu), "paper-menu-state", state, g_free);
+
+  gtk_widget_show_all (menu);
+  if (data->paper_toolbar_vertical)
+    gtk_menu_popup_at_widget (GTK_MENU (menu), button,
+			      GDK_GRAVITY_WEST,
+			      GDK_GRAVITY_EAST, NULL);
+  else
+    gtk_menu_popup_at_widget (GTK_MENU (menu), button,
+			      GDK_GRAVITY_SOUTH_WEST,
+			      GDK_GRAVITY_NORTH_WEST, NULL);
+
+  if (!gtk_widget_get_visible (menu))
+    {
+      paper_top_bar_menu_finished (GTK_MENU_SHELL (menu), data);
+      gtk_widget_destroy (menu);
+    }
+}
+
+static void
+paper_top_bar_settings_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  show_settings_dialog ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_hints_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  show_hints_dialog ((ScreenatorData *) user_data, FALSE);
+}
+
+static void
+paper_top_bar_quit_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_request_quit ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_switch_mode_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_toggle_paper_drawing ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_save_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) button;
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    screenator_save_screenshot (data);
+  else
+    screenator_paper_save (data);
+}
+
+static void
+paper_top_bar_timer_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_start_timer ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_clear_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  clear_screen ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_visibility_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  toggle_drawings_visibility ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_cursor_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  (void) button;
+
+  /* The Cursor button always switches immediately, even when a shape with
+   * handles was just committed. */
+  screenator_exit_tool (data);
+  screenator_activate_cursor_state (data);
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static void
+paper_top_bar_tool_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  gint pen_tool = GPOINTER_TO_INT (
+    g_object_get_data (G_OBJECT (button), "paper-tool"));
+  gint shape_type = GPOINTER_TO_INT (
+    g_object_get_data (G_OBJECT (button), "paper-shape"));
+
+  paper_finish_temporary_eraser (data);
+  activate_tool_now (data, pen_tool, shape_type);
+  paper_top_bar_update_images (data);
+
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    paper_take_focus (data);
+}
+
+static void
+paper_top_bar_shape_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  gint pen_tool = GPOINTER_TO_INT (
+    g_object_get_data (G_OBJECT (item), "paper-tool"));
+  gint shape_type = GPOINTER_TO_INT (
+    g_object_get_data (G_OBJECT (item), "paper-shape"));
+
+  if (pen_tool == 16)
+    {
+      if (show_math_dialog (data))
+	schedule_tool_activation (data, 16, SCREENATOR_SHAPE_MATH);
+    }
+  else
+    schedule_tool_activation (data, pen_tool, shape_type);
+}
+
+static void
+paper_top_bar_color_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  on_icon_color (item, user_data);
+  paper_top_bar_update_images ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_fill_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  on_icon_shape_fill (item, user_data);
+  paper_top_bar_update_images ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_thickness_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  on_icon_thickness (item, user_data);
+  paper_top_bar_update_images ((ScreenatorData *) user_data);
+}
+
+static void
+paper_top_bar_custom_color_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  on_icon_custom_color (item, user_data);
+}
+
+static GtkWidget *
+paper_top_bar_build_shapes_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (quick_tools); i++)
+    {
+      GtkWidget *item;
+      GdkPixbuf *pixbuf;
+
+      if (quick_tools[i].pen_tool == 1 ||
+	  quick_tools[i].pen_tool == 4 ||
+	  quick_tools[i].pen_tool == 3 ||
+	  quick_tools[i].pen_tool == 2)
+	continue;
+
+      item = gtk_image_menu_item_new_with_label (quick_tools[i].label);
+      pixbuf = load_menu_icon_at_size (quick_tools[i].icon,
+				       MAX (16, MIN (paper_top_bar_icon_size (data),
+						     32)));
+      gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
+				     gtk_image_new_from_pixbuf (pixbuf));
+      if (pixbuf)
+	g_object_unref (pixbuf);
+
+      g_object_set_data (G_OBJECT (item), "paper-tool",
+			 GINT_TO_POINTER (quick_tools[i].pen_tool));
+      g_object_set_data (G_OBJECT (item), "paper-shape",
+			 GINT_TO_POINTER (quick_tools[i].shape_type));
+      g_signal_connect (item, "activate",
+			G_CALLBACK (paper_top_bar_shape_clicked), data);
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+    }
+
+  return menu;
+}
+
+static GtkWidget *
+paper_top_bar_build_line_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  GtkWidget *items[G_N_ELEMENTS (line_colors)];
+  GtkWidget *active_item = NULL;
+  GtkWidget *custom_item;
+  guint i;
+  gint swatch = MAX (16, MIN (paper_top_bar_icon_size (data), 32));
+
+  for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
+    {
+      GdkRGBA color;
+
+      if (gdk_rgba_parse (&color, line_colors[i].name))
+	items[i] = paper_add_swatch_item (menu, &group, &color, FALSE,
+					  swatch, line_colors[i].name);
+      else
+	{
+	  GdkRGBA fallback = { 0, 0, 0, 1 };
+	  items[i] = paper_add_swatch_item (menu, &group, &fallback, FALSE,
+					    swatch, line_colors[i].name);
+	}
+
+      if (data->default_pen &&
+	  gdk_rgba_parse (&color, line_colors[i].name))
+	{
+	  GdkRGBA *current = data->default_pen->paint_color;
+
+	  if (current->red == color.red &&
+	      current->green == color.green &&
+	      current->blue == color.blue)
+	    active_item = items[i];
+	}
+    }
+
+  custom_item = gtk_radio_menu_item_new_with_label (group, "Custom...");
+  group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom_item));
+  g_object_set_data (G_OBJECT (custom_item), "icon-custom-target",
+		     (gpointer) "line");
+  if (!active_item)
+    active_item = custom_item;
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), custom_item);
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (line_colors); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (paper_top_bar_color_clicked), data);
+  g_signal_connect (custom_item, "activate",
+		    G_CALLBACK (paper_top_bar_custom_color_clicked), data);
+
+  return menu;
+}
+
+static GtkWidget *
+paper_top_bar_build_fill_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  GtkWidget *items[G_N_ELEMENTS (fill_colors)];
+  GtkWidget *active_item = NULL;
+  GtkWidget *custom_item;
+  guint i;
+  gint swatch = MAX (16, MIN (paper_top_bar_icon_size (data), 32));
+
+  for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
+    {
+      gboolean none = g_ascii_strcasecmp (fill_colors[i].name, "none") == 0;
+      GdkRGBA color;
+
+      if (!none && gdk_rgba_parse (&color, fill_colors[i].name))
+	items[i] = paper_add_fill_item (menu, &group, &color, FALSE,
+					swatch, fill_colors[i].name);
+      else
+	{
+	  GdkRGBA fallback = { 0, 0, 0, 1 };
+	  items[i] = paper_add_fill_item (menu, &group, &fallback, none,
+					  swatch, fill_colors[i].name);
+	}
+
+      if (none)
+	{
+	  if (!data->shape_fill_enabled)
+	    active_item = items[i];
+	}
+      else if (data->shape_fill_enabled &&
+	       gdk_rgba_parse (&color, fill_colors[i].name) &&
+	       data->shape_fill_color.red == color.red &&
+	       data->shape_fill_color.green == color.green &&
+	       data->shape_fill_color.blue == color.blue)
+	active_item = items[i];
+    }
+
+  custom_item = gtk_radio_menu_item_new_with_label (group, "Custom...");
+  group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom_item));
+  g_object_set_data (G_OBJECT (custom_item), "icon-custom-target",
+		     (gpointer) "fill");
+  if (!active_item)
+    active_item = custom_item;
+  gtk_menu_shell_append (GTK_MENU_SHELL (menu), custom_item);
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (paper_top_bar_fill_clicked), data);
+  g_signal_connect (custom_item, "activate",
+		    G_CALLBACK (paper_top_bar_custom_color_clicked), data);
+
+  return menu;
+}
+
+static GtkWidget *
+paper_top_bar_build_thickness_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  static const guint widths[] = { 1, 2, 3, 4, 5, 6, 12, 24, 48 };
+  GtkWidget *items[G_N_ELEMENTS (widths)];
+  GtkWidget *active_item = NULL;
+  guint i, closest = 0;
+  guint closest_diff = ABS ((gint) data->pen_width - (gint) widths[0]);
+  gint icon_size = MAX (24, MIN (paper_top_bar_icon_size (data), 40));
+
+  for (i = 1; i < G_N_ELEMENTS (widths); i++)
+    {
+      guint diff = ABS ((gint) data->pen_width - (gint) widths[i]);
+
+      if (diff < closest_diff)
+	{
+	  closest = i;
+	  closest_diff = diff;
+	}
+    }
+
+  for (i = 0; i < G_N_ELEMENTS (widths); i++)
+    {
+      items[i] = paper_add_thickness_item (menu, &group, widths[i],
+					   icon_size);
+      if (i == closest)
+	active_item = items[i];
+    }
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (widths); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (paper_top_bar_thickness_clicked), data);
+
+  return menu;
+}
+
+static void
+paper_top_bar_eraser_size_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  on_icon_eraser_size (item, user_data);
+  paper_top_bar_update_images ((ScreenatorData *) user_data);
+}
+
+static GtkWidget *
+paper_top_bar_build_eraser_size_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  static const guint widths[] = { 20, 40, 60, 120 };
+  GtkWidget *items[G_N_ELEMENTS (widths)];
+  GtkWidget *active_item = NULL;
+  guint i, closest = 0;
+  guint closest_diff = ABS ((gint) data->eraser_width - (gint) widths[0]);
+  gint icon_size = MAX (24, MIN (paper_top_bar_icon_size (data), 40));
+
+  for (i = 1; i < G_N_ELEMENTS (widths); i++)
+    {
+      guint diff = ABS ((gint) data->eraser_width - (gint) widths[i]);
+
+      if (diff < closest_diff)
+	{
+	  closest = i;
+	  closest_diff = diff;
+	}
+    }
+
+  for (i = 0; i < G_N_ELEMENTS (widths); i++)
+    {
+      items[i] = paper_add_eraser_size_item (menu, &group, widths[i],
+					     icon_size);
+      if (i == closest)
+	active_item = items[i];
+    }
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (widths); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (paper_top_bar_eraser_size_clicked), data);
+
+  return menu;
+}
+
+static GtkWidget *
+paper_top_bar_build_opacity_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  static const guint percents[] =
+    { 10, 20, 30, 40, 50, 60, 70, 80, 90, 100 };
+  GtkWidget *items[G_N_ELEMENTS (percents)];
+  GtkWidget *active_item = NULL;
+  guint i, closest = 0;
+  gdouble closest_diff = ABS (data->opacity - percents[0] / 100.0);
+
+  for (i = 1; i < G_N_ELEMENTS (percents); i++)
+    {
+      gdouble diff = ABS (data->opacity - percents[i] / 100.0);
+
+      if (diff < closest_diff)
+	{
+	  closest = i;
+	  closest_diff = diff;
+	}
+    }
+
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    {
+      gchar *label = g_strdup_printf ("%u%%", percents[i]);
+      GtkWidget *item = gtk_radio_menu_item_new_with_label (group, label);
+
+      g_free (label);
+      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+      g_object_set_data (G_OBJECT (item), "icon-opacity",
+			 GINT_TO_POINTER ((gint) percents[i]));
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      items[i] = item;
+      if (i == closest)
+	active_item = item;
+    }
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (on_icon_opacity), data);
+
+  return menu;
+}
+
+static void
+paper_top_bar_marker_opacity_clicked (GtkMenuItem *item, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  guint percent = GPOINTER_TO_UINT (
+    g_object_get_data (G_OBJECT (item), "marker-opacity"));
+
+  data->marker_opacity = percent / 100.0;
+  data->marker_color.alpha = data->marker_opacity;
+
+  if (data->default_marker)
+    gdk_cairo_set_source_rgba (data->default_marker->paint_ctx,
+			       &data->marker_color);
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
+}
+
+static GtkWidget *
+paper_top_bar_build_marker_opacity_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  static const guint percents[] =
+    { 10, 20, 30, 40, 50, 60, 70, 80, 90 };
+  GtkWidget *items[G_N_ELEMENTS (percents)];
+  GtkWidget *active_item = NULL;
+  guint i, closest = 0;
+  gdouble closest_diff = ABS (data->marker_opacity - percents[0] / 100.0);
+
+  for (i = 1; i < G_N_ELEMENTS (percents); i++)
+    {
+      gdouble diff = ABS (data->marker_opacity - percents[i] / 100.0);
+
+      if (diff < closest_diff)
+	{
+	  closest = i;
+	  closest_diff = diff;
+	}
+    }
+
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    {
+      gchar *label = g_strdup_printf ("%u%%", percents[i]);
+      GtkWidget *item = gtk_radio_menu_item_new_with_label (group, label);
+
+      g_free (label);
+      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
+      g_object_set_data (G_OBJECT (item), "marker-opacity",
+			 GINT_TO_POINTER ((gint) percents[i]));
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
+      items[i] = item;
+      if (i == closest)
+	active_item = item;
+    }
+
+  if (active_item)
+    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
+
+  for (i = 0; i < G_N_ELEMENTS (percents); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (paper_top_bar_marker_opacity_clicked), data);
+
+  return menu;
+}
+
+static GtkWidget *
+paper_top_bar_build_paper_type_menu (ScreenatorData *data)
+{
+  GtkWidget *menu = gtk_menu_new ();
+  GSList *group = NULL;
+  static const struct
+  {
+    const gchar        *label;
+    ScreenatorPaperType type;
+  } papers[] =
+    {
+      { "Plain", SCREENATOR_PAPER_PLAIN },
+      { "Ruled", SCREENATOR_PAPER_RULED },
+      { "Graph", SCREENATOR_PAPER_GRAPH },
+      { "PDF",   SCREENATOR_PAPER_PDF }
+    };
+  GtkWidget *items[G_N_ELEMENTS (papers)];
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (papers); i++)
+    {
+      GtkWidget *subitem =
+	gtk_radio_menu_item_new_with_label (group, papers[i].label);
+
+      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
+      g_object_set_data (G_OBJECT (subitem), "icon-paper-type",
+			 GINT_TO_POINTER (papers[i].type));
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), subitem);
+      items[i] = subitem;
+
+      if (papers[i].type == data->paper_selected)
+	gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (subitem), TRUE);
+    }
+
+  for (i = 0; i < G_N_ELEMENTS (papers); i++)
+    g_signal_connect (items[i], "activate",
+		      G_CALLBACK (on_icon_paper), data);
+
+  {
+    GtkWidget *sep = gtk_separator_menu_item_new ();
+    GtkWidget *open = gtk_image_menu_item_new_with_label ("Reset/Open PDF.");
+
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (open),
+                                   gtk_image_new_from_pixbuf (
+                                     load_menu_icon ("paper.png")));
+    g_signal_connect (open, "activate",
+		      G_CALLBACK (on_icon_reset_or_open_pdf), data);
+    gtk_menu_shell_append (GTK_MENU_SHELL (menu), sep);
+    gtk_menu_shell_append (GTK_MENU_SHELL (menu), open);
+  }
+
+  return menu;
+}
+
+static void
+paper_top_bar_paper_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  GtkWidget *menu = paper_top_bar_build_paper_type_menu (data);
+
+  g_signal_connect_after (menu, "selection-done",
+			  G_CALLBACK (gtk_widget_destroy), NULL);
+  paper_top_bar_popup_menu (data, GTK_WIDGET (button), menu);
+}
+
+static void
+paper_top_bar_add_before_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_paper_insert_page ((ScreenatorData *) user_data, TRUE);
+}
+
+static void
+paper_top_bar_add_after_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_paper_insert_page ((ScreenatorData *) user_data, FALSE);
+}
+
+static void
+paper_top_bar_delete_page_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_paper_delete_page ((ScreenatorData *) user_data);
+}
+
+static GtkWidget *
+paper_top_bar_menu_button (ScreenatorData *data, GdkPixbuf *pixbuf,
+			   const gchar *tooltip, GtkWidget *menu)
+{
+  GtkWidget *button = paper_top_bar_button (data, pixbuf, tooltip);
+
+  g_object_set_data_full (G_OBJECT (button), "paper-menu", menu,
+			  (GDestroyNotify) gtk_widget_destroy);
+  g_object_set_data (G_OBJECT (button), "paper-data", data);
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_menu_button_clicked), data);
+  g_signal_connect (menu, "selection-done",
+		    G_CALLBACK (paper_top_bar_menu_finished), data);
+  g_signal_connect (menu, "destroy",
+		    G_CALLBACK (paper_top_bar_menu_finished), data);
+  return button;
+}
+
+/* The clicked handler needs both the button and the data; store the data in
+ * the button and use a small trampoline. */
+static GtkWidget *
+paper_top_bar_build_setting_menu (ScreenatorData *data, const gchar *kind)
+{
+  if (g_strcmp0 (kind, "line") == 0)
+    return paper_top_bar_build_line_menu (data);
+  if (g_strcmp0 (kind, "thickness") == 0)
+    return paper_top_bar_build_thickness_menu (data);
+  if (g_strcmp0 (kind, "fill") == 0)
+    return paper_top_bar_build_fill_menu (data);
+  if (g_strcmp0 (kind, "eraser_size") == 0)
+    return paper_top_bar_build_eraser_size_menu (data);
+  if (g_strcmp0 (kind, "opacity") == 0)
+    return paper_top_bar_build_opacity_menu (data);
+  if (g_strcmp0 (kind, "marker_opacity") == 0)
+    return paper_top_bar_build_marker_opacity_menu (data);
+
+  return NULL;
+}
+
+static void
+paper_top_bar_menu_button_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = g_object_get_data (G_OBJECT (button), "paper-data");
+  const gchar *kind = g_object_get_data (G_OBJECT (button),
+					 "paper-menu-kind");
+  GtkWidget *menu = g_object_get_data (G_OBJECT (button), "paper-menu");
+
+  (void) user_data;
+
+  /* Colour, thickness, fill, eraser size and opacity menus are rebuilt each
+   * time they open.  A menu created once would keep its old radio selection
+   * after the wheel or stylus side button changed the setting. */
+  if (kind && data)
+    {
+      GtkWidget *fresh = paper_top_bar_build_setting_menu (data, kind);
+
+      if (fresh)
+	{
+	  if (menu)
+	    {
+	      g_object_set_data (G_OBJECT (button), "paper-menu", NULL);
+	      gtk_widget_destroy (menu);
+	    }
+
+	  menu = fresh;
+	  g_object_set_data_full (G_OBJECT (button), "paper-menu", menu,
+				  (GDestroyNotify) gtk_widget_destroy);
+	  g_signal_connect (menu, "selection-done",
+			    G_CALLBACK (paper_top_bar_menu_finished), data);
+	  g_signal_connect (menu, "destroy",
+			    G_CALLBACK (paper_top_bar_menu_finished), data);
+	}
+    }
+
+  if (menu)
+    paper_top_bar_popup_menu (data, GTK_WIDGET (button), menu);
+}
+
+static void
+paper_top_bar_update_images (ScreenatorData *data)
+{
+  PaperTopBar *bar = data->paper_top_bar_data;
+  gint size;
+  GdkRGBA color;
+  GdkPixbuf *pixbuf;
+
+  if (!bar)
+    return;
+
+  size = paper_top_bar_icon_size (data);
+
+  if (bar->line_image)
+    {
+      color = data->pen_color;
+      pixbuf = paper_color_swatch (&color, FALSE, size);
+      gtk_image_set_from_pixbuf (GTK_IMAGE (bar->line_image), pixbuf);
+      if (pixbuf)
+	g_object_unref (pixbuf);
+    }
+
+  if (bar->fill_image)
+    {
+      if (data->shape_fill_enabled)
+	pixbuf = paper_color_swatch (&data->shape_fill_color, FALSE, size);
+      else
+	pixbuf = paper_color_swatch (&data->shape_fill_color, TRUE, size);
+      gtk_image_set_from_pixbuf (GTK_IMAGE (bar->fill_image), pixbuf);
+      if (pixbuf)
+	g_object_unref (pixbuf);
+    }
+
+  if (bar->thickness_image)
+    {
+      pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+      gtk_image_set_from_pixbuf (GTK_IMAGE (bar->thickness_image), pixbuf);
+      if (pixbuf)
+	g_object_unref (pixbuf);
+    }
+
+  if (bar->eraser_image)
+    {
+      pixbuf = paper_eraser_size_sample (MAX (1, (guint) data->eraser_width),
+					 size);
+      gtk_image_set_from_pixbuf (GTK_IMAGE (bar->eraser_image), pixbuf);
+      if (pixbuf)
+	g_object_unref (pixbuf);
+    }
+
+  paper_top_bar_update_active_tool (data);
+}
+
+static void
+paper_toolbar_set_active (GtkWidget *button, gboolean active)
+{
+  GtkStyleContext *context;
+
+  if (!button)
+    return;
+
+  context = gtk_widget_get_style_context (button);
+  if (active)
+    gtk_style_context_add_class (context, "paper-toolbar-button-active");
+  else
+    gtk_style_context_remove_class (context, "paper-toolbar-button-active");
+}
+
+static void
+paper_top_bar_update_active_tool (ScreenatorData *data)
+{
+  PaperTopBar *bar = data->paper_top_bar_data;
+  gboolean cursor, pen, text, eraser, arrow, timer, shapes;
+
+  if (!bar)
+    return;
+
+  cursor = !data->timer_active && data->forced_context == NULL;
+  timer = data->timer_active;
+  pen = text = eraser = arrow = shapes = FALSE;
+
+  if (!cursor && !timer)
+    {
+      switch (data->pen_tool)
+	{
+	case 1:
+	  pen = TRUE;
+	  break;
+	case 2:
+	  arrow = TRUE;
+	  break;
+	case 3:
+	  eraser = TRUE;
+	  break;
+	case 4:
+	  text = TRUE;
+	  break;
+	default:
+	  if (data->pen_tool >= 5)
+	    shapes = TRUE;
+	  break;
+	}
+    }
+
+  /* The Cursor tool is available in both modes; page insertion only makes
+   * sense in Paper mode. */
+  paper_toolbar_set_visible (bar->cursor_button, TRUE);
+  paper_toolbar_set_visible (bar->add_before_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
+  paper_toolbar_set_visible (bar->add_after_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
+
+  paper_toolbar_set_visible (bar->delete_page_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
+
+  /* Pages can only be inserted/deleted in an active Plain, Ruled or Graph
+   * paper. */
+  {
+    gboolean can_insert =
+      data->paper != SCREENATOR_PAPER_NONE &&
+      data->paper != SCREENATOR_PAPER_PDF;
+    ScreenatorPaperDocument *doc = paper_active_document (data);
+    guint page_count = (doc && doc->pages) ? doc->pages->len : 0;
+
+    if (bar->add_before_button)
+      gtk_widget_set_sensitive (bar->add_before_button, can_insert);
+    if (bar->delete_page_button)
+      gtk_widget_set_sensitive (bar->delete_page_button,
+				can_insert && page_count > 1);
+    if (bar->add_after_button)
+      gtk_widget_set_sensitive (bar->add_after_button, can_insert);
+  }
+
+  if (bar->save_button && bar->save_image)
+    {
+      gboolean screen = data->paper == SCREENATOR_PAPER_NONE;
+      GdkPixbuf *icon = load_menu_icon_at_size (
+	screen ? "screenshot.png" : "save.png",
+	paper_top_bar_icon_size (data));
+
+      if (icon)
+	{
+	  gtk_image_set_from_pixbuf (GTK_IMAGE (bar->save_image), icon);
+	  g_object_unref (icon);
+	}
+
+      paper_toolbar_set_tooltip_text (
+	bar->save_button,
+	screen ? "Screenshot (F4)" : "Save current paper (Ctrl+S)");
+    }
+
+  paper_toolbar_set_active (bar->cursor_button, cursor);
+  paper_toolbar_set_active (bar->pen_button, pen);
+  paper_toolbar_set_active (bar->text_button, text);
+  paper_toolbar_set_active (bar->eraser_button, eraser);
+  paper_toolbar_set_active (bar->arrow_button, arrow);
+  paper_toolbar_set_active (bar->timer_button, timer);
+  paper_toolbar_set_active (bar->shapes_button, shapes);
+
+  if (bar->timer_button)
+    paper_toolbar_set_visible (bar->timer_button,
+			       data->paper == SCREENATOR_PAPER_NONE);
+
+  /* Toggle Visibility is useful in Screen Annotation mode; in Paper Drawing
+   * the tool bar always hides it. */
+  if (bar->visibility_button)
+    paper_toolbar_set_visible (bar->visibility_button,
+			       data->paper == SCREENATOR_PAPER_NONE);
+}
+
+static void
+paper_top_bar_destroyed (GtkWidget *widget, gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+  ScreenatorData *data = bar->data;
+
+  if (bar->tooltip_timeout)
+    {
+      g_source_remove (bar->tooltip_timeout);
+      bar->tooltip_timeout = 0;
+    }
+  bar->tooltip_button = NULL;
+
+  if (data->paper_top_bar == widget)
+    data->paper_top_bar = NULL;
+  if (data->paper_top_bar_data == bar)
+    data->paper_top_bar_data = NULL;
+
+  if (bar->tooltip_window)
+    gtk_widget_destroy (bar->tooltip_window);
+
+  g_free (bar);
+}
+
+static void
+paper_top_bar_position (PaperTopBar *bar)
+{
+  ScreenatorData *data = bar->data;
+  GdkScreen *screen = gtk_widget_get_screen (bar->window);
+  GdkRectangle area;
+  GtkRequisition req;
+  gint monitor;
+  gint x, y;
+
+  if (!screen)
+    return;
+
+  monitor = gdk_screen_get_primary_monitor (screen);
+  if (monitor < 0)
+    monitor = 0;
+
+  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+  gtk_widget_get_preferred_size (bar->window, NULL, &req);
+
+  if (data->paper_toolbar_vertical)
+    {
+      /* Vertical bars sit on the right edge, centred on the screen. */
+      x = area.x + MAX (0, area.width - req.width - PAPER_TOOLBAR_MARGIN);
+      y = area.y + MAX (0, (area.height - req.height) / 2);
+    }
+  else
+    {
+      /* Horizontal bars sit on the top edge, centred on the screen. */
+      x = area.x + MAX (0, (area.width - req.width) / 2);
+      y = area.y + PAPER_TOOLBAR_MARGIN;
+    }
+
+  gtk_window_move (GTK_WINDOW (bar->window), x, y);
+}
+
+static void
+paper_top_bar_reposition (ScreenatorData *data)
+{
+  if (data->paper_top_bar && data->paper_top_bar_data)
+    paper_top_bar_position ((PaperTopBar *) data->paper_top_bar_data);
+}
+
+static gboolean
+paper_top_bar_map (GtkWidget *window, GdkEvent *event, gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+  GdkWindow *gdk_window = gtk_widget_get_window (window);
+
+  (void) event;
+  paper_top_bar_position (bar);
+  if (gdk_window)
+    gdk_window_raise (gdk_window);
+  return FALSE;
+}
+
+#define PAPER_TOOLBAR_DRAG_THRESHOLD 4
+
+static gboolean
+paper_toolbar_drag_press (GtkWidget *widget, GdkEventButton *event,
+			  gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+
+  (void) widget;
+
+  if (event->button != 1 || bar->drag_pending)
+    return FALSE;
+
+  paper_toolbar_tooltip_hide (bar->data);
+
+  bar->drag_pending = TRUE;
+  bar->dragging = FALSE;
+  bar->drag_was_grabbed = FALSE;
+  bar->drag_seat_grabbed = FALSE;
+  bar->drag_widget = widget;
+  bar->drag_start_root_x = (gint) event->x_root;
+  bar->drag_start_root_y = (gint) event->y_root;
+  gtk_window_get_position (GTK_WINDOW (bar->window),
+			   &bar->drag_window_x, &bar->drag_window_y);
+  return FALSE;
+}
+
+static void
+paper_toolbar_drag_finish (PaperTopBar *bar)
+{
+  ScreenatorData *data = bar->data;
+  GdkWindow *window = gtk_widget_get_window (bar->window);
+  GdkDisplay *display = window ? gdk_window_get_display (window)
+			       : gdk_display_get_default ();
+  GdkSeat *seat = display ? gdk_display_get_default_seat (display) : NULL;
+
+  if (bar->drag_seat_grabbed && seat)
+    gdk_seat_ungrab (seat);
+  bar->drag_seat_grabbed = FALSE;
+  bar->drag_pending = FALSE;
+  bar->dragging = FALSE;
+
+  if (bar->drag_widget)
+    {
+      gtk_widget_unset_state_flags (bar->drag_widget,
+				    GTK_STATE_FLAG_ACTIVE);
+      bar->drag_widget = NULL;
+    }
+
+  if (bar->drag_was_grabbed)
+    {
+      bar->drag_was_grabbed = FALSE;
+      paper_refresh_controls_hover (data);
+      acquire_grab (data, NULL);
+      paper_top_bar_update_active_tool (data);
+    }
+}
+
+static gboolean
+paper_toolbar_drag_motion (GtkWidget *widget, GdkEventMotion *event,
+			   gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+  ScreenatorData *data = bar->data;
+  gint dx, dy;
+
+  (void) widget;
+
+  if (!bar->drag_pending || !(event->state & GDK_BUTTON1_MASK))
+    return FALSE;
+
+  dx = (gint) event->x_root - bar->drag_start_root_x;
+  dy = (gint) event->y_root - bar->drag_start_root_y;
+
+  if (!bar->dragging)
+    {
+      if (ABS (dx) < PAPER_TOOLBAR_DRAG_THRESHOLD &&
+	  ABS (dy) < PAPER_TOOLBAR_DRAG_THRESHOLD)
+	return FALSE;
+
+      bar->dragging = TRUE;
+      if (gtk_widget_get_window (bar->window))
+	gdk_window_raise (gtk_widget_get_window (bar->window));
+
+      bar->drag_was_grabbed = screenator_any_grabbed (data);
+      if (bar->drag_was_grabbed)
+	release_grab (data, NULL);
+
+      {
+	GdkWindow *window = gtk_widget_get_window (bar->window);
+	GdkDisplay *display = window ? gdk_window_get_display (window)
+				     : gdk_display_get_default ();
+	GdkSeat *seat = display ? gdk_display_get_default_seat (display)
+				: NULL;
+
+	if (window && seat &&
+	    gdk_seat_grab (seat, window, GDK_SEAT_CAPABILITY_POINTER, FALSE,
+			   NULL, NULL, NULL, NULL) == GDK_GRAB_SUCCESS)
+	  bar->drag_seat_grabbed = TRUE;
+      }
+    }
+
+  {
+    GdkScreen *screen = gtk_widget_get_screen (bar->window);
+    GdkRectangle area;
+    GtkRequisition req;
+    gint monitor;
+    gint new_x = bar->drag_window_x + dx;
+    gint new_y = bar->drag_window_y + dy;
+    gint right, bottom;
+    const gint snap = 12;
+
+    if (screen)
+      {
+	monitor = gdk_screen_get_monitor_at_point (screen,
+						   (gint) event->x_root,
+						   (gint) event->y_root);
+	if (monitor < 0)
+	  monitor = 0;
+
+	gdk_screen_get_monitor_workarea (screen, monitor, &area);
+	gtk_widget_get_preferred_size (bar->window, NULL, &req);
+
+	right = area.x + MAX (0, area.width - req.width);
+	bottom = area.y + MAX (0, area.height - req.height);
+
+	/* Snap the window borders to the monitor edges when close. */
+	if (ABS (new_x - area.x) <= snap)
+	  new_x = area.x;
+	else if (ABS (new_x - right) <= snap)
+	  new_x = right;
+
+	if (ABS (new_y - area.y) <= snap)
+	  new_y = area.y;
+	else if (ABS (new_y - bottom) <= snap)
+	  new_y = bottom;
+
+	new_x = CLAMP (new_x, area.x, right);
+	new_y = CLAMP (new_y, area.y, bottom);
+      }
+
+    gtk_window_move (GTK_WINDOW (bar->window), new_x, new_y);
+  }
+  return TRUE;
+}
+
+static gboolean
+paper_toolbar_drag_release (GtkWidget *widget, GdkEventButton *event,
+			    gpointer user_data)
+{
+  PaperTopBar *bar = user_data;
+
+  (void) widget;
+
+  if (event->button != 1 || !bar->drag_pending)
+    return FALSE;
+
+  if (bar->dragging)
+    {
+      paper_toolbar_drag_finish (bar);
+      return TRUE;
+    }
+
+  bar->drag_pending = FALSE;
+  bar->drag_widget = NULL;
+  return FALSE;
+}
+
+static void
+paper_toolbar_attach_drag (PaperTopBar *bar, GtkWidget *widget)
+{
+  gtk_widget_add_events (widget,
+			 GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+			 GDK_POINTER_MOTION_MASK);
+  g_signal_connect (widget, "button-press-event",
+		    G_CALLBACK (paper_toolbar_drag_press), bar);
+  g_signal_connect (widget, "motion-notify-event",
+		    G_CALLBACK (paper_toolbar_drag_motion), bar);
+  g_signal_connect (widget, "button-release-event",
+		    G_CALLBACK (paper_toolbar_drag_release), bar);
+}
+
+/* Older configurations used "hand" for the Cursor item. */
+static const gchar *
+toolbar_item_id (const gchar *id)
+{
+  return g_strcmp0 (id, "hand") == 0 ? "cursor" : id;
+}
+
+/* Apply the configured visibility and order to the buttons that were
+ * created in their default order.  Hidden buttons stay in the box but are not
+ * allocated. */
+static void
+paper_toolbar_apply_items (ScreenatorData *data, PaperTopBar *bar)
+{
+  GHashTable *widgets;
+  GList *children, *l;
+  gchar **visible;
+  gint position = 0;
+  guint i, j;
+
+  if (!bar || !bar->box)
+    return;
+
+  widgets = g_hash_table_new (g_str_hash, g_str_equal);
+  children = gtk_container_get_children (GTK_CONTAINER (bar->box));
+
+  for (l = children; l; l = l->next)
+    {
+      GtkWidget *button = l->data;
+      const gchar *id = g_object_get_data (G_OBJECT (button),
+					   "paper-toolbar-item");
+
+      if (id)
+	g_hash_table_insert (widgets, (gpointer) id, button);
+    }
+  g_list_free (children);
+
+  /* Start with every known item hidden and disabled. */
+  for (i = 0; i < G_N_ELEMENTS (toolbar_item_info); i++)
+    {
+      GtkWidget *button = g_hash_table_lookup (widgets,
+					       toolbar_item_info[i].id);
+
+      if (!button)
+	continue;
+
+      g_object_set_data (G_OBJECT (button), "paper-toolbar-enabled",
+			 GINT_TO_POINTER (FALSE));
+      gtk_widget_hide (button);
+    }
+
+  /* Then show the configured items in their configured order. */
+  visible = g_strsplit (data->paper_toolbar_items
+			? data->paper_toolbar_items
+			: PAPER_TOOLBAR_DEFAULT_ITEMS, ",", -1);
+
+  for (j = 0; visible[j]; j++)
+    {
+      gchar *id = g_strstrip (visible[j]);
+      GtkWidget *button;
+
+      if (!*id)
+	continue;
+
+      button = g_hash_table_lookup (widgets, toolbar_item_id (id));
+      if (!button)
+	continue;
+
+      g_object_set_data (G_OBJECT (button), "paper-toolbar-enabled",
+			 GINT_TO_POINTER (TRUE));
+      gtk_widget_show (button);
+      gtk_box_reorder_child (GTK_BOX (bar->box), button, position++);
+    }
+
+  g_strfreev (visible);
+  g_hash_table_destroy (widgets);
+}
+
+/* Show a button only when it is enabled in the Toolbar settings page. */
+static void
+paper_toolbar_set_visible (GtkWidget *button, gboolean show)
+{
+  if (!button)
+    return;
+
+  if (!GPOINTER_TO_INT (g_object_get_data (G_OBJECT (button),
+					   "paper-toolbar-enabled")))
+    show = FALSE;
+
+  gtk_widget_set_visible (button, show);
+}
+
+static void
+paper_top_bar_create (ScreenatorData *data)
+{
+  PaperTopBar *bar;
+  GtkWidget *window, *box, *button, *menu;
+  GdkPixbuf *pixbuf;
+  gint size = paper_top_bar_icon_size (data);
+
+  bar = g_new0 (PaperTopBar, 1);
+  bar->data = data;
+
+  window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
+  bar->window = window;
+  gtk_window_set_title (GTK_WINDOW (window), "Paper Tools");
+  gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+  gtk_window_set_resizable (GTK_WINDOW (window), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_accept_focus (GTK_WINDOW (window), FALSE);
+  gtk_window_set_focus_on_map (GTK_WINDOW (window), FALSE);
+  gtk_window_set_position (GTK_WINDOW (window), GTK_WIN_POS_NONE);
+  gtk_window_set_keep_above (GTK_WINDOW (window), TRUE);
+  g_signal_connect (window, "realize",
+		    G_CALLBACK (on_dialog_realize), NULL);
+  paper_controls_attach_hover (data, window);
+  paper_toolbar_install_style (window);
+  paper_toolbar_tooltip_create (bar);
+
+  box = gtk_box_new (data->paper_toolbar_vertical
+		      ? GTK_ORIENTATION_VERTICAL
+		      : GTK_ORIENTATION_HORIZONTAL,
+		      PAPER_TOOLBAR_SPACING);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 0);
+  gtk_container_add (GTK_CONTAINER (window), box);
+  bar->box = box;
+
+  /* Switch Mode is the first action. */
+  button = paper_top_bar_icon_button (data, "switch_mode.png",
+				      "Switch Mode (F3)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "switch_mode");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_switch_mode_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Cursor: exit the current tool and use the normal pointer. */
+  button = paper_top_bar_icon_button (data, "cursor.png",
+				      "Cursor (exit the current tool)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "cursor");
+  bar->cursor_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_cursor_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Pen, Text, Eraser, Arrow. */
+  {
+    struct
+    {
+      const gchar *icon;
+      const gchar *tooltip;
+      const gchar *id;
+      gint         pen_tool;
+      gint         shape_type;
+    } tools[] =
+      {
+	{ "pen.png",    "Pen (F8)",   "pen",    1, -1 },
+	{ "text.png",   "Text (F7)",  "text",   4, -1 },
+	{ "eraser.png", "Eraser",     "eraser", 3, -1 },
+	{ "arrow.png",  "Arrow (F6)", "arrow",  2, SCREENATOR_SHAPE_ARROW }
+      };
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (tools); i++)
+      {
+	button = paper_top_bar_icon_button (data, tools[i].icon,
+					    tools[i].tooltip);
+	g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+			   (gpointer) tools[i].id);
+	g_object_set_data (G_OBJECT (button), "paper-tool",
+			   GINT_TO_POINTER (tools[i].pen_tool));
+	g_object_set_data (G_OBJECT (button), "paper-shape",
+			   GINT_TO_POINTER (tools[i].shape_type));
+	g_signal_connect (button, "clicked",
+			  G_CALLBACK (paper_top_bar_tool_clicked), data);
+	gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+	if (tools[i].pen_tool == 1)
+	  bar->pen_button = button;
+	else if (tools[i].pen_tool == 4)
+	  bar->text_button = button;
+	else if (tools[i].pen_tool == 3)
+	  bar->eraser_button = button;
+	else if (tools[i].pen_tool == 2)
+	  bar->arrow_button = button;
+      }
+  }
+
+  /* Timer tool, directly after Arrow.  It is created once so it can follow
+   * mode changes, but is only visible in Screen Annotation mode. */
+  button = paper_top_bar_icon_button (data, "timer.png", "Timer (F12)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "timer");
+  bar->timer_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_timer_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+  gtk_widget_set_visible (button, data->paper == SCREENATOR_PAPER_NONE);
+
+  /* Shapes menu, before Eraser Size. */
+  menu = paper_top_bar_build_shapes_menu (data);
+  {
+    GdkPixbuf *icon = load_menu_icon_at_size ("shapes.png", size);
+
+    button = paper_top_bar_menu_button (data, icon, "Shapes", menu);
+    if (icon)
+      g_object_unref (icon);
+  }
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "shapes");
+  bar->shapes_button = button;
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Undo and redo, directly after Shapes. */
+  button = paper_top_bar_icon_button (data, "undo.png", "Undo (Ctrl+Z)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "undo");
+  g_signal_connect (button, "clicked", G_CALLBACK (on_undo), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "redo.png", "Redo (Ctrl+Shift+Z)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "redo");
+  g_signal_connect (button, "clicked", G_CALLBACK (on_redo), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Save the current paper in Paper mode; screenshot in Screen mode. */
+  button = paper_top_bar_icon_button (data, "save.png",
+				      "Save current paper (Ctrl+S)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "save");
+  bar->save_button = button;
+  bar->save_image = gtk_bin_get_child (GTK_BIN (button));
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_save_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Paper type menu. */
+  button = paper_top_bar_icon_button (data, "paper.png", "Paper Type");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "paper");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_paper_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Add page before/after. */
+  button = paper_top_bar_icon_button (data, "add_before.png",
+				      "Insert Page Before (Ctrl+B)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "insert_before");
+  bar->add_before_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_add_before_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "delete-page.png",
+				      "Delete Page");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "delete_page");
+  bar->delete_page_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_delete_page_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "add_after.png",
+				      "Insert Page After (Ctrl+A)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "insert_after");
+  bar->add_after_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_add_after_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Clear Screen and Toggle Visibility, after Shapes. */
+  button = paper_top_bar_icon_button (data, "trash.png", "Clear Screen");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "clear");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_clear_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "hide.png", "Toggle Visibility");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "visibility");
+  bar->visibility_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_visibility_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Eraser size menu. */
+  {
+    pixbuf = paper_eraser_size_sample (MAX (1, (guint) data->eraser_width),
+				       size);
+    menu = paper_top_bar_build_eraser_size_menu (data);
+    button = paper_top_bar_menu_button (data, pixbuf, "Eraser Size", menu);
+    if (pixbuf)
+      g_object_unref (pixbuf);
+    g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		       (gpointer) "eraser_size");
+    g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		       (gpointer) "eraser_size");
+    bar->eraser_image = gtk_bin_get_child (GTK_BIN (button));
+    gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+  }
+
+  /* Line colour menu. */
+  {
+    GdkRGBA color = data->pen_color;
+
+    pixbuf = paper_color_swatch (&color, FALSE, size);
+    menu = paper_top_bar_build_line_menu (data);
+    button = paper_top_bar_menu_button (data, pixbuf, "Line Color", menu);
+    if (pixbuf)
+      g_object_unref (pixbuf);
+    g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		       (gpointer) "line");
+    g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		       (gpointer) "line_color");
+    bar->line_image = gtk_bin_get_child (GTK_BIN (button));
+    gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+  }
+
+  /* Line thickness menu. */
+  {
+    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+    menu = paper_top_bar_build_thickness_menu (data);
+    button = paper_top_bar_menu_button (data, pixbuf, "Thickness", menu);
+    if (pixbuf)
+      g_object_unref (pixbuf);
+    g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		       (gpointer) "thickness");
+    g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		       (gpointer) "thickness");
+    bar->thickness_image = gtk_bin_get_child (GTK_BIN (button));
+    gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+  }
+
+  /* Shapes fill colour menu. */
+  {
+    if (data->shape_fill_enabled)
+      pixbuf = paper_color_swatch (&data->shape_fill_color, FALSE, size);
+    else
+      pixbuf = paper_color_swatch (&data->shape_fill_color, TRUE, size);
+    menu = paper_top_bar_build_fill_menu (data);
+    button = paper_top_bar_menu_button (data, pixbuf, "Fill Color", menu);
+    if (pixbuf)
+      g_object_unref (pixbuf);
+    g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		       (gpointer) "fill");
+    g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		       (gpointer) "fill_color");
+    bar->fill_image = gtk_bin_get_child (GTK_BIN (button));
+    gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+  }
+
+  /* Line opacity menu. */
+  menu = paper_top_bar_build_opacity_menu (data);
+  {
+    GdkPixbuf *icon = load_menu_icon_at_size ("opacity.png", size);
+
+    button = paper_top_bar_menu_button (data, icon, "Opacity", menu);
+    if (icon)
+      g_object_unref (icon);
+  }
+  g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		     (gpointer) "opacity");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "opacity");
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  /* Separate Marker Opacity menu. */
+  menu = paper_top_bar_build_marker_opacity_menu (data);
+  {
+    GdkPixbuf *icon = load_menu_icon_at_size ("marker_opacity.png", size);
+
+    button = paper_top_bar_menu_button (data, icon, "Marker Opacity", menu);
+    if (icon)
+      g_object_unref (icon);
+  }
+  g_object_set_data (G_OBJECT (button), "paper-menu-kind",
+		     (gpointer) "marker_opacity");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "marker_opacity");
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "settings.png", "Settings");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "settings");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_settings_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "hint.png", "Show Hints");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "hints");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_hints_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  button = paper_top_bar_icon_button (data, "quit.png", "Quit");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "quit");
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_quit_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  data->paper_top_bar = window;
+  data->paper_top_bar_data = bar;
+  paper_top_bar_update_active_tool (data);
+
+  g_signal_connect (window, "map-event",
+		    G_CALLBACK (paper_top_bar_map), bar);
+  g_signal_connect (window, "destroy",
+		    G_CALLBACK (paper_top_bar_destroyed), bar);
+
+  /* Dragging any icon (or the gaps between them) moves the bar.  A short
+   * click still reaches the button, because the drag starts only after the
+   * pointer has moved past the threshold. */
+  paper_toolbar_attach_drag (bar, window);
+  {
+    GList *children = gtk_container_get_children (GTK_CONTAINER (box));
+    GList *l;
+
+    for (l = children; l; l = l->next)
+      paper_toolbar_attach_drag (bar, GTK_WIDGET (l->data));
+    g_list_free (children);
+  }
+
+  gtk_widget_show_all (window);
+  paper_toolbar_apply_items (data, bar);
+  paper_top_bar_update_active_tool (data);
+  paper_top_bar_position (bar);
+  if (gtk_widget_get_window (window))
+    gdk_window_raise (gtk_widget_get_window (window));
+}
+
+static void
+paper_top_bar_regrab (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data->devdatatable)
+    return;
+
+  if (data->paper_panning)
+    {
+      set_paper_pan_cursor (data);
+      return;
+    }
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (devdata->is_grabbed)
+	set_device_cursor (data, devdata->device, devdata->cur_context);
+    }
+
+  if (data->paper_hand_tool)
+    set_paper_pan_cursor (data);
+}
+
+static void
+paper_top_bar_destroy (ScreenatorData *data)
+{
+  if (data->paper_top_bar)
+    gtk_widget_destroy (data->paper_top_bar);
+
+  /* The bar is gone, so events over the paper must go to the drawing window
+   * again even when another Screenator window sits above it. */
+  paper_top_bar_regrab (data);
+}
+
+static void
+paper_top_bar_rebuild (ScreenatorData *data)
+{
+  if (!data->paper_top_bar)
+    return;
+
+  paper_top_bar_destroy (data);
+  paper_top_bar_create (data);
+  paper_top_bar_regrab (data);
+}
+
+/* Reopen the tool bar when Paper Drawing is entered again if it was open
+ * before, or at startup when it was left open. */
+static void
+paper_top_bar_restore (ScreenatorData *data)
+{
+  if (!data->paper_toolbar_open || data->paper_top_bar)
+    return;
+
+  paper_top_bar_create (data);
+  paper_top_bar_regrab (data);
+}
+
+/* F10 in Paper Drawing: show or hide the persistent tool bar. */
+void
+screenator_toggle_paper_top_bar (ScreenatorData *data)
+{
+  if (data->paper_top_bar)
+    {
+      data->paper_toolbar_open = FALSE;
+      data->paper_hand_tool = FALSE;
+      paper_top_bar_destroy (data);
+    }
+  else
+    {
+      data->paper_toolbar_open = TRUE;
+      paper_top_bar_create (data);
+      paper_top_bar_regrab (data);
+    }
+
+  write_keyfile (data);
+  schedule_tray_menu_refresh (data);
 }
 
 static gboolean
@@ -9225,37 +18135,436 @@ gboolean on_icon_button_release (GtkWidget   *win,
   return TRUE;
 }
 
-/* A coloured section heading for the hints dialog. */
-static GtkWidget *
-hints_heading (const gchar *color, const gchar *text)
-{
-  GtkWidget *label = gtk_label_new (NULL);
-  gchar *markup = g_markup_printf_escaped (
-    "<span foreground=\"%s\" weight=\"bold\" size=\"large\">%s</span>",
-    color, text);
+#define HINTS_DEFAULT_COLOR "#2c3e50"
 
-  gtk_label_set_markup (GTK_LABEL (label), markup);
-  g_free (markup);
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_widget_set_margin_top (label, 8);
-  return label;
+/* The hints are plain HTML so they can be edited without rebuilding the
+ * program.  Only a small, convenient subset is needed: headings, paragraphs,
+ * lists, emphasis and coloured spans. */
+static gboolean
+hints_safe_color (const gchar *color)
+{
+  const gchar *p = color;
+
+  if (!p || *p != '#')
+    return FALSE;
+
+  for (p++; *p; p++)
+    if (!g_ascii_isxdigit (*p))
+      return FALSE;
+
+  return p != color + 1;
 }
 
-/* One bullet line, with the bullet in the section's colour.  The line may
- * contain its own markup for emphasis. */
-static GtkWidget *
-hints_bullet (const gchar *color, const gchar *markup)
+static gboolean
+hints_tag_color (const gchar *tag, gchar *out, gsize out_size)
 {
-  GtkWidget *label = gtk_label_new (NULL);
-  gchar *full = g_strdup_printf (
-    "<span foreground=\"%s\">•</span> %s", color, markup);
+  const gchar *p = strchr (tag, '#');
+  gsize n = 0;
 
-  gtk_label_set_markup (GTK_LABEL (label), full);
-  g_free (full);
-  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
-  gtk_label_set_max_width_chars (GTK_LABEL (label), 90);
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  return label;
+  if (!p || out_size < 2)
+    return FALSE;
+
+  out[n++] = '#';
+  for (p++; *p && g_ascii_isxdigit (*p) && n + 1 < out_size; p++)
+    out[n++] = *p;
+  out[n] = '\0';
+
+  return n > 1;
+}
+
+static void
+hints_append_escaped (GString *out, gunichar c)
+{
+  if (c == '&')
+    g_string_append (out, "&amp;");
+  else if (c == '<')
+    g_string_append (out, "&lt;");
+  else if (c == '>')
+    g_string_append (out, "&gt;");
+  else
+    g_string_append_unichar (out, c);
+}
+
+static gboolean
+hints_decode_entity (const gchar *text, gsize *consumed, gunichar *value)
+{
+  if (g_str_has_prefix (text, "&amp;"))
+    { *consumed = 5; *value = '&'; return TRUE; }
+  if (g_str_has_prefix (text, "&lt;"))
+    { *consumed = 4; *value = '<'; return TRUE; }
+  if (g_str_has_prefix (text, "&gt;"))
+    { *consumed = 4; *value = '>'; return TRUE; }
+  if (g_str_has_prefix (text, "&quot;"))
+    { *consumed = 6; *value = '"'; return TRUE; }
+  if (g_str_has_prefix (text, "&apos;"))
+    { *consumed = 6; *value = '\''; return TRUE; }
+  if (g_str_has_prefix (text, "&nbsp;"))
+    { *consumed = 6; *value = 0x00a0; return TRUE; }
+
+  if (g_str_has_prefix (text, "&#x") || g_str_has_prefix (text, "&#X"))
+    {
+      const gchar *p = text + 3;
+      gunichar value_int = 0;
+      gboolean any = FALSE;
+
+      while (g_ascii_isxdigit (*p))
+	{
+	  value_int = value_int * 16 + (gunichar) g_ascii_xdigit_value (*p);
+	  p++;
+	  any = TRUE;
+	}
+
+      if (any && *p == ';')
+	{
+	  *consumed = (gsize) (p - text) + 1;
+	  *value = value_int;
+	  return TRUE;
+	}
+    }
+  else if (g_str_has_prefix (text, "&#"))
+    {
+      const gchar *p = text + 2;
+      gunichar value_int = 0;
+      gboolean any = FALSE;
+
+      while (g_ascii_isdigit (*p))
+	{
+	  value_int = value_int * 10 + (gunichar) (*p - '0');
+	  p++;
+	  any = TRUE;
+	}
+
+      if (any && *p == ';')
+	{
+	  *consumed = (gsize) (p - text) + 1;
+	  *value = value_int;
+	  return TRUE;
+	}
+    }
+
+  return FALSE;
+}
+
+/* Collapse source-formatting whitespace without destroying the line breaks
+ * that the tags themselves inserted. */
+static gchar *
+hints_cleanup_markup (GString *out)
+{
+  GString *clean = g_string_new (NULL);
+  const gchar *p = out->str;
+  gint newlines = 0;
+  gboolean last_space = FALSE;
+
+  while (*p)
+    {
+      if (*p == ' ')
+	{
+	  if (p[1] == '\n' || p[1] == '\0' || last_space)
+	    {
+	      p++;
+	      continue;
+	    }
+
+	  g_string_append_c (clean, ' ');
+	  last_space = TRUE;
+	  p++;
+	}
+      else if (*p == '\n')
+	{
+	  while (clean->len > 0 && clean->str[clean->len - 1] == ' ')
+	    g_string_truncate (clean, clean->len - 1);
+
+	  if (newlines < 2)
+	    {
+	      g_string_append_c (clean, '\n');
+	      newlines++;
+	    }
+
+	  last_space = FALSE;
+	  p++;
+	}
+      else
+	{
+	  g_string_append_c (clean, *p);
+	  last_space = FALSE;
+	  newlines = 0;
+	  p++;
+	}
+    }
+
+  while (clean->len > 0 &&
+	 g_ascii_isspace (clean->str[clean->len - 1]))
+    g_string_truncate (clean, clean->len - 1);
+
+  while (clean->len > 0 && g_ascii_isspace (clean->str[0]))
+    g_string_erase (clean, 0, 1);
+
+  g_string_free (out, TRUE);
+  return g_string_free (clean, FALSE);
+}
+
+static gchar *
+hints_html_to_markup (const gchar *html)
+{
+  GString *out = g_string_new (NULL);
+  const gchar *p = html;
+  gchar list_color[16];
+  gboolean in_space = TRUE;
+  gboolean skip_content = FALSE;
+
+  g_strlcpy (list_color, HINTS_DEFAULT_COLOR, sizeof list_color);
+
+  while (p && *p)
+    {
+      if (skip_content)
+	{
+	  p = strchr (p, '<');
+	  if (!p)
+	    break;
+	}
+
+      if (*p == '<')
+	{
+	  const gchar *end;
+	  gchar *tag;
+	  gchar name[16];
+	  gchar color[16] = "";
+	  const gchar *q;
+	  gsize n = 0;
+	  gboolean closing;
+
+	  if (g_str_has_prefix (p, "<!--"))
+	    {
+	      end = strstr (p + 4, "-->");
+	      p = end ? end + 3 : p + strlen (p);
+	      continue;
+	    }
+
+	  end = strchr (p, '>');
+	  if (!end)
+	    break;
+
+	  tag = g_strndup (p + 1, (gsize) (end - p - 1));
+	  q = tag;
+	  while (g_ascii_isspace (*q))
+	    q++;
+	  closing = (*q == '/');
+	  if (closing)
+	    q++;
+	  while (*q && !g_ascii_isspace (*q) && *q != '/' &&
+		 n + 1 < sizeof name)
+	    name[n++] = g_ascii_tolower (*q++);
+	  name[n] = '\0';
+
+	  if (skip_content)
+	    {
+	      if (closing &&
+		  (strcmp (name, "style") == 0 ||
+		   strcmp (name, "script") == 0 ||
+		   strcmp (name, "head") == 0))
+		skip_content = FALSE;
+
+	      g_free (tag);
+	      p = end + 1;
+	      continue;
+	    }
+
+	  if (!closing &&
+	      (strcmp (name, "style") == 0 ||
+	       strcmp (name, "script") == 0 ||
+	       strcmp (name, "head") == 0))
+	    {
+	      skip_content = TRUE;
+	      g_free (tag);
+	      p = end + 1;
+	      continue;
+	    }
+
+	  if (!closing &&
+	      hints_tag_color (tag, color, sizeof color) &&
+	      hints_safe_color (color))
+	    {
+	      /* The heading or span branch below uses this colour. */
+	    }
+	  else
+	    color[0] = '\0';
+
+	  if (strcmp (name, "h1") == 0 || strcmp (name, "h2") == 0 ||
+	      strcmp (name, "h3") == 0)
+	    {
+	      if (closing)
+		{
+		  g_string_append (out, "</span>\n");
+		  g_strlcpy (list_color, HINTS_DEFAULT_COLOR,
+			     sizeof list_color);
+		}
+	      else
+		{
+		  const gchar *size = strcmp (name, "h1") == 0 ? "xx-large"
+		    : strcmp (name, "h2") == 0 ? "large" : "medium";
+
+		  if (color[0])
+		    g_strlcpy (list_color, color, sizeof list_color);
+
+		  g_string_append_printf (
+		    out, "\n<span foreground=\"%s\" weight=\"bold\" "
+		    "size=\"%s\">", list_color, size);
+		}
+	      in_space = TRUE;
+	    }
+	  else if (strcmp (name, "p") == 0 ||
+		   strcmp (name, "div") == 0 ||
+		   strcmp (name, "ul") == 0 ||
+		   strcmp (name, "ol") == 0)
+	    {
+	      g_string_append_c (out, '\n');
+	      in_space = TRUE;
+	    }
+	  else if (strcmp (name, "li") == 0)
+	    {
+	      if (closing)
+		g_string_append_c (out, '\n');
+	      else
+		{
+		  g_string_append_printf (
+		    out, "\n<span foreground=\"%s\">•</span> ",
+		    list_color);
+		  in_space = TRUE;
+		}
+	    }
+	  else if (strcmp (name, "br") == 0)
+	    {
+	      g_string_append_c (out, '\n');
+	      in_space = TRUE;
+	    }
+	  else if (strcmp (name, "b") == 0 ||
+		   strcmp (name, "strong") == 0)
+	    g_string_append (out, closing ? "</b>" : "<b>");
+	  else if (strcmp (name, "i") == 0 ||
+		   strcmp (name, "em") == 0)
+	    g_string_append (out, closing ? "</i>" : "<i>");
+	  else if (strcmp (name, "u") == 0)
+	    g_string_append (out, closing ? "</u>" : "<u>");
+	  else if (strcmp (name, "code") == 0 ||
+		   strcmp (name, "tt") == 0)
+	    g_string_append (out, closing ? "</tt>" : "<tt>");
+	  else if (strcmp (name, "a") == 0)
+	    g_string_append (out, closing ? "</span>"
+			     : "<span underline=\"single\" "
+			     "foreground=\"#2980b9\">");
+	  else if (strcmp (name, "span") == 0 ||
+		   strcmp (name, "font") == 0)
+	    {
+	      if (closing)
+		g_string_append (out, "</span>");
+	      else if (color[0])
+		g_string_append_printf (out, "<span foreground=\"%s\">",
+					color);
+	      else
+		g_string_append (out, "<span>");
+	    }
+
+	  g_free (tag);
+	  p = end + 1;
+	  continue;
+	}
+
+      if (*p == '&')
+	{
+	  gsize consumed = 0;
+	  gunichar value = 0;
+
+	  if (hints_decode_entity (p, &consumed, &value))
+	    {
+	      if (g_unichar_validate (value))
+		hints_append_escaped (out, value);
+	      in_space = FALSE;
+	      p += consumed;
+	    }
+	  else
+	    {
+	      hints_append_escaped (out, '&');
+	      in_space = FALSE;
+	      p++;
+	    }
+	  continue;
+	}
+
+      {
+	gunichar c = g_utf8_get_char_validated (p, -1);
+
+	if (c == (gunichar) -1 || c == (gunichar) -2)
+	  break;
+
+	if (g_unichar_isspace (c))
+	  {
+	    if (!in_space && out->len > 0)
+	      g_string_append_c (out, ' ');
+	    in_space = TRUE;
+	  }
+	else
+	  {
+	    hints_append_escaped (out, c);
+	    in_space = FALSE;
+	  }
+
+	p = g_utf8_next_char (p);
+      }
+    }
+
+  return hints_cleanup_markup (out);
+}
+
+/* Prefer a per-user file, then the installed file.  SCREENATOR_HINTS_FILE is
+ * useful for testing a copy without installing it. */
+static gchar *
+hints_load_html (void)
+{
+  const gchar *env = g_getenv ("SCREENATOR_HINTS_FILE");
+  const gchar *data_dir;
+  gchar *path;
+  gchar *contents = NULL;
+
+  if (env && *env && g_file_get_contents (env, &contents, NULL, NULL))
+    return contents;
+  g_free (contents);
+  contents = NULL;
+
+  path = screenator_config_path ("hints.html");
+  if (g_file_get_contents (path, &contents, NULL, NULL))
+    {
+      g_free (path);
+      return contents;
+    }
+  g_free (path);
+  g_free (contents);
+  contents = NULL;
+
+  data_dir = icon_data_dir ();
+  path = data_dir
+    ? g_build_filename (data_dir, "screenator", "hints.html", NULL)
+    : g_build_filename ("/usr/share/screenator", "hints.html", NULL);
+
+  if (!g_file_get_contents (path, &contents, NULL, NULL))
+    {
+      g_free (contents);
+      contents = NULL;
+    }
+  g_free (path);
+
+  if (!contents)
+    contents = g_strdup (
+      "<h2 style=\"color:#c0392b\">Hints file not found</h2>"
+      "<p>Edit <b>~/.config/Screenator/hints.html</b> or install "
+      "<b>/usr/share/screenator/hints.html</b>.</p>"
+      "<ul>"
+      "<li><b>F9</b> shows or hides the floating icon.</li>"
+      "<li><b>F8</b> selects the Pen, <b>F6</b> the Arrow and "
+      "<b>F7</b> the Text tool.</li>"
+      "<li><b>F10</b> shows or hides the tool bar.</li>"
+      "</ul>");
+
+  return contents;
 }
 
 /* Make the hints scrollbar easy to see: a solid trough and a wide, coloured
@@ -9312,8 +18621,9 @@ hints_scroll_to_top (gpointer user_data)
 static void
 show_hints_dialog (ScreenatorData *data, gboolean startup)
 {
-  GtkWidget *dialog, *content, *box, *column;
-  GtkWidget *label, *check, *scroll;
+  GtkWidget *dialog, *content, *box;
+  GtkWidget *hints_view, *check, *scroll;
+  gchar *hints_html, *hints_markup;
   gboolean was_grabbed;
   gboolean changed = FALSE;
   gboolean restore_window = FALSE;
@@ -9372,141 +18682,24 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
   gtk_widget_set_hexpand (box, TRUE);
   gtk_widget_set_vexpand (box, TRUE);
 
-  /* A non-resizable window sizes itself from its content, so request the
-   * intended size explicitly. */
-  gtk_widget_set_size_request (scroll, 750, 550);
-  gtk_window_set_default_size (GTK_WINDOW (dialog), 750, 550);
+  gtk_window_set_default_size (GTK_WINDOW (dialog), 700, 500);
 
   gtk_container_add (GTK_CONTAINER (content), scroll);
   gtk_container_add (GTK_CONTAINER (scroll), box);
 
-  label = gtk_label_new (NULL);
-  gtk_label_set_markup (GTK_LABEL (label),
-			"<span foreground=\"#2c3e50\" weight=\"bold\" "
-			"size=\"xx-large\">Screenator Hints</span>\n"
-			"<span foreground=\"#7f8c8d\">The important "
-			"controls at a glance.</span>");
-  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+  hints_html = hints_load_html ();
+  hints_markup = hints_html_to_markup (hints_html);
+  g_free (hints_html);
 
-  /* One column inside the scrollable area. */
-  column = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
-  gtk_box_pack_start (GTK_BOX (box), column, FALSE, FALSE, 4);
-
-  /* Mouse and stylus. */
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#c0392b", "Mouse"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
-    "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
-    "opens the Scroll Mode menu and chooses what the <b>mouse wheel</b> "
-    "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
-    "Left click and drag to draw with the selected tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
-    "Middle click and drag to erase."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
-    "With the Eraser tool, the wheel changes the eraser size."),
-    FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#c0392b",
-    "Short right click finishes the shape or exits the tool."),
-    FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#8e44ad", "Stylus"), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
-    "<span foreground=\"#c0392b\" weight=\"bold\">IMPORTANT:</span> In your "
-    "stylus configuration, set button 1 (near the tip) to <b>Middle Click</b> "
-    "and button 2 to <b>Right Click</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
-    "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
-    "1</span> activates the eraser while it is held, even while "
-    "hovering."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
-    "<span foreground=\"#d35400\" weight=\"bold\">Long press side button "
-    "2</span> opens the Scroll Mode menu and chooses what scrolling "
-    "changes: <b>Color</b> or <b>Thickness</b>."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
-    "Short press side button 1: step through the selected "
-    "<b>Color</b> or <b>Thickness</b>, or the eraser size with the "
-    "Eraser tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#8e44ad",
-    "Short click side button 2: finish the shape or exit the tool. With "
-    "the Eraser tool, a long press does not open the menu."),
-    FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#d35400", "Global Shortcut"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
-    "<span foreground=\"#d35400\" weight=\"bold\">F9</span> shows or "
-    "hides the floating icon at any time."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
-    "<span foreground=\"#d35400\" weight=\"bold\">F8</span> selects the "
-    "Pen, <span foreground=\"#d35400\" weight=\"bold\">F6</span> the "
-    "Arrow and <span foreground=\"#d35400\" weight=\"bold\">F7</span> the "
-    "Text tool."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#d35400",
-    "<span foreground=\"#d35400\" weight=\"bold\">F10</span> opens the "
-    "centered quick tool menu with all tools."), FALSE, FALSE, 0);
-
-  /* Shape editing, tool tips and shortcuts. */
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#2980b9", "Shape Editing"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "Hold <b>Ctrl</b> while rotating a shape to snap to 0, 30, 45, 60, "
-    "90 degrees, and so on."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "Spline: hold <b>Ctrl</b> while dragging a handle to move each control "
-    "point separately."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "Polygon: the first click sets the centre; drag to set the radius and "
-    "rotation."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "Triangle: each click places the next vertex; lines follow the pointer, "
-    "even while dragging. Dragging does not set a point; the next click does."),
-    FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#e67e22", "Text Tool"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#e67e22",
-    "After typing, press <b>Enter</b> to accept the text and re-enable the "
-    "mouse."), FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#b9770e", "Marker Tool"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#b9770e",
-    "The wheel or stylus side button 1 changes its color."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#b9770e",
-    "<span foreground=\"#d35400\" weight=\"bold\">Long right click</span> "
-    "or <span foreground=\"#d35400\" weight=\"bold\">Long press side "
-    "button 2</span> opens the Marker Opacity menu (10% to 90% in steps of "
-    "10%)."), FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#16a085", "Drawing Mode Shortcuts"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#16a085",
-    "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
-    FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#16a085",
-    "<b>Escape</b> finishes the shape or exits the tool."),
-    FALSE, FALSE, 0);
-
-  gtk_box_pack_start (GTK_BOX (column),
-		      hints_heading ("#2980b9", "Screen Paper Shortcuts"),
-		      FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "<b>Ctrl+Z</b> undo, <b>Ctrl+Shift+Z</b> redo."),
-    FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "<b>Ctrl+T</b> shows or hides the drawings."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "<b>Ctrl+Q</b> exits the screen paper."), FALSE, FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (column), hints_bullet ("#2980b9",
-    "<b>Alt+F4</b> quits."), FALSE, FALSE, 0);
+  hints_view = gtk_label_new (NULL);
+  gtk_label_set_markup (GTK_LABEL (hints_view), hints_markup);
+  g_free (hints_markup);
+  gtk_label_set_line_wrap (GTK_LABEL (hints_view), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (hints_view), 90);
+  gtk_label_set_xalign (GTK_LABEL (hints_view), 0.0);
+  gtk_label_set_yalign (GTK_LABEL (hints_view), 0.0);
+  gtk_widget_set_hexpand (hints_view, TRUE);
+  gtk_box_pack_start (GTK_BOX (box), hints_view, FALSE, FALSE, 4);
 
   check = gtk_check_button_new_with_label ("Never show hints again");
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), data->hide_hints);
@@ -9679,11 +18872,19 @@ ensure_tool_grab (ScreenatorData *data)
 }
 
 static void
-activate_tool_now (ScreenatorData *data, gint pen_tool, gint shape_type)
+activate_tool_immediately (ScreenatorData *data, gint pen_tool,
+			   gint shape_type)
 {
   GHashTableIter it;
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
+
+  /* Selecting any tool leaves the Cursor mode. */
+  if (data->paper_hand_tool)
+    {
+      data->paper_hand_tool = FALSE;
+      paper_top_bar_update_active_tool (data);
+    }
 
   text_editor_finish (data);
 
@@ -9738,21 +18939,69 @@ activate_tool_now (ScreenatorData *data, gint pen_tool, gint shape_type)
 
   acquire_grab (data, NULL);
   ensure_tool_grab (data);
+  paper_top_bar_update_active_tool (data);
+  paper_update_hover_cursor (data);
 }
 
 static gboolean
-tool_activation_timeout (gpointer user_data)
+timer_timeout (gpointer user_data)
 {
   ScreenatorData *data = user_data;
 
   data->tool_delay_id = 0;
-  activate_tool_now (data, data->pending_pen_tool, data->pending_shape_type);
+  data->timer_active = FALSE;
+  paper_top_bar_update_active_tool (data);
+
+  /* A dialog or the quick menu may have been opened during the countdown. */
+  if (data->top_dialog || data->native_dialog_open || data->quick_menu)
+    return G_SOURCE_REMOVE;
+
+  /* The timer always finishes with the Pen tool. */
+  activate_tool_immediately (data, 1, -1);
+
   return G_SOURCE_REMOVE;
 }
 
-/* Apply a tool selection now, or after the configured delay. */
+/* The Timer tool: release the input so the user can switch applications,
+ * wait for the configured Timer Delay, then activate the Pen tool.  Tool
+ * selection is locked until the countdown finishes. */
+void
+screenator_start_timer (ScreenatorData *data)
+{
+  /* The Timer is a Screen Annotation tool; it is not available in Paper
+   * Drawing. */
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    return;
+
+  if (data->timer_active)
+    return;
+
+  if (data->tool_delay_seconds == 0)
+    {
+      activate_tool_immediately (data, 1, -1);
+      return;
+    }
+
+  data->timer_active = TRUE;
+
+  paper_finish_temporary_eraser (data);
+  screenator_paper_pan_end (data);
+
+  if (data->tool_delay_id)
+    {
+      g_source_remove (data->tool_delay_id);
+      data->tool_delay_id = 0;
+    }
+
+  release_grab (data, NULL);
+  paper_top_bar_update_active_tool (data);
+
+  data->tool_delay_id =
+    g_timeout_add_seconds (data->tool_delay_seconds, timer_timeout, data);
+}
+
 static void
-schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
+screenator_timer_cancel (ScreenatorData *data)
 {
   if (data->tool_delay_id)
     {
@@ -9760,51 +19009,49 @@ schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
       data->tool_delay_id = 0;
     }
 
-  if (data->tool_grab_retry_id)
-    {
-      g_source_remove (data->tool_grab_retry_id);
-      data->tool_grab_retry_id = 0;
-    }
+  data->timer_active = FALSE;
+}
 
-  if (data->tool_delay_seconds == 0)
-    {
-      activate_tool_now (data, pen_tool, shape_type);
-      return;
-    }
+static void
+activate_tool_now (ScreenatorData *data, gint pen_tool, gint shape_type)
+{
+  if (data->timer_active)
+    return;
 
-  data->pending_pen_tool = pen_tool;
-  data->pending_shape_type = shape_type;
-  data->tool_delay_id = g_timeout_add_seconds (data->tool_delay_seconds,
-					       tool_activation_timeout, data);
+  activate_tool_immediately (data, pen_tool, shape_type);
+}
+
+static void
+schedule_tool_activation (ScreenatorData *data, gint pen_tool, gint shape_type)
+{
+  if (data->timer_active)
+    return;
+
+  activate_tool_now (data, pen_tool, shape_type);
 }
 
 void
 screenator_schedule_tool (ScreenatorData *data, gint pen_tool, gint shape_type)
 {
-  /* Keyboard tool shortcuts switch immediately while a tool is already
-   * active; the delay only applies when starting from the normal desktop. */
-  if (screenator_any_grabbed (data) || data->raw_input_enabled)
-    {
-      if (data->tool_delay_id)
-	{
-	  g_source_remove (data->tool_delay_id);
-	  data->tool_delay_id = 0;
-	}
-      if (data->tool_grab_retry_id)
-	{
-	  g_source_remove (data->tool_grab_retry_id);
-	  data->tool_grab_retry_id = 0;
-	}
-      activate_tool_now (data, pen_tool, shape_type);
-    }
-  else
-    schedule_tool_activation (data, pen_tool, shape_type);
+  schedule_tool_activation (data, pen_tool, shape_type);
 }
 
 void on_icon_pen (GtkMenuItem *menuitem,
 		  gpointer     user_data)
 {
   schedule_tool_activation ((ScreenatorData *) user_data, 1, -1);
+}
+
+static void on_icon_timer (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  screenator_start_timer ((ScreenatorData *) user_data);
+}
+
+static void on_icon_switch_mode (GtkMenuItem *menuitem, gpointer user_data)
+{
+  (void) menuitem;
+  screenator_toggle_paper_drawing ((ScreenatorData *) user_data);
 }
 
 /* --- Math Function dialog -------------------------------------------------
@@ -9856,8 +19103,7 @@ math_dialog_update_frames (ScreenatorData *data)
 	    }
 
 	  if (data->win)
-	    gdk_window_invalidate_rect (gtk_widget_get_window (data->win),
-					&bounds, 0);
+	    screenator_invalidate_rect (data, &bounds);
 	}
     }
 }

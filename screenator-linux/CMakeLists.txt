@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(screenator VERSION 7.0 LANGUAGES C)
+project(screenator VERSION 8.0 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
@@ -12,6 +12,7 @@ pkg_check_modules(gtk3 REQUIRED "gtk+-3.0 >= 3.22")
 pkg_check_modules(xinput REQUIRED "xi >= 1.3")
 pkg_check_modules(x11 REQUIRED x11)
 pkg_check_modules(xtst xtst)
+pkg_check_modules(poppler_glib REQUIRED "poppler-glib >= 0.20")
 pkg_check_modules(appindicator3 "ayatana-appindicator3-0.1 >= 0.5")
 if(NOT appindicator3_FOUND)
   pkg_check_modules(appindicator3 REQUIRED "appindicator3-0.1 >= 0.4.92")
@@ -27,6 +28,7 @@ include_directories(
     ${xinput_INCLUDE_DIRS}
     ${x11_INCLUDE_DIRS}
     ${xtst_INCLUDE_DIRS}
+    ${poppler_glib_INCLUDE_DIRS}
 )
 
 link_directories(
@@ -35,10 +37,15 @@ link_directories(
     ${xinput_LIBRARY_DIRS}
     ${x11_LIBRARY_DIRS}
     ${xtst_LIBRARY_DIRS}
+    ${poppler_glib_LIBRARY_DIRS}
 )
 
 if(xtst_FOUND)
   add_definitions(-DHAVE_XTEST)
+endif()
+
+if(poppler_glib_FOUND)
+  add_definitions(-DHAVE_POPPLER_GLIB)
 endif()
 
 set(sources
@@ -64,6 +71,7 @@ target_link_libraries(${target_name}
     ${xinput_LIBRARIES}
     ${x11_LIBRARIES}
     ${xtst_LIBRARIES}
+    ${poppler_glib_LIBRARIES}
     -lXext
     -lm
 )
@@ -79,6 +87,7 @@ install(FILES data/screenator-active.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/ic
 install(FILES
     data/pen.png
     data/arrow.png
+    data/timer.png
     data/text.png
     data/free-line.png
     data/spline.png
@@ -99,7 +108,20 @@ install(FILES
     data/hide.png
     data/hint.png
     data/font-settings.png
+    data/settings.png
+    data/quit.png
+    data/switch_mode.png
     data/shapes.png
     data/paper.png
+    data/add_before.png
+    data/delete-page.png
+    data/add_after.png
+    data/actions.png
+    data/hints.html
+    data/save.png
+    data/screenshot.png
+    data/opacity.png
+    data/marker_opacity.png
+    data/cursor.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/screenator)
 install(FILES data/screenator.appdata.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)

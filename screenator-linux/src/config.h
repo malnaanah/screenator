@@ -56,4 +56,8 @@ void read_keyfile(ScreenatorData *data);
 
 void write_keyfile(ScreenatorData *data);
 
+/* Newly allocated path inside ~/.config/Screenator.  The directory is
+ * created, and old ~/.config/screenator.* files are migrated once. */
+gchar *screenator_config_path (const gchar *name);
+
 #endif

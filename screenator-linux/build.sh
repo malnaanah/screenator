@@ -14,9 +14,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build"
-DEB="$BUILD/screenator_7.0_amd64.deb"
-RPM="$BUILD/screenator-7.0-1.x86_64.rpm"
-APPIMAGE="$BUILD/Screenator-7.0-x86_64.AppImage"
+DEB="$BUILD/screenator_8.0_amd64.deb"
+RPM="$BUILD/screenator-8.0-1.x86_64.rpm"
+APPIMAGE="$BUILD/Screenator-8.0-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -32,6 +32,7 @@ DEV_PKGS="
   libgdk-pixbuf-2.0-dev libglib2.0-dev libgraphite2-dev libgtk-3-dev
   libharfbuzz-dev libicu-dev libmount-dev libpango1.0-dev libpcre2-dev
   libpcre3-dev libpixman-1-dev libpng-dev libselinux1-dev libsepol-dev
+  libpoppler-dev libpoppler-glib-dev
   libthai-dev   libwayland-dev libx11-xcb-dev libxau-dev libxcb1-dev
   libxcb-render0-dev libxcb-shm0-dev libxcomposite-dev libxcursor-dev
   libxdamage-dev libxdmcp-dev libxfixes-dev libxft-dev libxi-dev
@@ -49,8 +50,22 @@ if [ ! -d "$STAGE/include/gtk-3.0" ]; then
   mkdir -p "$DL"
   for pkg in $DEV_PKGS; do
     if ! ls "$DL"/${pkg}_*.deb >/dev/null 2>&1; then
-      ( cd "$DL" && apt-get download "$pkg" >/dev/null 2>&1 \
-        || echo "WARNING: could not download $pkg" )
+      if ! ( cd "$DL" && apt-get download "$pkg" >/dev/null 2>&1 ); then
+        # The newest package on the security mirror is sometimes missing.
+        # Try the other versions listed for this package before giving up.
+        for version in $(apt-cache policy "$pkg" \
+                         | awk '/^[[:space:]]+[0-9][^[:space:]]*[[:space:]]/{print $1}' \
+                         | grep -v '^[0-9][0-9]*$' \
+                         | sort -u); do
+          if ( cd "$DL" && apt-get download "${pkg}=${version}" \
+               >/dev/null 2>&1 ); then
+            break
+          fi
+        done
+      fi
+      if ! ls "$DL"/${pkg}_*.deb >/dev/null 2>&1; then
+        echo "WARNING: could not download $pkg"
+      fi
     fi
   done
 
@@ -75,7 +90,7 @@ if [ ! -d "$STAGE/include/gtk-3.0" ]; then
   for lib in atk-1.0 ayatana-appindicator3 ayatana-ido3-0.4 ayatana-indicator3 \
              cairo cairo-gobject dbusmenu-glib gdk-3 gdk_pixbuf-2.0 gio-2.0 \
              glib-2.0 gobject-2.0 gtk-3 harfbuzz pango-1.0 pangocairo-1.0 \
-             X11 Xi; do
+             poppler-glib X11 Xi; do
     target="$(ls -1 /usr/lib/x86_64-linux-gnu/lib${lib}.so.* 2>/dev/null \
               | sort -V | tail -1)"
     if [ -n "$target" ] && [ ! -e "$LIBDIR/lib${lib}.so" ]; then
@@ -129,11 +144,12 @@ install -m 0644 "$SRC"/data/screenator.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator.svg
 install -m 0644 "$SRC"/data/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
-for icon in pen arrow text free-line spline polygon triangle bucket math bars \
+for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide hint font-settings shapes paper; do
+            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after actions save screenshot opacity marker_opacity cursor; do
   install -m 0644 "$SRC"/data/$icon.png "$PKROOT"/usr/share/screenator/$icon.png
 done
+install -m 0644 "$SRC"/data/hints.html "$PKROOT"/usr/share/screenator/hints.html
 gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
 install -m 0644 "$SRC"/data/screenator.appdata.xml \
    "$PKROOT"/usr/share/metainfo/
@@ -143,12 +159,12 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 7.0
+Version: 8.0
 Section: x11
 Priority: optional
 Architecture: amd64
 Maintainer: Mahmoud Alnaanah <malnaanah@gmail.com>
-Depends: libayatana-appindicator3-1 (>= 0.2.92), libc6 (>= 2.34), libcairo2 (>= 1.10.0), libgdk-pixbuf-2.0-0 (>= 2.22.0), libglib2.0-0 (>= 2.39.4), libgtk-3-0 (>= 3.21.4), libx11-6, libxi6 (>= 2:1.2.99.4)
+Depends: libayatana-appindicator3-1 (>= 0.2.92), libc6 (>= 2.34), libcairo2 (>= 1.10.0), libgdk-pixbuf-2.0-0 (>= 2.22.0), libglib2.0-0 (>= 2.39.4), libgtk-3-0 (>= 3.21.4), libpoppler-glib8 (>= 0.20), libx11-6, libxi6 (>= 2:1.2.99.4)
 Installed-Size: 320
 Description: vibe-coded screen annotation tool based on Gromit-MPX
  Screenator is an on-screen annotation tool for X11.  Draw over any
@@ -227,7 +243,7 @@ cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
 %global debug_package %{nil}
 %define _build_id_links none
 Name:           screenator
-Version:        7.0
+Version:        8.0
 Release:        1
 Summary:        Vibe-coded screen annotation tool based on Gromit-MPX
 License:        GPL-2.0-or-later
@@ -277,8 +293,8 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 %changelog
-* Fri Nov 06 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 7.0-1
-- Screenator 7.0
+* Mon Nov 09 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 8.0-1
+- Screenator 8.0
 EOF
 
 echo "==> Building the RPM ..."
@@ -292,7 +308,7 @@ if [ "$RPMBUILD" = "$RPMTOOLS/usr/bin/rpmbuild" ]; then
 else
   "$RPMBUILD" -bb --define "_topdir $RPMTOP" "$RPMTOP/SPECS/screenator.spec"
 fi
-cp "$RPMTOP/RPMS/x86_64/screenator-7.0-1.x86_64.rpm" "$RPM"
+cp "$RPMTOP/RPMS/x86_64/screenator-8.0-1.x86_64.rpm" "$RPM"
 echo "==> Built: $RPM"
 
 # ---------------------------------------------------------------------------
@@ -345,16 +361,18 @@ install -m 0644 "$SRC"/data/screenator.appdata.xml \
    "$APPDIR"/usr/share/metainfo/screenator.appdata.xml
 install -m 0644 "$SRC"/data/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
-for icon in pen arrow text free-line spline polygon triangle bucket math bars \
+install -m 0644 "$SRC"/data/hints.html \
+   "$APPDIR"/usr/share/screenator/hints.html
+for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings hide hint font-settings shapes paper; do
+            trash reset-settings hide hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after actions save screenshot opacity marker_opacity cursor; do
   install -m 0644 "$SRC"/data/$icon.png "$APPDIR"/usr/share/screenator/$icon.png
 done
 
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=7.0
+export LINUXDEPLOY_OUTPUT_VERSION=8.0
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

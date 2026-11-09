@@ -83,6 +83,8 @@ static gboolean get_are_some_grabbed(ScreenatorData *data)
 }
 
 static guint paper_shortcut_keycode (guint keyval);
+static void grab_paper_key (ScreenatorData *data, guint keycode,
+			    guint modifier, gboolean grab);
 static void grab_escape_shortcut (ScreenatorData *data, gboolean grab);
 static GdkFilterReturn raw_input_filter (GdkXEvent *xevent, GdkEvent *event,
 					 gpointer user_data);
@@ -247,12 +249,16 @@ void setup_input_devices (ScreenatorData *data)
       data->raw_filter_installed = TRUE;
     }
 
+  screenator_resolve_shortcuts (data);
+
   if (!data->pen_keycode)
     data->pen_keycode = paper_shortcut_keycode (GDK_KEY_F8);
   if (!data->text_keycode)
     data->text_keycode = paper_shortcut_keycode (GDK_KEY_F7);
   if (!data->arrow_keycode)
     data->arrow_keycode = paper_shortcut_keycode (GDK_KEY_F6);
+  if (!data->timer_keycode)
+    data->timer_keycode = paper_shortcut_keycode (GDK_KEY_F12);
   if (!data->quick_keycode)
     data->quick_keycode = paper_shortcut_keycode (GDK_KEY_F10);
 
@@ -295,77 +301,54 @@ void setup_input_devices (ScreenatorData *data)
 	      if(kbd_dev_id != -1)
 		  {
 		      if(data->debug)
-			  g_printerr("DEBUG: Grabbing hotkey '%s' from keyboard '%d' .\n", data->hot_keyval, kbd_dev_id);
+		  g_printerr("DEBUG: Grabbing configured shortcuts from keyboard '%d'.\n", kbd_dev_id);
 
-		      XIEventMask mask;
-		      unsigned char bits[4] = {0,0,0,0};
-		      mask.mask = bits;
-		      mask.mask_len = sizeof(bits);
-	      
-		      XISetMask(bits, XI_KeyPress);
-		      XISetMask(bits, XI_KeyRelease);
-	      
-		      /* Bare F9 only, but keep it working with Caps Lock or
-		       * Num Lock on.  Modified combinations stay free for the
-		       * applications below. */
-		      XIGrabModifiers modifiers[] = {
-			{ 0, 0 },
-			{ LockMask, 0 },
-			{ Mod2Mask, 0 },
-			{ LockMask | Mod2Mask, 0 }
-		      };
-		      int nmods = 4;
-	      
-		      gdk_x11_display_error_trap_push(data->display);
-	      
-		      if (data->hot_keycode) {
-			  if(XIGrabKeycode(GDK_DISPLAY_XDISPLAY(data->display),
-					   kbd_dev_id,
-					   data->hot_keycode,
-					   GDK_WINDOW_XID(data->root),
-					   GrabModeAsync,
-					   GrabModeAsync,
-					   True,
-					   &mask,
-					   nmods,
-					   modifiers) != 0) {
-			      g_printerr("ERROR: Grabbing hotkey from keyboard device %d failed.\n", kbd_dev_id);
-			      GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(data->win),
-									 GTK_DIALOG_DESTROY_WITH_PARENT,
-									 GTK_MESSAGE_ERROR,
-									  GTK_BUTTONS_CLOSE,
-									 "Grabbing hotkey %s from keyboard %d failed. The floating icon shortcut will not work unless configured to use another key.",
-									 data->hot_keyval,
-									 kbd_dev_id);
-			      show_dialog_above_drawings (data, dialog);
-			      gtk_dialog_run (GTK_DIALOG (dialog));
-			      gtk_widget_destroy (dialog);
+	      {
+		XIEventMask mask;
+		unsigned char bits[4] = {0,0,0,0};
+		const guint lock_masks[] = { 0, LockMask, Mod2Mask,
+					     LockMask | Mod2Mask };
+		guint k;
 
-			  }
-		      }
+		mask.mask = bits;
+		mask.mask_len = sizeof(bits);
+		XISetMask(bits, XI_KeyPress);
+		XISetMask(bits, XI_KeyRelease);
 
+		gdk_x11_display_error_trap_push(data->display);
+
+		for (k = 0; k < SCREENATOR_SHORTCUT_COUNT; k++)
+		  {
+		    XIGrabModifiers modifiers[4];
+		    gint m;
+
+		    if (screenator_shortcut_scopes[k] !=
+			SCREENATOR_SHORTCUT_ALWAYS ||
+			!data->shortcuts[k].keycode)
+		      continue;
+
+		    for (m = 0; m < (gint) G_N_ELEMENTS (lock_masks); m++)
 		      {
-			guint tool_keys[] = { data->pen_keycode,
-					      data->text_keycode,
-					      data->arrow_keycode,
-					      data->quick_keycode };
-			guint k;
-
-			for (k = 0; k < G_N_ELEMENTS (tool_keys); k++)
-			  if (tool_keys[k] &&
-			      XIGrabKeycode(GDK_DISPLAY_XDISPLAY(data->display),
-					    kbd_dev_id,
-					    tool_keys[k],
-					    GDK_WINDOW_XID(data->root),
-					    GrabModeAsync,
-					    GrabModeAsync,
-					    True,
-					    &mask,
-					    nmods,
-					    modifiers) != 0)
-			    g_printerr("ERROR: Grabbing tool shortcut keycode %u from keyboard device %d failed.\n",
-				       tool_keys[k], kbd_dev_id);
+			modifiers[m].modifiers =
+			  data->shortcuts[k].modifier | lock_masks[m];
+			modifiers[m].status = 0;
 		      }
+
+		    if (XIGrabKeycode(GDK_DISPLAY_XDISPLAY(data->display),
+				      kbd_dev_id,
+				      data->shortcuts[k].keycode,
+				      GDK_WINDOW_XID(data->root),
+				      GrabModeAsync,
+				      GrabModeAsync,
+				      True,
+				      &mask,
+				      4,
+				      modifiers) != 0)
+		      g_printerr("ERROR: Grabbing shortcut keycode %u from keyboard device %d failed.\n",
+				 data->shortcuts[k].keycode, kbd_dev_id);
+		  }
+
+	      }
 
 		      XSync(GDK_DISPLAY_XDISPLAY(data->display), False);
 		      if(gdk_x11_display_error_trap_pop(data->display))
@@ -411,6 +394,22 @@ gboolean screenator_any_grabbed (ScreenatorData *data)
     return get_are_some_grabbed (data);
 }
 
+/* TRUE while the active drawing surface is the Paper window.  All Paper
+ * presentations (fullscreen, borderless panel view and Window mode) use
+ * ordinary focused-window input instead of a global pointer grab. */
+gboolean
+screenator_paper_local_input (ScreenatorData *data)
+{
+  return data && data->paper != SCREENATOR_PAPER_NONE &&
+    data->win == data->paper_win;
+}
+
+static gboolean
+paper_window_input_mode (ScreenatorData *data)
+{
+  return screenator_paper_local_input (data);
+}
+
 /* Ctrl+Z undoes and Ctrl+Shift+Z redoes while painting mode is active.  The
  * keys are grabbed only while a device is grabbed, so they keep their usual
  * meaning everywhere else.  They go through XInput2 like the configured
@@ -419,108 +418,138 @@ gboolean screenator_any_grabbed (ScreenatorData *data)
 static void
 grab_undo_shortcut (ScreenatorData *data, gboolean grab)
 {
-  GdkKeymapKey *keys = NULL;
-  gint n_keys = 0;
-  guint keycode = data->undo_ctrl_keycode;
-  GList *devices, *d;
+  if (grab && screenator_paper_local_input (data))
+    grab = FALSE;
 
-  if (!GDK_IS_X11_DISPLAY (data->display))
-    return;
+  grab_paper_key (data, data->shortcuts[SCREENATOR_SHORTCUT_UNDO].keycode,
+		  data->shortcuts[SCREENATOR_SHORTCUT_UNDO].modifier, grab);
+  grab_paper_key (data, data->shortcuts[SCREENATOR_SHORTCUT_REDO].keycode,
+		  data->shortcuts[SCREENATOR_SHORTCUT_REDO].modifier, grab);
+}
 
-  /* Already grabbed; acquire_grab() can be called again by a tool switch. */
-  if (grab && keycode)
-    return;
 
-  if (grab && !keycode)
+/* Parse one shortcut such as "Ctrl+Shift+Z" into a key value and modifier
+ * mask.  The last "+"-separated part is the key. */
+void
+screenator_resolve_shortcuts (ScreenatorData *data)
+{
+  GdkKeymap *keymap = gdk_keymap_get_default ();
+  guint i;
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
     {
-      gint i;
+      ScreenatorShortcut *shortcut = &data->shortcuts[i];
+      gchar **parts;
+      guint modifier = 0;
+      guint keyval = 0;
+      guint j, count;
 
-      if (!gdk_keymap_get_entries_for_keyval (
-	      gdk_keymap_get_for_display (data->display), GDK_KEY_z,
-	      &keys, &n_keys))
-	return;
+      shortcut->keyval = 0;
+      shortcut->keycode = 0;
+      shortcut->modifier = 0;
 
-      for (i = 0; i < n_keys; i++)
-	if (keys[i].level == 0)
-	  {
-	    keycode = keys[i].keycode;
-	    break;
-	  }
-
-      if (!keycode && n_keys > 0)
-	keycode = keys[0].keycode;
-
-      g_free (keys);
-
-      if (!keycode)
-	return;
-
-      data->undo_ctrl_keycode = keycode;
-    }
-  else if (!grab && !keycode)
-    return;
-
-  devices = gdk_device_manager_list_devices (
-      gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
-
-  for (d = devices; d; d = d->next)
-    {
-      XIEventMask mask;
-      unsigned char bits[4] = { 0, 0, 0, 0 };
-
-      if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
+      if (!shortcut->text || !*shortcut->text ||
+	  g_ascii_strcasecmp (shortcut->text, "none") == 0)
 	continue;
 
-      /* Caps Lock (and Num Lock) add a modifier bit to the event state.  An
-       * XInput2 grab only matches the exact modifier combination, so grab
-       * every combination of those lock modifiers as well.  Otherwise Ctrl+Z
-       * and Ctrl+Shift+Z stop working as soon as Caps Lock is on. */
-      XIGrabModifiers modifiers[8];
-      gint nmods = 0;
-      const guint lock_masks[] = { 0, LockMask,
-				   Mod2Mask, LockMask | Mod2Mask };
-      gint i, shift;
+      parts = g_strsplit (shortcut->text, "+", -1);
+      count = g_strv_length (parts);
 
-      for (i = 0; i < (gint) G_N_ELEMENTS (lock_masks); i++)
-	for (shift = 0; shift < 2; shift++)
-	  {
-	    modifiers[nmods].modifiers =
-	      ControlMask | lock_masks[i] | (shift ? ShiftMask : 0);
-	    modifiers[nmods].status = 0;
-	    nmods++;
-	  }
+      for (j = 0; j + 1 < count; j++)
+	{
+	  gchar *name = g_strstrip (parts[j]);
 
-      mask.mask = bits;
-      mask.mask_len = sizeof (bits);
-      XISetMask (bits, XI_KeyPress);
-      XISetMask (bits, XI_KeyRelease);
+	  if (g_ascii_strcasecmp (name, "ctrl") == 0 ||
+	      g_ascii_strcasecmp (name, "control") == 0)
+	    modifier |= GDK_CONTROL_MASK;
+	  else if (g_ascii_strcasecmp (name, "shift") == 0)
+	    modifier |= GDK_SHIFT_MASK;
+	  else if (g_ascii_strcasecmp (name, "alt") == 0 ||
+		   g_ascii_strcasecmp (name, "mod1") == 0)
+	    modifier |= GDK_MOD1_MASK;
+	  else if (g_ascii_strcasecmp (name, "super") == 0 ||
+		   g_ascii_strcasecmp (name, "meta") == 0)
+	    modifier |= GDK_SUPER_MASK;
+	}
 
-      gdk_x11_display_error_trap_push (data->display);
+      if (count > 0)
+	{
+	  gchar *name = g_strstrip (parts[count - 1]);
 
-      if (grab)
-	XIGrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
-		       gdk_x11_device_get_id (d->data), keycode,
-		       GDK_WINDOW_XID (data->root),
-		       GrabModeAsync, GrabModeAsync, True,
-		       &mask, nmods, modifiers);
-      else
-	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
-			 gdk_x11_device_get_id (d->data), keycode,
-			 GDK_WINDOW_XID (data->root),
-			 nmods, modifiers);
+	  if (*name)
+	    {
+	      keyval = gdk_keyval_from_name (name);
 
-      XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
-      /* A failed grab means another client already owns the shortcut. */
-      {
-	gint trap = gdk_x11_display_error_trap_pop (data->display);
-	(void) trap;
-      }
+	      if (!keyval && g_utf8_strlen (name, -1) == 1)
+		{
+		  gchar *lower = g_utf8_strdown (name, -1);
+		  gchar *upper = g_utf8_strup (name, -1);
+
+		  keyval = gdk_keyval_from_name (lower);
+		  if (!keyval)
+		    keyval = gdk_keyval_from_name (upper);
+		  if (!keyval)
+		    keyval = gdk_unicode_to_keyval (g_utf8_get_char (name));
+
+		  g_free (lower);
+		  g_free (upper);
+		}
+	    }
+	}
+
+      g_strfreev (parts);
+
+      shortcut->keyval = keyval;
+      shortcut->modifier = modifier;
+
+      if (keyval && keymap)
+	{
+	  GdkKeymapKey *keys = NULL;
+	  gint n_keys = 0;
+
+	  if (gdk_keymap_get_entries_for_keyval (keymap, keyval,
+						 &keys, &n_keys))
+	    {
+	      gint k;
+
+	      for (k = 0; k < n_keys; k++)
+		if (keys[k].level == 0)
+		  {
+		    shortcut->keycode = keys[k].keycode;
+		    break;
+		  }
+
+	      if (!shortcut->keycode && n_keys > 0)
+		shortcut->keycode = keys[0].keycode;
+
+	      g_free (keys);
+	    }
+	}
     }
+}
 
-  g_list_free (devices);
+gboolean
+screenator_shortcut_matches (ScreenatorData *data, ScreenatorShortcutId id,
+			     GdkEventKey *event)
+{
+  ScreenatorShortcut *shortcut;
+  guint modifiers;
 
-  if (!grab)
-    data->undo_ctrl_keycode = 0;
+  if (id < 0 || id >= SCREENATOR_SHORTCUT_COUNT)
+    return FALSE;
+
+  shortcut = &data->shortcuts[id];
+  if (!shortcut->keycode && !shortcut->keyval)
+    return FALSE;
+
+  modifiers = event->state & gtk_accelerator_get_default_mod_mask ();
+  if (modifiers != shortcut->modifier)
+    return FALSE;
+
+  if (shortcut->keycode)
+    return event->hardware_keycode == shortcut->keycode;
+
+  return event->keyval == shortcut->keyval;
 }
 
 static guint
@@ -750,68 +779,13 @@ screenator_raw_input_disable (ScreenatorData *data)
 static void
 grab_escape_shortcut (ScreenatorData *data, gboolean grab)
 {
-  GList *devices, *d;
-  guint keycode = data->escape_keycode;
+  if (grab && screenator_paper_local_input (data))
+    grab = FALSE;
 
-  if (!GDK_IS_X11_DISPLAY (data->display))
-    return;
-
-  /* Already grabbed; acquire_grab() can be called again by a tool switch. */
-  if (grab && keycode)
-    return;
-
-  if (grab)
-    {
-      keycode = paper_shortcut_keycode (GDK_KEY_Escape);
-      if (!keycode)
-	return;
-      data->escape_keycode = keycode;
-    }
-  else if (!keycode)
-    return;
-
-  devices = gdk_device_manager_list_devices (
-      gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
-
-  for (d = devices; d; d = d->next)
-    {
-      XIEventMask mask;
-      unsigned char bits[4] = { 0, 0, 0, 0 };
-      /* XIAnyModifier, like the drawing hotkey: a bare Escape then works
-       * with Caps Lock, Num Lock or any other modifier held. */
-      XIGrabModifiers modifiers[] = { { XIAnyModifier, 0 } };
-      gint nmods = 1;
-
-      if (gdk_device_get_source (d->data) != GDK_SOURCE_KEYBOARD)
-	continue;
-
-      mask.mask = bits;
-      mask.mask_len = sizeof (bits);
-      XISetMask (bits, XI_KeyPress);
-      XISetMask (bits, XI_KeyRelease);
-
-      gdk_x11_display_error_trap_push (data->display);
-
-      if (grab)
-	XIGrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
-		       gdk_x11_device_get_id (d->data), keycode,
-		       GDK_WINDOW_XID (data->root),
-		       GrabModeAsync, GrabModeAsync, True,
-		       &mask, nmods, modifiers);
-      else
-	XIUngrabKeycode (GDK_DISPLAY_XDISPLAY (data->display),
-			 gdk_x11_device_get_id (d->data), keycode,
-			 GDK_WINDOW_XID (data->root), nmods, modifiers);
-
-      XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
-      gdk_x11_display_error_trap_pop_ignored (data->display);
-    }
-
-  g_list_free (devices);
-
-  if (!grab)
-    data->escape_keycode = 0;
+  grab_paper_key (data, data->shortcuts[SCREENATOR_SHORTCUT_ESCAPE].keycode,
+		  data->shortcuts[SCREENATOR_SHORTCUT_ESCAPE].modifier, grab);
 }
+
 
 static void
 grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
@@ -869,26 +843,300 @@ grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
   g_list_free (devices);
 }
 
-/* Grab the paper shortcuts so Ctrl+T, Ctrl+Q and Alt+F4 work even after
- * Ctrl+T has hidden the paper.  Ctrl+Z stays with the key snooper (and the
- * painting grab), so it is not grabbed twice.  The hardware keycodes are
- * resolved once and also used by the snooper, so the shortcuts keep working
- * with a non-Latin keyboard layout. */
+/* In Window mode only unmodified globally-always shortcuts stay grabbed.
+ * Everything else is delivered to the focused Paper window as a normal key
+ * event, so it cannot be stolen from other applications. */
+static gboolean
+window_mode_shortcut_may_grab (ScreenatorData *data, guint index)
+{
+  if (!screenator_paper_local_input (data))
+    return TRUE;
+
+  return screenator_shortcut_scopes[index] == SCREENATOR_SHORTCUT_ALWAYS &&
+    (data->shortcuts[index].modifier &
+     (GDK_CONTROL_MASK | GDK_MOD1_MASK)) == 0;
+}
+
+/* Replace the configured shortcuts, ungrab the old keys and grab the new
+ * ones according to their current scope. */
+void
+screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
+{
+  gboolean paper = data->paper != SCREENATOR_PAPER_NONE;
+  gboolean painting = screenator_any_grabbed (data);
+  guint i;
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    grab_paper_key (data, data->shortcuts[i].keycode,
+		    data->shortcuts[i].modifier, FALSE);
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      g_free (data->shortcuts[i].text);
+      data->shortcuts[i].text = g_strdup (new_texts[i] ? new_texts[i] : "");
+    }
+
+  screenator_resolve_shortcuts (data);
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      gboolean grab = FALSE;
+
+      if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_ALWAYS)
+	grab = TRUE;
+      else if (screenator_shortcut_scopes[i] ==
+	       SCREENATOR_SHORTCUT_PAINTING)
+	grab = painting;
+      else if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER)
+	grab = paper;
+
+      if (!window_mode_shortcut_may_grab (data, i))
+	grab = FALSE;
+
+      grab_paper_key (data, data->shortcuts[i].keycode,
+		      data->shortcuts[i].modifier, grab);
+    }
+}
+
+/* Grab the Paper Drawing shortcuts so they work even after Ctrl+T has hidden
+ * the drawings.  Ctrl+Z stays with the key snooper (and the painting grab),
+ * so it is not grabbed twice.  F4 saves a screenshot in Screen Annotation
+ * mode and Alt+F4 quits in Paper Drawing, so the F4 grabs are kept in both
+ * modes; the other Paper Drawing keys are only grabbed while it is active.
+ * The hardware keycodes are resolved once and also used by the snooper, so
+ * the shortcuts keep working with a non-Latin keyboard layout. */
+/* In Window mode only grab Control/Alt shortcuts while the Paper window is
+ * the focused application.  Unmodified global shortcuts such as F8/F9/F10
+ * stay global. */
+void
+screenator_paper_shortcuts_focus (ScreenatorData *data, gboolean focused)
+{
+  gboolean painting;
+  guint i;
+
+  if (!data)
+    return;
+
+  /* Window mode receives its shortcuts as ordinary key events while the
+   * Paper window is focused.  Only global always-on keys stay grabbed. */
+  if (screenator_paper_local_input (data))
+    {
+      update_paper_shortcuts (data, TRUE);
+      return;
+    }
+
+  painting = screenator_any_grabbed (data);
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      guint modifier = data->shortcuts[i].modifier;
+      gboolean grab;
+
+      if ((modifier & (GDK_CONTROL_MASK | GDK_MOD1_MASK)) == 0)
+	continue;
+
+      grab = focused &&
+	(screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_ALWAYS ||
+	 screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER ||
+	 (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAINTING &&
+	  painting));
+
+      grab_paper_key (data, data->shortcuts[i].keycode, modifier, grab);
+    }
+}
+
+/* Entering Window mode: drop the global pointer grab while keeping the
+ * selected tool active.  From now on the normal focused window supplies the
+ * pointer events and the window cursor only appears inside the Paper window. */
+void
+screenator_window_mode_enter (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+  gboolean active = FALSE;
+  GdkWindow *window;
+
+  if (!data || !data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (!devdata->is_grabbed)
+	continue;
+
+      active = TRUE;
+
+      if (devdata->window_input)
+	continue;
+
+#ifdef GDK_WINDOWING_X11
+      if (GDK_IS_X11_DISPLAY (data->display))
+	{
+	  gdk_x11_display_error_trap_push (data->display);
+	  gdk_device_ungrab (devdata->device, GDK_CURRENT_TIME);
+	  XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
+	  gdk_x11_display_error_trap_pop_ignored (data->display);
+	}
+      else
+#endif
+	gdk_device_ungrab (devdata->device, GDK_CURRENT_TIME);
+
+      devdata->window_input = 1;
+    }
+
+  /* Undo and Escape were grabbed globally while the fullscreen Paper window
+   * was active; the focused Window-mode window receives them as normal key
+   * events instead. */
+  grab_undo_shortcut (data, FALSE);
+  grab_escape_shortcut (data, FALSE);
+
+  /* Release global Ctrl/Alt grabs; the focused window receives them now. */
+  screenator_paper_shortcuts_focus (data, TRUE);
+
+  if (!active && data->forced_context)
+    {
+      /* A tool was selected but its grab was not active yet. */
+      acquire_grab (data, NULL);
+      return;
+    }
+
+  window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  if (window)
+    gdk_window_set_cursor (window,
+			   data->controls_hover > 0 ? NULL
+			   : data->forced_context
+			   ? get_tool_cursor (data, data->forced_context)
+			   : NULL);
+}
+
+/* Leaving Window mode: turn the local tool state back into a real pointer
+ * grab so fullscreen Paper mode keeps working as before.  The caller must
+ * clear data->paper_window_mode first. */
+void
+screenator_window_mode_leave (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+  gboolean active = FALSE;
+  GdkWindow *window;
+
+  if (!data || !data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (!devdata->window_input)
+	continue;
+
+      devdata->window_input = 0;
+      active = active || devdata->is_grabbed;
+      devdata->is_grabbed = 0;
+    }
+
+  if (active)
+    acquire_grab (data, NULL);
+  else
+    {
+      window = data->win ? gtk_widget_get_window (data->win) : NULL;
+      if (window)
+	gdk_window_set_cursor (window,
+			       data->forced_context
+			       ? get_tool_cursor (data, data->forced_context)
+			       : NULL);
+    }
+}
+
+/* Forget Window-mode tool input without taking a new grab, used when the
+ * Paper window is closed. */
+void
+screenator_window_mode_clear (ScreenatorData *data)
+{
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data || !data->devdatatable)
+    return;
+
+  g_hash_table_iter_init (&it, data->devdatatable);
+  while (g_hash_table_iter_next (&it, NULL, &value))
+    {
+      ScreenatorDeviceData *devdata = value;
+
+      if (!devdata->window_input)
+	continue;
+
+      devdata->window_input = 0;
+      devdata->is_grabbed = 0;
+      devdata->motion_time = 0;
+    }
+}
+
 void
 update_paper_shortcuts (ScreenatorData *data, gboolean grab)
 {
-  if (!data->paper_z_keycode)
-    data->paper_z_keycode = paper_shortcut_keycode (GDK_KEY_z);
-  if (!data->paper_q_keycode)
-    data->paper_q_keycode = paper_shortcut_keycode (GDK_KEY_q);
-  if (!data->paper_t_keycode)
-    data->paper_t_keycode = paper_shortcut_keycode (GDK_KEY_t);
-  if (!data->paper_f4_keycode)
-    data->paper_f4_keycode = paper_shortcut_keycode (GDK_KEY_F4);
+  guint i;
 
-  grab_paper_key (data, data->paper_t_keycode, ControlMask, grab);
-  grab_paper_key (data, data->paper_q_keycode, ControlMask, grab);
-  grab_paper_key (data, data->paper_f4_keycode, Mod1Mask, grab);
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      gboolean on = FALSE;
+
+      if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_ALWAYS)
+	on = TRUE;
+      else if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER)
+	on = grab;
+
+      if (!window_mode_shortcut_may_grab (data, i))
+	on = FALSE;
+
+      grab_paper_key (data, data->shortcuts[i].keycode,
+		      data->shortcuts[i].modifier, on);
+    }
+}
+
+/* Temporarily release the global shortcuts while a desktop file chooser is
+ * open, so typing and function keys belong to the chooser.  Always-active
+ * shortcuts are grabbed again; Painting and Paper shortcuts only while their
+ * scope is active. */
+void
+screenator_suspend_shortcuts (ScreenatorData *data, gboolean suspend)
+{
+  gboolean paper = data->paper != SCREENATOR_PAPER_NONE;
+  gboolean painting = screenator_any_grabbed (data);
+  guint i;
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    {
+      gboolean grab = FALSE;
+
+      if (!suspend)
+	{
+	  if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_ALWAYS)
+	    grab = TRUE;
+	  else if (screenator_shortcut_scopes[i] ==
+		   SCREENATOR_SHORTCUT_PAINTING)
+	    grab = painting;
+	  else if (screenator_shortcut_scopes[i] ==
+		   SCREENATOR_SHORTCUT_PAPER)
+	    grab = paper;
+
+	  if (!window_mode_shortcut_may_grab (data, i))
+	    grab = FALSE;
+	}
+
+      grab_paper_key (data, data->shortcuts[i].keycode,
+		      data->shortcuts[i].modifier, grab);
+    }
+
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY (data->display))
+    XSync (GDK_DISPLAY_XDISPLAY (data->display), False);
+#endif
 }
 
 void release_grab (ScreenatorData *data, 
@@ -909,7 +1157,7 @@ void release_grab (ScreenatorData *data,
   /* An unfinished spline is not committed; drop its preview as well. */
   spline_cancel_all (data);
 
-  if (screenator_is_wayland_session ())
+  if (screenator_is_wayland_session () && !paper_window_input_mode (data))
     {
       /*
 	When running under Wayland (XWayland in our case),
@@ -936,12 +1184,16 @@ void release_grab (ScreenatorData *data,
           devdata = value;
           if(devdata->is_grabbed)
 	  {
-	    gdk_x11_display_error_trap_push(data->display);
-	    gdk_device_ungrab(devdata->device, GDK_CURRENT_TIME);
-	    XSync(GDK_DISPLAY_XDISPLAY(data->display), False);
-	    if(gdk_x11_display_error_trap_pop(data->display))
-	      g_printerr("WARNING: Ungrabbing device '%s' failed.\n", gdk_device_get_name(devdata->device));
+	    if (!devdata->window_input)
+	      {
+		gdk_x11_display_error_trap_push(data->display);
+		gdk_device_ungrab(devdata->device, GDK_CURRENT_TIME);
+		XSync(GDK_DISPLAY_XDISPLAY(data->display), False);
+		if(gdk_x11_display_error_trap_pop(data->display))
+		  g_printerr("WARNING: Ungrabbing device '%s' failed.\n", gdk_device_get_name(devdata->device));
+	      }
 
+	    devdata->window_input = 0;
 	    devdata->is_grabbed = 0;
             /* workaround buggy GTK3 ? */
 	    devdata->motion_time = 0;
@@ -955,7 +1207,23 @@ void release_grab (ScreenatorData *data,
       grab_undo_shortcut (data, FALSE);
       grab_escape_shortcut (data, FALSE);
 
-      /* The screen paper keeps the annotation window visible. */
+      /* Keep the selected tool cursor on the overlay window even when no
+       * device is grabbed; use the normal pointer only when no tool is
+       * selected. */
+      if (!data->raw_input_enabled && !data->paper_hand_tool)
+	{
+	  GdkWindow *window = data->win
+	    ? gtk_widget_get_window (data->win) : NULL;
+
+	  if (window)
+	    gdk_window_set_cursor (window,
+				   data->forced_context
+				   ? get_tool_cursor (data,
+						      data->forced_context)
+				   : NULL);
+	}
+
+      /* Paper Drawing keeps the annotation window visible. */
       if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
 	  !data->screenshot_paper)
 	  hide_window (data);
@@ -969,7 +1237,10 @@ void release_grab (ScreenatorData *data,
 
   if (devdata->is_grabbed)
     {
-      gdk_device_ungrab(devdata->device, GDK_CURRENT_TIME);
+      if (!devdata->window_input)
+	gdk_device_ungrab(devdata->device, GDK_CURRENT_TIME);
+
+      devdata->window_input = 0;
       devdata->is_grabbed = 0;
       /* workaround buggy GTK3 ? */
       devdata->motion_time = 0;
@@ -983,10 +1254,23 @@ void release_grab (ScreenatorData *data,
 	  indicate_active(data, FALSE);
 	  grab_undo_shortcut (data, FALSE);
 	  grab_escape_shortcut (data, FALSE);
+
+	  if (!data->raw_input_enabled && !data->paper_hand_tool)
+	    {
+	      GdkWindow *window = data->win
+		? gtk_widget_get_window (data->win) : NULL;
+
+	      if (window)
+		gdk_window_set_cursor (window,
+				       data->forced_context
+				       ? get_tool_cursor (data,
+							  data->forced_context)
+				       : NULL);
+	    }
 	}
     }
 
-  /* The screen paper keeps the annotation window visible. */
+  /* Paper Drawing keeps the annotation window visible. */
   if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
       !data->screenshot_paper)
     hide_window (data);
@@ -996,10 +1280,12 @@ void release_grab (ScreenatorData *data,
 void acquire_grab (ScreenatorData *data, 
 		   GdkDevice *dev)
 {
+  gboolean window_mode = paper_window_input_mode (data);
+
   screenator_marker_prepare (data);
   show_window (data);
 
-  if (screenator_is_wayland_session ()) {
+  if (screenator_is_wayland_session () && !window_mode) {
       /*
 	When running under Wayland (XWayland in our case), make the whole transparent window react to input.
 	Otherwise, no draw-cursor is shown over Wayland-only windows.
@@ -1033,12 +1319,25 @@ void acquire_grab (ScreenatorData *data,
 	  if (data->forced_context)
 	    devdata->cur_context = data->forced_context;
 
-	  cursor = get_tool_cursor (data, devdata->cur_context);
+	  cursor = data->controls_hover > 0
+	    ? NULL : get_tool_cursor (data, devdata->cur_context);
+
+	  if (window_mode)
+	    {
+	      /* A normal window already receives pointer events only while the
+	       * pointer is over it.  Do not take a global grab here: the tool
+	       * cursor, drawing and clicks then stay inside the Paper window and
+	       * other applications keep their own pointer input. */
+	      devdata->is_grabbed = 1;
+	      devdata->window_input = 1;
+	      (void) cursor;
+	      continue;
+	    }
 
 	  if(gdk_device_grab(devdata->device,
 			     gtk_widget_get_window(data->win),
 			     GDK_OWNERSHIP_NONE,
-			     FALSE,
+			     screenator_paper_grab_owner_events (data),
 			     SCREENATOR_MOUSE_EVENTS,
 			     cursor,
 			     GDK_CURRENT_TIME) != GDK_GRAB_SUCCESS)
@@ -1054,6 +1353,19 @@ void acquire_grab (ScreenatorData *data,
           devdata->is_grabbed = 1;
         }
 
+      if (window_mode)
+	{
+	  GdkWindow *window = data->win ? gtk_widget_get_window (data->win)
+					: NULL;
+
+	  if (window)
+	    gdk_window_set_cursor (window,
+				   data->controls_hover > 0 ? NULL
+				   : data->forced_context
+				   ? get_tool_cursor (data, data->forced_context)
+				   : NULL);
+	}
+
       if(data->debug)
         g_printerr("DEBUG: Grabbed all Devices.\n");
 
@@ -1067,19 +1379,26 @@ void acquire_grab (ScreenatorData *data,
 
 
   /* get the data for this device */
-  ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, dev);
+  ScreenatorDeviceData *devdata = g_hash_table_lookup (data->devdatatable, dev);
 
   if (!devdata->is_grabbed)
     {
-      GdkCursor *cursor = get_tool_cursor (data, devdata->cur_context);
+      GdkCursor *cursor = data->controls_hover > 0
+	? NULL : get_tool_cursor (data, devdata->cur_context);
 
-      if(gdk_device_grab(devdata->device,
-			 gtk_widget_get_window(data->win),
-			 GDK_OWNERSHIP_NONE,
-			 FALSE,
-			 SCREENATOR_MOUSE_EVENTS,
-			 cursor,
-			 GDK_CURRENT_TIME) != GDK_GRAB_SUCCESS)
+      if (window_mode)
+	{
+	  devdata->is_grabbed = 1;
+	  devdata->window_input = 1;
+	  set_device_cursor (data, devdata->device, devdata->cur_context);
+	}
+      else if(gdk_device_grab(devdata->device,
+			     gtk_widget_get_window(data->win),
+			     GDK_OWNERSHIP_NONE,
+			     screenator_paper_grab_owner_events (data),
+			     SCREENATOR_MOUSE_EVENTS,
+			     cursor,
+			     GDK_CURRENT_TIME) != GDK_GRAB_SUCCESS)
 	{
 	  /* this probably means the device table is outdated,
 	     e.g. this device doesn't exist anymore */
@@ -1088,8 +1407,8 @@ void acquire_grab (ScreenatorData *data,
 	  setup_input_devices(data);
 	  return;
 	}
-
-      devdata->is_grabbed = 1;
+      else
+	devdata->is_grabbed = 1;
       
       if(data->debug)
         g_printerr("DEBUG: Grabbed Device '%s'.\n", gdk_device_get_name(devdata->device));
@@ -1143,48 +1462,82 @@ gint snoop_key_press(GtkWidget   *grab_widget,
   ScreenatorData *data = (ScreenatorData *) func_data;
   GdkDevice *dev = gdk_event_get_device((GdkEvent*)event);
 
+  (void) grab_widget;
+
   /* The keys belong to the dialog while one is open. */
-  if (data->top_dialog)
+  if (data->top_dialog || data->native_dialog_open)
+    return FALSE;
+
+  if (event->type != GDK_KEY_PRESS)
     return FALSE;
 
   /* Escape exits the current tool exactly like a right click on the canvas:
    * an unfinished shape is finished (or dropped for a spline) and painting
    * mode stops.  The inline text editor handles its own Escape, which
    * cancels the text instead of committing it. */
-  if (event->type == GDK_KEY_PRESS &&
-      ((data->escape_keycode &&
-	event->hardware_keycode == data->escape_keycode) ||
-       event->keyval == GDK_KEY_Escape) &&
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_ESCAPE, event) &&
       !data->text_editor_active)
     return screenator_exit_tool (data);
 
-  /* Shortcuts that work while the screen paper has the keyboard focus. */
-  if (event->type == GDK_KEY_PRESS &&
-      data->paper != SCREENATOR_PAPER_NONE)
+  /* Switch between Screen and Paper modes from either mode. */
+  if (!data->quick_menu &&
+      screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_SWITCH_MODE,
+				   event))
     {
-      gboolean ctrl = (event->state & GDK_CONTROL_MASK) != 0;
-      gboolean shift = (event->state & GDK_SHIFT_MASK) != 0;
-      gboolean alt = (event->state & GDK_MOD1_MASK) != 0;
-      guint key = event->hardware_keycode;
+      if (data->text_editor_active)
+	return FALSE;
+      screenator_toggle_paper_drawing (data);
+      return TRUE;
+    }
 
-      if (alt && !ctrl && !shift && key == data->paper_f4_keycode)
+  /* Undo and redo work while painting, also in Screen mode.  The inline text
+   * editor keeps its own Ctrl+Z for text undo. */
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_UNDO, event) ||
+      screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_REDO, event))
+    {
+      if (data->hidden || data->text_editor_active)
+	return FALSE;
+
+      if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_REDO, event))
+	screenator_redo (data);
+      else
+	screenator_undo (data);
+      return TRUE;
+    }
+
+  /* Shortcuts that work while Paper mode has the keyboard focus.  The quick
+   * tool menu gets the arrow keys first, and the inline text editor keeps
+   * Ctrl+A for selecting text. */
+  if (data->paper != SCREENATOR_PAPER_NONE && !data->quick_menu)
+    {
+      if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_QUIT, event))
 	{
-	  gtk_main_quit ();
+	  screenator_request_quit (data);
 	  return TRUE;
 	}
 
-      if (ctrl && !alt && key == data->paper_z_keycode)
+      /* Ctrl+W switches between fullscreen and Window mode. */
+      if ((event->state & GDK_CONTROL_MASK) != 0 &&
+	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
+	  event->keyval == GDK_KEY_w)
 	{
-	  if (data->text_editor_active)
-	    return FALSE;
-	  if (shift)
-	    redo_drawing (data);
-	  else
-	    undo_drawing (data);
+	  screenator_toggle_paper_window_fullscreen (data);
 	  return TRUE;
 	}
 
-      if (ctrl && !alt && !shift && key == data->paper_t_keycode)
+      /* Ctrl+D shows the desktop panel above the page without entering
+       * Window mode. */
+      if ((event->state & GDK_CONTROL_MASK) != 0 &&
+	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
+	  event->keyval == GDK_KEY_d)
+	{
+	  screenator_toggle_paper_panel (data);
+	  return TRUE;
+	}
+
+      if (screenator_shortcut_matches (data,
+				       SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
+				       event))
 	{
 	  if (data->text_editor_active)
 	    return FALSE;
@@ -1192,49 +1545,118 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  return TRUE;
 	}
 
-      if (ctrl && !alt && !shift && key == data->paper_q_keycode)
+      if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_EXIT_PAPER,
+				       event))
 	{
 	  if (data->text_editor_active)
 	    return FALSE;
-	  screenator_exit_screen_paper (data);
+	  screenator_exit_paper_drawing (data);
 	  return TRUE;
+	}
+
+      if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_SAVE, event))
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  screenator_paper_save (data);
+	  return TRUE;
+	}
+
+      if (screenator_shortcut_matches (data,
+				       SCREENATOR_SHORTCUT_INSERT_BEFORE,
+				       event))
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  screenator_paper_insert_page (data, TRUE);
+	  return TRUE;
+	}
+
+      if (screenator_shortcut_matches (data,
+				       SCREENATOR_SHORTCUT_INSERT_AFTER,
+				       event))
+	{
+	  if (data->text_editor_active)
+	    return FALSE;
+	  screenator_paper_insert_page (data, FALSE);
+	  return TRUE;
+	}
+
+      if (!data->text_editor_active &&
+	  !(event->state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK |
+			    GDK_MOD1_MASK)))
+	{
+	  if (event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down)
+	    {
+	      screenator_paper_scroll (data,
+				       event->keyval == GDK_KEY_Up ? -1 : 1);
+	      return TRUE;
+	    }
+
+	  if (event->keyval == GDK_KEY_Page_Up ||
+	      event->keyval == GDK_KEY_Page_Down)
+	    {
+	      screenator_paper_switch_page (
+		data, event->keyval == GDK_KEY_Page_Up ? -1 : 1);
+	      return TRUE;
+	    }
+
+	  if (event->keyval == GDK_KEY_Home)
+	    {
+	      screenator_paper_goto_page (data, 0);
+	      return TRUE;
+	    }
+
+	  if (event->keyval == GDK_KEY_End)
+	    {
+	      screenator_paper_goto_page (data, G_MAXINT);
+	      return TRUE;
+	    }
 	}
     }
 
-  if (event->type == GDK_KEY_PRESS &&
-      (event->hardware_keycode == data->pen_keycode ||
-       event->keyval == GDK_KEY_F8))
+  /* The screenshot shortcut works in both Screen and Paper modes. */
+  if (!data->quick_menu &&
+      screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_SCREENSHOT,
+				   event))
+    {
+      screenator_save_screenshot (data);
+      return TRUE;
+    }
+
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_PEN, event))
     {
       screenator_schedule_tool (data, 1, -1);
       return TRUE;
     }
 
-  if (event->type == GDK_KEY_PRESS &&
-      (event->hardware_keycode == data->text_keycode ||
-       event->keyval == GDK_KEY_F7))
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_TEXT, event))
     {
       screenator_schedule_tool (data, 4, -1);
       return TRUE;
     }
 
-  if (event->type == GDK_KEY_PRESS &&
-      (event->hardware_keycode == data->arrow_keycode ||
-       event->keyval == GDK_KEY_F6))
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_ARROW, event))
     {
       screenator_schedule_tool (data, 2, SCREENATOR_SHAPE_ARROW);
       return TRUE;
     }
 
-  if (event->type == GDK_KEY_PRESS &&
-      (event->hardware_keycode == data->quick_keycode ||
-       event->keyval == GDK_KEY_F10))
+  if (data->paper == SCREENATOR_PAPER_NONE &&
+      screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_TIMER, event))
     {
-      screenator_show_quick_menu (data);
+      screenator_start_timer (data);
       return TRUE;
     }
 
-  if (event->type == GDK_KEY_PRESS &&
-      event->hardware_keycode == data->hot_keycode)
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_TOOLBAR, event))
+    {
+      screenator_toggle_paper_top_bar (data);
+      return TRUE;
+    }
+
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_FLOATING_ICON,
+				   event))
     {
       if(data->debug)
 	g_printerr("DEBUG: Received hotkey press from device '%s'\n", gdk_device_get_name(dev));
@@ -1243,25 +1665,5 @@ gint snoop_key_press(GtkWidget   *grab_widget,
       return TRUE;
     }
 
-  /* Ctrl+Z / Ctrl+Shift+Z while painting mode is active.  The keys are only
-   * grabbed while a device is grabbed, so these events only arrive then. */
-  if (event->type == GDK_KEY_PRESS &&
-      data->undo_ctrl_keycode &&
-      event->hardware_keycode == data->undo_ctrl_keycode &&
-      (event->state & GDK_CONTROL_MASK))
-    {
-      if(data->debug)
-	g_printerr("DEBUG: Received Ctrl+Z from device '%s'\n", gdk_device_get_name(dev));
-
-      /* The inline text editor keeps its own Ctrl+Z for text undo. */
-      if (data->hidden || data->text_editor_active)
-        return FALSE;
-      if (event->state & GDK_SHIFT_MASK)
-        redo_drawing (data);
-      else
-        undo_drawing (data);
-
-      return TRUE;
-    }
   return FALSE;
 }
