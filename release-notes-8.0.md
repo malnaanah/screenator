@@ -283,7 +283,7 @@ Tool bar actions added or updated:
   changes its colour in both Screen and Paper modes.
 - In Paper mode, right click/stylus side button 2 still becomes the temporary
   eraser after the current object is committed.
-- Undo history now keeps 40 steps in every mode.
+- Undo history now keeps 50 steps in every mode.
 - While typing text, the mouse wheel and stylus side button 1 change the text
   colour.  Right click, stylus side button 2 or mouse button 2 accepts the text
   like Enter; Escape still cancels it.

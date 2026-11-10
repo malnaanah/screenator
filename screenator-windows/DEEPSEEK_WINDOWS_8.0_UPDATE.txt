@@ -433,7 +433,7 @@ Inspect the undo implementation in src/tools.c and annotation save in
 src/main.c.
 
 Linux 8.0 changed these areas:
-- undo depth increased to 40 steps in every mode;
+- undo depth increased to 50 steps in every mode;
 - vector PDF export;
 - page undo/redo;
 - paint-bucket vector preservation;
@@ -834,7 +834,7 @@ E. Timer, cursor and input
 - The stylus first side button changes colour instead while handles are active.
 - Switching paper type or opening another PDF while in Paper mode keeps the
   active tool; resetting a paper still selects Cursor.
-- Undo depth is 40 steps in every mode.
+- Undo depth is 50 steps in every mode.
 - After commit, the same button becomes the temporary eraser and keeps the
   selected tool.
 - While typing: wheel and stylus side button 1 change text colour.

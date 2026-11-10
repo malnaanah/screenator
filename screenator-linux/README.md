@@ -333,7 +333,7 @@ and you can keep using your applications while it is visible.
   Num Lock on. `Esc` first finishes the current shape or closes its handles
   and keeps the selected tool. Press it again to exit the tool and select the
   **Cursor** tool, so its icon becomes active. Drawing undo is used first
-  while drawing history exists. Undo history keeps 40 steps in every mode.
+  while drawing history exists. Undo history keeps 50 steps in every mode.
 - Stylus: **IMPORTANT:** In your stylus configuration, set button 1 (near the
   tip) to **Middle Click** and button 2 to **Right Click**. The tip draws like
   the left mouse button, using the selected line

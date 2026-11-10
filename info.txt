@@ -470,7 +470,7 @@ Differences from Gromit-MPX 1.4.2:
     Change Font, and pen strokes are smoothed with curved segments.
   - While painting mode is active, Ctrl+Z undoes the last drawing stroke or
     page insertion/deletion and Ctrl+Shift+Z redoes it; drawing undo is used
-    first while drawing history exists.  Undo history keeps 40 steps in every
+    first while drawing history exists.  Undo history keeps 50 steps in every
     mode.  The keys are grabbed only while
     painting, so they keep their normal meaning in other applications.  The
     shortcut also works while Caps Lock or Num Lock is on.

@@ -70,7 +70,7 @@
 #define GA_DATA       gdk_atom_intern ("Screenator/data", FALSE)
 #define GA_TOGGLEDATA gdk_atom_intern ("Screenator/toggledata", FALSE)
 
-#define SCREENATOR_MAX_UNDO 40
+#define SCREENATOR_MAX_UNDO 50
 
 /* Smallest size a placed frame shape can be resized to. */
 #define FRAME_MIN_SIZE 8.0
