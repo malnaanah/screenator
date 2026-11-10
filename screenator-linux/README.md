@@ -207,7 +207,9 @@ and you can keep using your applications while it is visible.
   or opens another PDF when the current paper is PDF. If the current paper has
   unsaved changes, Screenator asks whether to save it in the Documents folder
   first. Selecting a paper type, or opening a PDF, switches to
-  **Paper** mode automatically. Every type keeps its own pages, drawings and
+  **Paper** mode automatically and brings the Paper window to the front.
+  Switching between **Screen** and **Paper** always exits the current tool and
+  leaves **Cursor** selected. Every type keeps its own pages, drawings and
   loaded PDF while another type is shown, so switching back restores them
   without a save prompt. The selected paper type and PDF file are remembered
   across restarts, and each PDF file remembers the page it was last closed on,
@@ -234,10 +236,13 @@ and you can keep using your applications while it is visible.
   directly before **Paper Type**, saves only the current paper if it has
   changed. The file is written automatically to the **Documents** folder as
   `Screenator-plain-YYYYMMDD-HHMMSS.pdf`, `Screenator-ruled-...`,
-  `Screenator-graph-...` or `Screenator-pdf-...`, and a message shows the
+  `Screenator-graph-...`, or `Screenator-file-...` for opened PDF files. If
+  that name already exists, a numeric suffix is added. A message shows the
   saved path. Drawings are written as vector paths, text as text, and the
   original PDF pages and paper backgrounds stay vector. Undo and redo keep
-  drawings and text vector as well. In **Screen** mode
+  drawings and text vector as well. Eraser strokes over empty space leave the
+  vector layer untouched; when ink is erased, the remaining drawings stay
+  vector and text stays text. In **Screen** mode
   that button becomes **Screenshot**. When
   Screenator quits, it offers once to save every changed paper; no save
   prompt appears while switching paper types.

@@ -154,6 +154,11 @@ typedef struct
    * when an operation cannot be represented as vectors (undo, bucket fill). */
   cairo_surface_t    *vector;
   gboolean            vector_valid;
+
+  /* Set by the eraser before it clears a segment when that segment actually
+   * covers ink.  Only these strokes need to be baked into the vector layer;
+   * an eraser stroke in empty space must leave the vector layer untouched. */
+  gboolean            erase_hit;
 } ScreenatorPaperPage;
 
 /* A reversible page insertion or deletion.  The action owns the surface
@@ -931,6 +936,9 @@ void screenator_paper_switch_page (ScreenatorData *data, gint delta);
 void screenator_paper_goto_page (ScreenatorData *data, gint index);
 gboolean screenator_request_quit (ScreenatorData *data);
 void screenator_paper_scroll (ScreenatorData *data, gint direction);
+gboolean screenator_surface_has_ink_in_rect (cairo_surface_t *surface,
+					     gint x, gint y,
+					     gint width, gint height);
 void screenator_paper_erase_line (ScreenatorData *data,
 				  gint x1, gint y1, gint x2, gint y2,
 				  gint width);

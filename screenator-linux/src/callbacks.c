@@ -592,7 +592,8 @@ static gboolean paper_window_event_inside (ScreenatorData *data,
 static const gchar *toolbar_item_id (const gchar *id);
 static GdkPixbuf *paper_color_swatch (const GdkRGBA *color, gboolean none,
 				      gint size);
-static GdkPixbuf *paper_thickness_sample (guint width, gint size);
+static GdkPixbuf *paper_thickness_sample (guint width, gint size,
+					  gboolean vertical_toolbar);
 static GdkPixbuf *paper_eraser_size_sample (guint width, gint size);
 
 static gchar *
@@ -9340,14 +9341,35 @@ screenator_paper_erase_line (ScreenatorData *data,
 			     gint width)
 {
   ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *active_page;
   guint i, count;
+  gint pad;
 
-  if (!data || !paper_continuous (data))
+  if (!data)
     return;
 
   doc = paper_active_document (data);
-  if (!doc || !doc->pages || !doc->pdf_page_tops ||
-      !doc->pdf_page_heights)
+  if (!doc || !doc->pages)
+    return;
+
+  pad = MAX (1, width) / 2 + 2;
+
+  /* In the page-by-page view the active page lives in the backbuffer.  Note
+   * whether the eraser is about to remove real ink before Cairo clears it. */
+  if (!paper_continuous (data))
+    {
+      active_page = paper_current_page (doc);
+      if (active_page && data->backbuffer &&
+	  screenator_surface_has_ink_in_rect (data->backbuffer,
+					      MIN (x1, x2) - pad,
+					      MIN (y1, y2) - pad,
+					      ABS (x1 - x2) + 2 * pad,
+					      ABS (y1 - y2) + 2 * pad))
+	active_page->erase_hit = TRUE;
+      return;
+    }
+
+  if (!doc->pdf_page_tops || !doc->pdf_page_heights)
     return;
 
   count = MIN (doc->pages->len, doc->pdf_page_tops->len);
@@ -9356,29 +9378,36 @@ screenator_paper_erase_line (ScreenatorData *data,
     {
       ScreenatorPaperPage *page =
 	&g_array_index (doc->pages, ScreenatorPaperPage, i);
-      gint top;
+      gint top, page_x, page_y;
       cairo_t *cr;
 
       if (!page->annotations)
 	continue;
 
       top = g_array_index (doc->pdf_page_tops, gint, i);
+      page_x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      page_y = top - doc->pdf_scroll_y;
 
-      {
-	gint page_x = page->style == SCREENATOR_PAPER_PDF
-	  ? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      /* Check before clearing so an eraser stroke over blank space does not
+       * create an erase mask in the exported vector layer. */
+      if (screenator_surface_has_ink_in_rect (page->annotations,
+					      MIN (x1, x2) - page_x - pad,
+					      MIN (y1, y2) - page_y - pad,
+					      ABS (x1 - x2) + 2 * pad,
+					      ABS (y1 - y2) + 2 * pad))
+	page->erase_hit = TRUE;
 
-	cr = cairo_create (page->annotations);
-	if (!data->composited)
-	  cairo_set_antialias (cr, CAIRO_ANTIALIAS_NONE);
+      cr = cairo_create (page->annotations);
+      if (!data->composited)
+	cairo_set_antialias (cr, CAIRO_ANTIALIAS_NONE);
 
-	cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
-	cairo_set_line_width (cr, MAX (1, width));
-	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
-	cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
-	cairo_move_to (cr, x1 - page_x, y1 - (top - doc->pdf_scroll_y));
-	cairo_line_to (cr, x2 - page_x, y2 - (top - doc->pdf_scroll_y));
-      }
+      cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+      cairo_set_line_width (cr, MAX (1, width));
+      cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+      cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+      cairo_move_to (cr, x1 - page_x, y1 - page_y);
+      cairo_line_to (cr, x2 - page_x, y2 - page_y);
       cairo_stroke (cr);
       cairo_destroy (cr);
     }
@@ -10473,6 +10502,12 @@ paper_write_pdf_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
 	  pdf_height = canvas_height;
 	}
 
+      /* A page can have been recorded before its final canvas size was known
+       * (notably a newly opened PDF page).  Normalise the recording now so
+       * the vector overlay always matches the page written to the PDF. */
+      paper_scale_vector_surface (page, canvas_width, canvas_height,
+				  page->style != SCREENATOR_PAPER_PDF);
+
       cairo_pdf_surface_set_size (pdf, pdf_width, pdf_height);
       cr = cairo_create (pdf);
 
@@ -10586,24 +10621,6 @@ paper_documents_directory (void)
   return g_build_filename (g_get_home_dir (), "Documents", NULL);
 }
 
-static const gchar *
-paper_type_slug (ScreenatorPaperType type)
-{
-  switch (type)
-    {
-    case SCREENATOR_PAPER_PLAIN:
-      return "plain";
-    case SCREENATOR_PAPER_RULED:
-      return "ruled";
-    case SCREENATOR_PAPER_GRAPH:
-      return "graph";
-    case SCREENATOR_PAPER_PDF:
-      return "pdf";
-    default:
-      return "paper";
-    }
-}
-
 static void
 paper_pump_events (void)
 {
@@ -10693,6 +10710,26 @@ paper_hide_save_progress (ScreenatorData *data, GtkWidget *window)
   paper_update_panel_raise (data);
 }
 
+/* Name saved papers after their type.  Opened PDF files use "file" so the
+ * name never suggests that the PDF itself is a Screenator paper type. */
+static const gchar *
+paper_save_slug (ScreenatorPaperType type)
+{
+  switch (type)
+    {
+    case SCREENATOR_PAPER_PLAIN:
+      return "plain";
+    case SCREENATOR_PAPER_RULED:
+      return "ruled";
+    case SCREENATOR_PAPER_GRAPH:
+      return "graph";
+    case SCREENATOR_PAPER_PDF:
+      return "file";
+    default:
+      return "paper";
+    }
+}
+
 /* Save one paper document to the Documents folder as
  * Screenator-<type>-YYYYMMDD-HHMMSS.pdf.  A document is only written when it
  * has been changed since its last save. */
@@ -10709,14 +10746,20 @@ paper_autosave_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
   if (data->paper_saving)
     return FALSE;
 
-  if (!doc || !doc->pages || doc->pages->len == 0 || !doc->modified)
+  if (!doc || !doc->pages || doc->pages->len == 0)
     return FALSE;
 
+  /* Commit any text or shape still showing handles before testing the
+   * modified flag; otherwise the visible preview would be missed by a save
+   * that happens before the handles are dismissed. */
   if (data->paper == doc->type)
     {
       paper_commit_pending (data);
       paper_store_active_page (data);
     }
+
+  if (!doc->modified)
+    return FALSE;
 
   directory = paper_documents_directory ();
   if (g_mkdir_with_parents (directory, 0755) != 0)
@@ -10728,8 +10771,26 @@ paper_autosave_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
   now = g_date_time_new_now_local ();
   stamp = g_date_time_format (now, "%Y%m%d-%H%M%S");
   name = g_strdup_printf ("Screenator-%s-%s.pdf",
-			  paper_type_slug (doc->type), stamp);
+			  paper_save_slug (doc->type), stamp);
   path = g_build_filename (directory, name, NULL);
+
+  /* Saving several changed papers on exit can happen within one second.
+   * Keep the requested base name but avoid overwriting an existing file. */
+  if (g_file_test (path, G_FILE_TEST_EXISTS))
+    {
+      guint suffix = 2;
+
+      do
+	{
+	  g_free (name);
+	  g_free (path);
+	  name = g_strdup_printf ("Screenator-%s-%s-%u.pdf",
+				  paper_save_slug (doc->type), stamp,
+				  suffix++);
+	  path = g_build_filename (directory, name, NULL);
+	}
+      while (g_file_test (path, G_FILE_TEST_EXISTS));
+    }
 
   g_free (name);
   g_free (stamp);
@@ -10973,6 +11034,7 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
 	  paper_pdf_prepare_active (data, doc);
 	  reset_undo_history (data);
 	  paper_repaint (data);
+	  paper_bring_to_front (data);
 	  schedule_tray_menu_refresh (data);
 	  return;
 	}
@@ -10986,6 +11048,7 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
   reset_undo_history (data);
   paper_refresh_active_cursor (data);
   paper_repaint (data);
+  paper_bring_to_front (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -11297,6 +11360,14 @@ screenator_enter_paper_drawing (ScreenatorData *data,
   ScreenatorPaperDocument *doc;
   ScreenatorPaperPage *page;
 
+  /* A mode change always leaves Cursor selected. */
+  if (paper != SCREENATOR_PAPER_NONE &&
+      data->paper == SCREENATOR_PAPER_NONE)
+    {
+      text_editor_finish (data);
+      screenator_exit_tool (data);
+    }
+
   if (paper == SCREENATOR_PAPER_NONE)
     {
       screenator_exit_paper_drawing (data);
@@ -11457,6 +11528,10 @@ screenator_exit_paper_drawing (ScreenatorData *data)
 {
   if (data->paper == SCREENATOR_PAPER_NONE)
     return;
+
+  /* A mode change always leaves Cursor selected. */
+  text_editor_finish (data);
+  screenator_exit_tool (data);
 
   paper_pdf_remember_current (data);
   screenator_timer_cancel (data);
@@ -11768,6 +11843,7 @@ screenator_open_pdf_path (ScreenatorData *data, const gchar *path)
   /* The PDF may have replaced a page whose background was already cached. */
   paper_background_invalidate (data);
   paper_repaint (data);
+  paper_bring_to_front (data);
   paper_top_bar_update_active_tool (data);
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
@@ -11810,6 +11886,7 @@ screenator_paper_select (ScreenatorData *data, ScreenatorPaperType paper)
 
   /* Selecting a paper type, or opening a PDF, always shows that paper. */
   screenator_enter_paper_drawing (data, paper);
+  paper_bring_to_front (data);
 
   paper_top_bar_update_active_tool (data);
   write_keyfile (data);
@@ -12664,7 +12741,8 @@ toolbar_settings_icon (ScreenatorData *data, const ToolbarItemInfo *info)
   else if (g_strcmp0 (info->id, "line_color") == 0)
     pixbuf = paper_color_swatch (&data->pen_color, FALSE, size);
   else if (g_strcmp0 (info->id, "thickness") == 0)
-    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width),
+					 size, TRUE);
   else if (g_strcmp0 (info->id, "fill_color") == 0)
     pixbuf = paper_color_swatch (&data->shape_fill_color,
 				 !data->shape_fill_enabled, size);
@@ -13682,6 +13760,7 @@ paper_reset_document (ScreenatorData *data, ScreenatorPaperType type)
     }
 
   paper_refresh_active_cursor (data);
+  paper_bring_to_front (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -15927,7 +16006,7 @@ screenator_show_quick_menu (ScreenatorData *data)
 
 #define PAPER_TOOLBAR_DEFAULT_ICON_SIZE 32
 #define PAPER_TOOLBAR_MARGIN 0
-#define PAPER_TOOLBAR_SPACING 2
+#define PAPER_TOOLBAR_SPACING 0
 
 typedef struct
 {
@@ -16271,12 +16350,12 @@ paper_toolbar_install_style (GtkWidget *window)
       provider = gtk_css_provider_new ();
       gtk_css_provider_load_from_data (provider,
 	"window.paper-toolbar { background-color: #f4f4f4; "
-	"border: none; border-image: none; padding: 0; margin: 0; "
+	"border: 1px solid #7a7a7a; border-image: none; padding: 0; margin: 0; "
 	"box-shadow: none; }\n"
 	"window.paper-toolbar decoration { border: none; border-image: none; "
 	"padding: 0; margin: 0; box-shadow: none; }\n"
 	"button.paper-toolbar-button { background-image: none; "
-	"background-color: transparent; border: 1px solid #7a7a7a; "
+	"background-color: transparent; border: none; "
 	"border-image: none; border-radius: 0; padding: 0; margin: 0; "
 	"min-width: 0; min-height: 0; box-shadow: none; "
 	"text-shadow: none; }\n"
@@ -16335,27 +16414,53 @@ paper_color_swatch (const GdkRGBA *color, gboolean none, gint size)
 }
 
 static GdkPixbuf *
-paper_thickness_sample (guint width, gint size)
+paper_thickness_sample (guint width, gint size, gboolean vertical_toolbar)
 {
   cairo_surface_t *surface;
   cairo_t *cr;
   GdkPixbuf *pixbuf;
   gint box = MAX (24, MIN ((gint) width + 10, 56));
   gdouble line = MAX (1.0, MIN ((gdouble) width, box - 6.0));
+  gint surface_width, surface_height;
 
   size = MAX (16, size);
-  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, size, box);
+
+  /* In a vertical bar the lines run horizontally and the icon grows
+   * vertically.  A horizontal bar uses vertical lines and grows
+   * horizontally, so the thickness still expands across the bar. */
+  if (vertical_toolbar)
+    {
+      surface_width = size;
+      surface_height = box;
+    }
+  else
+    {
+      surface_width = box;
+      surface_height = size;
+    }
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+					surface_width, surface_height);
   cr = cairo_create (surface);
   cairo_set_source_rgba (cr, 0.1, 0.1, 0.1, 1.0);
   cairo_set_line_width (cr, line);
   cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
-  cairo_move_to (cr, 5, box / 2.0);
-  cairo_line_to (cr, size - 5, box / 2.0);
+  if (vertical_toolbar)
+    {
+      cairo_move_to (cr, 5, box / 2.0);
+      cairo_line_to (cr, size - 5, box / 2.0);
+    }
+  else
+    {
+      cairo_move_to (cr, box / 2.0, 5);
+      cairo_line_to (cr, box / 2.0, size - 5);
+    }
   cairo_stroke (cr);
   cairo_destroy (cr);
   cairo_surface_flush (surface);
 
-  pixbuf = gdk_pixbuf_get_from_surface (surface, 0, 0, size, box);
+  pixbuf = gdk_pixbuf_get_from_surface (surface, 0, 0,
+					surface_width, surface_height);
   cairo_surface_destroy (surface);
   return pixbuf;
 }
@@ -16443,8 +16548,8 @@ paper_top_bar_button (ScreenatorData *data, GdkPixbuf *pixbuf,
 		 : gtk_image_new_from_icon_name ("image-missing",
 						 GTK_ICON_SIZE_SMALL_TOOLBAR);
   gtk_container_add (GTK_CONTAINER (button), image);
-  /* One pixel of border on each side, with no padding. */
-  gtk_widget_set_size_request (button, paper_top_bar_icon_size (data) + 2, -1);
+  /* No border or padding, so neighbouring icons sit flush together. */
+  gtk_widget_set_size_request (button, paper_top_bar_icon_size (data), -1);
   return button;
 }
 
@@ -16468,6 +16573,17 @@ paper_top_bar_page_number_button (ScreenatorData *data)
 {
   GtkWidget *button = gtk_button_new ();
   GtkWidget *label = gtk_label_new ("1");
+  gint size = paper_top_bar_icon_size (data);
+  PangoAttrList *attrs = pango_attr_list_new ();
+
+  /* Use the same square footprint as the icon buttons.  The label font is
+   * scaled with the icon size so a 16 px bar still fits the number. */
+  pango_attr_list_insert (attrs,
+			  pango_attr_size_new_absolute (
+			    MAX (8.0, size * 0.55) * PANGO_SCALE));
+  pango_attr_list_insert (attrs, pango_attr_weight_new (PANGO_WEIGHT_BOLD));
+  gtk_label_set_attributes (GTK_LABEL (label), attrs);
+  pango_attr_list_unref (attrs);
 
   gtk_style_context_add_class (gtk_widget_get_style_context (button),
 			       "paper-toolbar-button");
@@ -16482,9 +16598,7 @@ paper_top_bar_page_number_button (ScreenatorData *data)
 		    G_CALLBACK (paper_toolbar_tooltip_leave), data);
   gtk_label_set_xalign (GTK_LABEL (label), 0.5);
   gtk_label_set_yalign (GTK_LABEL (label), 0.5);
-  gtk_widget_set_size_request (button,
-			       MAX (paper_top_bar_icon_size (data) + 2, 34),
-			       -1);
+  gtk_widget_set_size_request (button, size, size);
   gtk_container_add (GTK_CONTAINER (button), label);
   return button;
 }
@@ -16534,7 +16648,7 @@ paper_add_thickness_item (GtkWidget *menu, GSList **group,
 			  guint width, gint icon_size)
 {
   GtkWidget *item = gtk_radio_menu_item_new (*group);
-  GdkPixbuf *pixbuf = paper_thickness_sample (width, icon_size);
+  GdkPixbuf *pixbuf = paper_thickness_sample (width, icon_size, TRUE);
   GtkWidget *image = gtk_image_new_from_pixbuf (pixbuf);
 
   *group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (item));
@@ -17328,7 +17442,8 @@ paper_top_bar_update_images (ScreenatorData *data)
 
   if (bar->thickness_image)
     {
-      pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+      pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width),
+					 size, data->paper_toolbar_vertical);
       gtk_image_set_from_pixbuf (GTK_IMAGE (bar->thickness_image), pixbuf);
       if (pixbuf)
 	g_object_unref (pixbuf);
@@ -17366,9 +17481,38 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
 {
   PaperTopBar *bar = data->paper_top_bar_data;
   gboolean cursor, pen, text, eraser, arrow, timer, shapes;
+  gint old_x = 0, old_y = 0, old_width = 0, old_height = 0;
+  GdkRectangle area = { 0, 0, 0, 0 };
+  gboolean track_geometry = FALSE;
 
   if (!bar)
     return;
+
+  /* Hiding or showing a mode-specific button changes the tool bar width.
+   * Remember its current edge/centre alignment so it can be restored after
+   * the new size is known instead of drifting away from the screen edge. */
+  if (bar->window && gtk_widget_get_mapped (bar->window))
+    {
+      GdkScreen *screen = gtk_widget_get_screen (bar->window);
+      GtkRequisition req;
+      gint monitor;
+
+      gtk_window_get_position (GTK_WINDOW (bar->window), &old_x, &old_y);
+      gtk_widget_get_preferred_size (bar->window, NULL, &req);
+      old_width = req.width;
+      old_height = req.height;
+
+      if (screen)
+	{
+	  monitor = gdk_screen_get_monitor_at_point (
+	    screen, old_x + MAX (1, old_width) / 2,
+	    old_y + MAX (1, old_height) / 2);
+	  if (monitor < 0)
+	    monitor = 0;
+	  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+	  track_geometry = TRUE;
+	}
+    }
 
   cursor = !data->timer_active && data->forced_context == NULL;
   timer = data->timer_active;
@@ -17494,6 +17638,38 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
   if (bar->visibility_button)
     paper_toolbar_set_visible (bar->visibility_button,
 			       data->paper == SCREENATOR_PAPER_NONE);
+
+  if (track_geometry)
+    {
+      GtkRequisition req;
+      gint new_x = old_x, new_y = old_y;
+      gint right = area.x + area.width;
+      gint bottom = area.y + area.height;
+      const gint tolerance = 2;
+
+      gtk_widget_get_preferred_size (bar->window, NULL, &req);
+      if (req.width != old_width || req.height != old_height)
+	{
+	  if (ABS (old_x - area.x) <= tolerance)
+	    new_x = area.x;
+	  else if (ABS (old_x + old_width - right) <= tolerance)
+	    new_x = right - req.width;
+	  else if (ABS ((old_x + old_width / 2) -
+			(area.x + area.width / 2)) <= tolerance)
+	    new_x = area.x + MAX (0, (area.width - req.width) / 2);
+
+	  if (ABS (old_y - area.y) <= tolerance)
+	    new_y = area.y;
+	  else if (ABS (old_y + old_height - bottom) <= tolerance)
+	    new_y = bottom - req.height;
+	  else if (ABS ((old_y + old_height / 2) -
+			(area.y + area.height / 2)) <= tolerance)
+	    new_y = area.y + MAX (0, (area.height - req.height) / 2);
+
+	  if (new_x != old_x || new_y != old_y)
+	    gtk_window_move (GTK_WINDOW (bar->window), new_x, new_y);
+	}
+    }
 }
 
 static void
@@ -18100,7 +18276,8 @@ paper_top_bar_create (ScreenatorData *data)
 
   /* Line thickness menu. */
   {
-    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width), size);
+    pixbuf = paper_thickness_sample (MAX (1, (guint) data->pen_width),
+				     size, data->paper_toolbar_vertical);
     menu = paper_top_bar_build_thickness_menu (data);
     button = paper_top_bar_menu_button (data, pixbuf, "Thickness", menu);
     if (pixbuf)

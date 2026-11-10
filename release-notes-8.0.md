@@ -74,8 +74,8 @@ Scope: Linux application (Screenator 8.0)
 - The Delete Page button becomes sensitive immediately after a page is added.
 - A Go to Page action is available in the Paper menu and tool bar for PDF and
   multi-page Plain, Ruled and Graph documents, using goto-page.png.  A
-  current-page indicator sits directly before it, and inactive tool-bar
-  buttons now show their tooltips.
+  current-page indicator sits directly before it, uses the same square size
+  as the other icons, and inactive tool-bar buttons now show their tooltips.
 - The tool-bar tooltip is anchored next to the hovered icon, so it stays
   aligned in both horizontal and vertical tool bars.
 - The Timer tool is hidden and disabled in Paper Drawing; it remains available
@@ -146,6 +146,12 @@ Scope: Linux application (Screenator 8.0)
 - Tool bar rows can be reordered by dragging the ☰ handle.
 - Hiding and showing a tool bar item keeps its row in place instead of moving
   it to the end of the list.
+- A 1 pixel border is drawn around the tool bar itself; individual icons have
+  no border or gap between them.
+- The tool bar keeps its screen-edge or centre alignment when mode-specific
+  buttons change its width.
+- The thickness icon uses horizontal lines in a vertical bar and vertical
+  lines in a horizontal bar, so its thickness always expands across the bar.
 - The tool bar can be dragged with the pointer and snaps/clamps to screen edges.
 - Tool bar visibility and icon order are remembered across restarts.
 - Removed the special extra spacing around Switch Mode and Quit; all buttons now
@@ -203,6 +209,10 @@ Tool bar actions added or updated:
   keeps the selected tool.  A further Escape exits the tool, selects the Cursor
   tool and highlights its toolbar icon.  Changing the screen resolution exits
   the current tool and returns to Cursor immediately.
+- Switching between Screen and Paper modes exits the current tool and leaves
+  Cursor selected.
+- Selecting a paper type, resetting a paper, or opening a PDF brings the Paper
+  window to the front above other applications.
 - The startup Hints window is fixed at 700x500 and stays centred instead of
   moving and resizing repeatedly while it opens.
 - Added a Show Hints toolbar button directly after Settings.  Toolbar
@@ -282,7 +292,8 @@ Tool bar actions added or updated:
   - Screenator-plain-YYYYMMDD-HHMMSS.pdf
   - Screenator-ruled-YYYYMMDD-HHMMSS.pdf
   - Screenator-graph-YYYYMMDD-HHMMSS.pdf
-  - Screenator-pdf-YYYYMMDD-HHMMSS.pdf
+  - Screenator-file-YYYYMMDD-HHMMSS.pdf for opened PDF files
+  - A numeric suffix is added if that name already exists.
 - The Save button and Ctrl+S save only the current paper.
 - Only papers changed since their last save are written.
 - A success dialog shows the saved file path or paths.
@@ -310,6 +321,13 @@ Tool bar actions added or updated:
   final page size when rendering completes.
 - Transparent pen and marker strokes are recorded as one continuous vector path,
   preventing darker dots where individual segment caps used to overlap.
+- Pen strokes are recorded with the same on-screen smoothing, including the
+  final short segment, so saved strokes no longer look angular.
+- Using the eraser over empty space no longer rasterizes the page: the vector
+  layer is left untouched when nothing was erased.
+- When the eraser removes ink, the affected drawing stays vector and text stays
+  text; an alpha mask is baked into the vector layer at that point so later
+  drawings are not affected by the old erasure.
 - Saving now preserves the original PDF's vector page content and overlays the
   annotation layer separately.
 

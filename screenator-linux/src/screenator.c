@@ -476,6 +476,53 @@ void paint_context_free (ScreenatorPaintContext *context)
 }
 
 
+/* Screen-to-page translation used by both the vector recording and the
+ * erase mask.  Keeping this in one place makes an eraser bite exactly the
+ * same place in the exported PDF as it does on screen. */
+static void
+paper_page_content_offset (ScreenatorData *data, ScreenatorPaperDocument *doc,
+			   guint index, ScreenatorPaperPage *page,
+			   gint *offset_x, gint *offset_y)
+{
+  gint origin_x, origin_y;
+  gboolean continuous = data->paper_continuous_scroll &&
+			doc->pdf_stack_height > 0;
+
+  if (continuous)
+    {
+      origin_x = page->style == SCREENATOR_PAPER_PDF
+	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      *offset_x = page->view_x - origin_x;
+
+      /* Vector recording uses screen coordinates.  The page top is at
+       * (top - scroll) on screen, so page-local coordinates require the
+       * opposite offset. */
+      *offset_y = doc->pdf_page_tops && index < doc->pdf_page_tops->len
+	? -(g_array_index (doc->pdf_page_tops, gint, index) -
+	    doc->pdf_scroll_y) : 0;
+    }
+  else
+    {
+      origin_x = MAX (0, ((gint) data->width - page->canvas_width) / 2);
+      origin_y = MAX (0, ((gint) data->height - page->canvas_height) / 2);
+      *offset_x = page->view_x - origin_x;
+      *offset_y = page->view_y - origin_y;
+    }
+}
+
+static void
+paper_page_content_transform (ScreenatorData *data,
+			      ScreenatorPaperDocument *doc, guint index,
+			      ScreenatorPaperPage *page, cairo_t *cr)
+{
+  gint offset_x, offset_y;
+
+  paper_page_content_offset (data, doc, index, page, &offset_x, &offset_y);
+  cairo_translate (cr, offset_x, offset_y);
+  cairo_rectangle (cr, 0, 0, page->canvas_width, page->canvas_height);
+  cairo_clip (cr);
+}
+
 /* Context for recording vector annotations on one paper page.  Drawing uses
  * screen coordinates; the context translates them to page coordinates. */
 static cairo_t *
@@ -484,8 +531,6 @@ paper_vector_context (ScreenatorData *data, ScreenatorPaperDocument *doc,
 {
   cairo_rectangle_t extents;
   cairo_t *cr;
-  gint origin_x, origin_y, page_y;
-  gboolean continuous;
 
   if (!data || !doc || !page || !page->vector_valid)
     return NULL;
@@ -533,33 +578,135 @@ paper_vector_context (ScreenatorData *data, ScreenatorPaperDocument *doc,
 	}
     }
 
-  continuous = data->paper_continuous_scroll && doc->pdf_stack_height > 0;
-
-  if (continuous)
-    {
-      origin_x = page->style == SCREENATOR_PAPER_PDF
-	? 0 : MAX (0, ((gint) data->width - page->canvas_width) / 2);
-      origin_y = 0;
-      /* Vector recording uses screen coordinates.  The page top is at
-       * (top - scroll) on screen, so page-local coordinates require the
-       * opposite offset.  Using the positive offset made annotations on every
-       * page after the first move down twice as far in saved PDFs. */
-      page_y = doc->pdf_page_tops && index < doc->pdf_page_tops->len
-	? -(g_array_index (doc->pdf_page_tops, gint, index) -
-	    doc->pdf_scroll_y) : 0;
-    }
-  else
-    {
-      origin_x = MAX (0, ((gint) data->width - page->canvas_width) / 2);
-      origin_y = MAX (0, ((gint) data->height - page->canvas_height) / 2);
-      page_y = page->view_y;
-    }
-
   cr = cairo_create (page->vector);
-  cairo_translate (cr, page->view_x - origin_x, page_y - origin_y);
-  cairo_rectangle (cr, 0, 0, page->canvas_width, page->canvas_height);
-  cairo_clip (cr);
+  paper_page_content_transform (data, doc, index, page, cr);
   return cr;
+}
+
+/* Add a straight eraser path.  The eraser is not smoothed on screen, so the
+ * mask must follow the same polyline. */
+static void
+paper_add_straight_path (cairo_t *cr, GList *points)
+{
+  GList *p;
+  ScreenatorStrokeCoordinate *first;
+
+  if (!cr || !points)
+    return;
+
+  first = points->data;
+  cairo_move_to (cr, first->x, first->y);
+  for (p = points->next; p; p = p->next)
+    {
+      ScreenatorStrokeCoordinate *point = p->data;
+
+      cairo_line_to (cr, point->x, point->y);
+    }
+  if (!points->next)
+    cairo_line_to (cr, first->x + 0.01, first->y + 0.01);
+}
+
+/* Bake an eraser stroke into the page's vector recording.  The drawing stays
+ * vector (and text stays text); only a small alpha mask is attached to the
+ * recording.  Doing this at erase time means later strokes are not affected
+ * by the old erase mask.
+ *
+ * The mask is only created when the path really intersects existing vector
+ * ink.  An eraser stroke over empty space therefore leaves the page entirely
+ * vector, with no mask image in the saved PDF. */
+static void
+paper_bake_erase_mask (ScreenatorData *data, ScreenatorPaperDocument *doc,
+		       guint index, ScreenatorPaperPage *page, GList *points)
+{
+  cairo_rectangle_t extents;
+  cairo_surface_t *mask, *masked;
+  cairo_t *cr;
+  gdouble ink_x, ink_y, ink_width, ink_height;
+  gdouble path_x0, path_y0, path_x1, path_y1;
+  gint offset_x, offset_y, line_width;
+  GList *p;
+  ScreenatorStrokeCoordinate *first;
+
+  if (!data || !doc || !page || !points ||
+      !page->vector || !page->vector_valid)
+    return;
+
+  if (!cairo_recording_surface_get_extents (page->vector, &extents) ||
+      extents.width <= 0 || extents.height <= 0)
+    return;
+
+  cairo_recording_surface_ink_extents (page->vector, &ink_x, &ink_y,
+				       &ink_width, &ink_height);
+  if (ink_width <= 0 || ink_height <= 0)
+    return;
+
+  first = points->data;
+  line_width = MAX (1, first->width);
+  paper_page_content_offset (data, doc, index, page,
+			     &offset_x, &offset_y);
+
+  path_x0 = path_x1 = first->x + offset_x;
+  path_y0 = path_y1 = first->y + offset_y;
+  for (p = points->next; p; p = p->next)
+    {
+      ScreenatorStrokeCoordinate *point = p->data;
+      gdouble x = point->x + offset_x;
+      gdouble y = point->y + offset_y;
+
+      path_x0 = MIN (path_x0, x);
+      path_x1 = MAX (path_x1, x);
+      path_y0 = MIN (path_y0, y);
+      path_y1 = MAX (path_y1, y);
+    }
+
+  path_x0 -= line_width / 2.0;
+  path_y0 -= line_width / 2.0;
+  path_x1 += line_width / 2.0;
+  path_y1 += line_width / 2.0;
+
+  if (path_x1 < ink_x || path_y1 < ink_y ||
+      path_x0 > ink_x + ink_width || path_y0 > ink_y + ink_height)
+    return;
+
+  mask = cairo_image_surface_create (CAIRO_FORMAT_A8,
+				     (gint) ceil (extents.width),
+				     (gint) ceil (extents.height));
+  if (cairo_surface_status (mask) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (mask);
+      return;
+    }
+
+  cr = cairo_create (mask);
+  cairo_set_source_rgba (cr, 1, 1, 1, 1);
+  cairo_paint (cr);
+  cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
+  cairo_set_line_width (cr, line_width);
+  cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+  cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
+  paper_page_content_transform (data, doc, index, page, cr);
+  paper_add_straight_path (cr, points);
+  cairo_stroke (cr);
+  cairo_destroy (cr);
+  cairo_surface_flush (mask);
+
+  masked = cairo_recording_surface_create (CAIRO_CONTENT_COLOR_ALPHA, &extents);
+  if (cairo_surface_status (masked) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy (masked);
+      cairo_surface_destroy (mask);
+      return;
+    }
+
+  cr = cairo_create (masked);
+  cairo_set_source_surface (cr, page->vector, 0, 0);
+  cairo_mask_surface (cr, mask, 0, 0);
+  cairo_destroy (cr);
+
+  cairo_surface_destroy (page->vector);
+  page->vector = masked;
+  page->vector_valid = TRUE;
+  cairo_surface_destroy (mask);
 }
 
 static void
@@ -597,17 +744,23 @@ paper_record_stroke (ScreenatorData *data, ScreenatorDeviceData *devdata)
       if (!continuous && i != doc->page)
 	continue;
 
+      /* Erasing never writes a CLEAR operation into the vector recording:
+       * Cairo would turn the whole page into an image.  Instead, bake a
+       * small alpha mask into the recording only when this stroke actually
+       * covered ink.  A miss leaves the vector layer completely untouched. */
+      if (erase)
+	{
+	  if (page->erase_hit)
+	    paper_bake_erase_mask (data, doc, i, page, points);
+	  continue;
+	}
+
       cr = paper_vector_context (data, doc, i, page);
       if (!cr)
 	continue;
 
-      if (erase)
-	cairo_set_operator (cr, CAIRO_OPERATOR_CLEAR);
-      else
-	{
-	  gdk_cairo_set_source_rgba (cr, &color);
-	  cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
-	}
+      gdk_cairo_set_source_rgba (cr, &color);
+      cairo_set_operator (cr, CAIRO_OPERATOR_OVER);
       cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
       cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
       cairo_set_line_width (cr, MAX (1, ((ScreenatorStrokeCoordinate *)
@@ -615,24 +768,61 @@ paper_record_stroke (ScreenatorData *data, ScreenatorDeviceData *devdata)
 
       /* One continuous path keeps a translucent stroke from compositing the
        * round cap of every segment on top of the next segment.  That was
-       * showing as darker dots at the joins in saved PDFs. */
+       * showing as darker dots at the joins in saved PDFs.
+       *
+       * The Pen tool is smoothed on screen with quadratic curves between
+       * consecutive sample midpoints.  Record the same path here, including
+       * the short final segment drawn when the button is released, so the PDF
+       * matches the screen instead of using a visibly angular polyline. */
       {
 	ScreenatorStrokeCoordinate *first = points->data;
+	ScreenatorStrokeCoordinate *previous = first;
 	gboolean single = (points->next == NULL);
+	gboolean smooth = context && context->type == SCREENATOR_PEN;
 
 	cairo_move_to (cr, first->x, first->y);
-	for (p = points->next; p; p = p->next)
+	if (smooth)
 	  {
-	    ScreenatorStrokeCoordinate *point = p->data;
+	    for (p = points->next; p; p = p->next)
+	      {
+		ScreenatorStrokeCoordinate *point = p->data;
+		gdouble midx = (previous->x + point->x) / 2.0;
+		gdouble midy = (previous->y + point->y) / 2.0;
 
-	    cairo_line_to (cr, point->x, point->y);
+		cairo_curve_to (cr, point->x, point->y,
+				point->x, point->y, midx, midy);
+		previous = point;
+	      }
+
+	    if (single)
+	      cairo_line_to (cr, first->x + 0.01, first->y + 0.01);
+	    else
+	      cairo_line_to (cr, previous->x, previous->y);
 	  }
-	if (single)
-	  cairo_line_to (cr, first->x + 0.01, first->y + 0.01);
+	else
+	  {
+	    for (p = points->next; p; p = p->next)
+	      {
+		ScreenatorStrokeCoordinate *point = p->data;
+
+		cairo_line_to (cr, point->x, point->y);
+	      }
+	    if (single)
+	      cairo_line_to (cr, first->x + 0.01, first->y + 0.01);
+	  }
 	cairo_stroke (cr);
       }
 
       cairo_destroy (cr);
+    }
+
+  /* The hit flags belong to this stroke only. */
+  for (i = 0; i < doc->pages->len; i++)
+    {
+      ScreenatorPaperPage *page =
+	&g_array_index (doc->pages, ScreenatorPaperPage, i);
+
+      page->erase_hit = FALSE;
     }
 
   g_list_free (points);
@@ -1049,6 +1239,67 @@ gboolean
 screenator_has_annotations (cairo_surface_t *surface)
 {
   return surface_has_annotations (surface);
+}
+
+/* TRUE if an image surface has any non-transparent pixel inside the given
+ * rectangle.  The eraser uses this before clearing a segment so an eraser
+ * stroke over empty space does not touch the vector export layer. */
+gboolean
+screenator_surface_has_ink_in_rect (cairo_surface_t *surface,
+				    gint x, gint y,
+				    gint width, gint height)
+{
+  cairo_format_t format;
+  gint surface_width, surface_height, stride;
+  gint x0, y0, x1, y1, px, py;
+  guchar *pixels;
+
+  if (!surface ||
+      cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS ||
+      cairo_surface_get_type (surface) != CAIRO_SURFACE_TYPE_IMAGE)
+    return FALSE;
+
+  format = cairo_image_surface_get_format (surface);
+  if (format != CAIRO_FORMAT_ARGB32 && format != CAIRO_FORMAT_A8)
+    return FALSE;
+
+  surface_width = cairo_image_surface_get_width (surface);
+  surface_height = cairo_image_surface_get_height (surface);
+  stride = cairo_image_surface_get_stride (surface);
+
+  x0 = MAX (0, x);
+  y0 = MAX (0, y);
+  x1 = MIN (surface_width, x + MAX (0, width));
+  y1 = MIN (surface_height, y + MAX (0, height));
+  if (x1 <= x0 || y1 <= y0)
+    return FALSE;
+
+  cairo_surface_flush (surface);
+  pixels = cairo_image_surface_get_data (surface);
+  if (!pixels)
+    return FALSE;
+
+  for (py = y0; py < y1; py++)
+    {
+      if (format == CAIRO_FORMAT_A8)
+	{
+	  guchar *row = pixels + py * stride;
+
+	  for (px = x0; px < x1; px++)
+	    if (row[px] != 0)
+	      return TRUE;
+	}
+      else
+	{
+	  guint32 *row = (guint32 *) (pixels + py * stride);
+
+	  for (px = x0; px < x1; px++)
+	    if ((row[px] >> 24) != 0)
+	      return TRUE;
+	}
+    }
+
+  return FALSE;
 }
 
 static void
