@@ -69,9 +69,6 @@ config_migrate_legacy_files (const gchar *config_dir)
     "screenator.cfg",
     "screenator-annotations.png"
   };
-  gchar *old_hints_dir;
-  gchar *old_hints;
-  gchar *new_hints;
   guint i;
 
   if (migrated)
@@ -88,15 +85,6 @@ config_migrate_legacy_files (const gchar *config_dir)
       g_free (old_path);
       g_free (new_path);
     }
-
-  old_hints_dir = g_build_filename (g_get_user_config_dir (), "screenator",
-				    NULL);
-  old_hints = g_build_filename (old_hints_dir, "hints.html", NULL);
-  new_hints = g_build_filename (config_dir, "hints.html", NULL);
-  config_move_legacy_file (old_hints, new_hints);
-  g_free (old_hints_dir);
-  g_free (old_hints);
-  g_free (new_hints);
 }
 
 static void

@@ -83,6 +83,8 @@ static gboolean get_are_some_grabbed(ScreenatorData *data)
 }
 
 static guint paper_shortcut_keycode (guint keyval);
+static guint shortcut_fallback_keycode (guint keyval);
+static gboolean shortcut_event_matches_key (GdkEventKey *event, guint keyval);
 static void grab_paper_key (ScreenatorData *data, guint keycode,
 			    guint modifier, gboolean grab);
 static void grab_escape_shortcut (ScreenatorData *data, gboolean grab);
@@ -503,28 +505,7 @@ screenator_resolve_shortcuts (ScreenatorData *data)
       shortcut->modifier = modifier;
 
       if (keyval && keymap)
-	{
-	  GdkKeymapKey *keys = NULL;
-	  gint n_keys = 0;
-
-	  if (gdk_keymap_get_entries_for_keyval (keymap, keyval,
-						 &keys, &n_keys))
-	    {
-	      gint k;
-
-	      for (k = 0; k < n_keys; k++)
-		if (keys[k].level == 0)
-		  {
-		    shortcut->keycode = keys[k].keycode;
-		    break;
-		  }
-
-	      if (!shortcut->keycode && n_keys > 0)
-		shortcut->keycode = keys[0].keycode;
-
-	      g_free (keys);
-	    }
-	}
+	shortcut->keycode = paper_shortcut_keycode (keyval);
     }
 }
 
@@ -575,7 +556,73 @@ paper_shortcut_keycode (guint keyval)
     keycode = keys[0].keycode;
 
   g_free (keys);
+
+  if (!keycode)
+    keycode = shortcut_fallback_keycode (keyval);
+
   return keycode;
+}
+
+/* Physical X11/evdev keycodes for the Latin keys.  Arabic and some other
+ * layouts do not expose Latin keysyms at all, so get_entries_for_keyval()
+ * cannot resolve Ctrl+D, Ctrl+W and similar shortcuts there.  Evdev keycodes
+ * are layout independent and are the same physical keys used by the layout.
+ * The fallback is only used when the keymap lookup fails. */
+static guint
+shortcut_fallback_keycode (guint keyval)
+{
+  guint key = gdk_keyval_to_lower (keyval);
+
+  /* Number row. */
+  if (key >= GDK_KEY_1 && key <= GDK_KEY_9)
+    return 10 + (key - GDK_KEY_1);
+  if (key == GDK_KEY_0)
+    return 19;
+
+  /* Top letter row. */
+  if (key >= GDK_KEY_q && key <= GDK_KEY_p)
+    return 24 + (key - GDK_KEY_q);
+
+  /* Home letter row. */
+  if (key >= GDK_KEY_a && key <= GDK_KEY_l)
+    return 38 + (key - GDK_KEY_a);
+
+  /* Bottom letter row. */
+  if (key >= GDK_KEY_z && key <= GDK_KEY_m)
+    return 52 + (key - GDK_KEY_z);
+
+  switch (key)
+    {
+    case GDK_KEY_minus:      return 20;
+    case GDK_KEY_equal:      return 21;
+    case GDK_KEY_bracketleft: return 34;
+    case GDK_KEY_bracketright: return 35;
+    case GDK_KEY_backslash:  return 51;
+    case GDK_KEY_semicolon:  return 47;
+    case GDK_KEY_apostrophe: return 48;
+    case GDK_KEY_grave:      return 49;
+    case GDK_KEY_comma:      return 59;
+    case GDK_KEY_period:     return 60;
+    case GDK_KEY_slash:      return 61;
+    case GDK_KEY_space:      return 65;
+    default:
+      return 0;
+    }
+}
+
+static gboolean
+shortcut_event_matches_key (GdkEventKey *event, guint keyval)
+{
+  guint keycode;
+
+  if (!event)
+    return FALSE;
+
+  keycode = paper_shortcut_keycode (keyval);
+  if (keycode)
+    return event->hardware_keycode == keycode;
+
+  return event->keyval == keyval;
 }
 
 /* Experimental fallback for the case where another application holds the
@@ -1519,7 +1566,7 @@ gint snoop_key_press(GtkWidget   *grab_widget,
       /* Ctrl+W switches between fullscreen and Window mode. */
       if ((event->state & GDK_CONTROL_MASK) != 0 &&
 	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
-	  event->keyval == GDK_KEY_w)
+	  shortcut_event_matches_key (event, GDK_KEY_w))
 	{
 	  screenator_toggle_paper_window_fullscreen (data);
 	  return TRUE;
@@ -1529,7 +1576,7 @@ gint snoop_key_press(GtkWidget   *grab_widget,
        * Window mode. */
       if ((event->state & GDK_CONTROL_MASK) != 0 &&
 	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
-	  event->keyval == GDK_KEY_d)
+	  shortcut_event_matches_key (event, GDK_KEY_d))
 	{
 	  screenator_toggle_paper_panel (data);
 	  return TRUE;

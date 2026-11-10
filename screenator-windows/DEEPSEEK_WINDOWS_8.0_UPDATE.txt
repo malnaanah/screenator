@@ -97,8 +97,8 @@ implementation order.
 PART 2 - WORK ITEMS WITH A REAL WINDOWS EQUIVALENT
 ==================================================
 
-WORK ITEM 1 - HINTS DIALOG: EDITABLE HTML, CSS COLOURS, SIZE, ABOUT
--------------------------------------------------------------------
+WORK ITEM 1 - BUNDLED HTML HINTS, CSS COLOURS, SIZE, ABOUT
+------------------------------------------------------------
 
 Current Windows files to inspect:
 - src/ui.c: hints_rtf(), hints_proc(), ui_show_hints(), CMD_SHOW_HINTS,
@@ -112,20 +112,11 @@ existing RichEdit/RTF presentation.  Do not add a browser or WebView.
 
 Required behaviour:
 
-1. Add an editable hints file:
-   - bundled file: assets/hints.html;
-   - user override: %APPDATA%\Screenator\hints.html;
-   - environment override: SCREENATOR_HINTS_FILE;
-   - precedence: SCREENATOR_HINTS_FILE, then user file, then bundled file;
-   - load the file fresh every time the hints dialog opens.
+1. Load the hints from the bundled file `assets/hints.html`.  There is no
+   per-user override and no SCREENATOR_HINTS_FILE environment override.
+   Load the file fresh every time the hints dialog opens.
 
-2. On first use, if the user file does not exist, copy the bundled or
-   installed hints into the user path.  From then on the user file is the
-   canonical editable copy.
-
-3. Show the loaded user path in a small footer inside the hints dialog.
-
-4. Supported HTML subset:
+2. Supported HTML subset:
    h1, h2, h3, p, ul, ol, li, br, b, strong, i, em, u, tt, code, a, span,
    font.
 
@@ -138,35 +129,34 @@ Required behaviour:
          span { color: #0000aa; }
    - inline colour wins over the stylesheet.
 
-5. Hand-edited files may be malformed.  The converter must:
+3. A malformed bundled file must not blank the hints window:
    - ignore an extra closing tag;
    - keep the result valid when tags are crossed;
    - auto-close any tag left open;
-   - never leave the whole hints window blank because of one typo;
-   - fall back to a built-in safe text if the file is missing or unreadable,
-     and show the expected paths.
+   - fall back to built-in safe text if the file is missing or unreadable.
 
-6. Make the hints window exactly 700x500 in the primary monitor work area.
+4. Make the hints window exactly 700x500 in the primary monitor work area.
    Centre it once when it opens.  Do not repeatedly resize or recentre it.
 
-7. Add a native caption/title bar ("Screenator Hints"), a close button and a
+5. Add a native caption/title bar ("Screenator Hints"), a close button and a
    visible border.  Keep the existing "Never show hints again" checkbox.
 
-8. Add an About button immediately before Close.  It must open the normal
+6. Add an About button immediately before Close.  It must open the normal
    About dialog and return to the hints dialog.
 
-9. Keep Show Hints available from the tray menu and add it to the quick menu
+7. Keep Show Hints available from the tray menu and add it to the quick menu
    after Settings if the quick menu has a Settings entry.
 
-10. Update the hints text to Linux 8.0 wording:
-    - right click / stylus Button 2 accepts text like Enter;
-    - F4 takes a screenshot in both Screen and Paper modes;
-    - selecting a Paper tool brings the Paper window to the front;
-    - headings and spans support colours.
+8. Update the hints text to Linux 8.0 wording:
+   - right click / stylus Button 2 accepts text like Enter;
+   - F4 takes a screenshot in both Screen and Paper modes;
+   - selecting a Paper tool brings the Paper window to the front;
+   - the stylus first side button temporarily erases unless handles are active;
+   - headings and spans support colours.
 
 Acceptance checks:
-- edit the user file and reopen hints;
-- test a file with an unmatched tag;
+- verify the bundled hints render on every open;
+- test a malformed copy without creating a user override;
 - check the exact 700x500 size and one-time centring;
 - open About and return;
 - package includes assets/hints.html and the hint icon;
@@ -252,6 +242,15 @@ Required behaviour:
    - focus it;
    - keep the toolbar and floating controls above it.
 
+5b. Remove the Screen-mode right-click popup menus for colour, thickness,
+    marker opacity and similar settings.  A short right click only performs
+    Escape/closes handles.
+
+5c. In Screen mode, the stylus first side button and the middle mouse button
+    activate the temporary eraser on a normal press, with no long press.
+    When a text or shape still shows its handles, the stylus first side button
+    changes its colour instead, exactly as in Paper mode.
+
 6. When switching between Screen and Paper modes:
    - commit any text or shape still showing handles;
    - exit the current tool;
@@ -259,8 +258,11 @@ Required behaviour:
    - do not reactivate the tool that was used before the switch;
    - the icon and the working tool must agree.
 
-   Selecting a paper type, resetting a paper, or opening a PDF must also bring
-   the Paper window to the front above other applications.
+   Switching from one paper type to another, or opening another PDF while
+   already in Paper mode, must keep the active tool instead of selecting
+   Cursor.  Resetting a paper still exits to Cursor.  Paper type changes and
+   PDF opens must bring the Paper window to the front above other
+   applications.
 
 7. On WM_DISPLAYCHANGE, DPI change, monitor change or equivalent:
    - exit the current tool;
@@ -282,6 +284,10 @@ Required behaviour:
     - the cursor must follow the actually active tool;
     - the eraser cursor must scale correctly in Window mode;
     - no stale tool cursor after resolution, DPI, mode or document changes.
+
+11. Ctrl/Alt letter shortcuts must work on non-Latin layouts such as Arabic.
+    Match physical key positions or Windows virtual-key codes, not the character
+    produced by the active layout. This includes Ctrl+D and Ctrl+W.
 
 Acceptance checks:
 - text/arrow/line/spline/polygon/triangle/frame handles;
@@ -427,6 +433,7 @@ Inspect the undo implementation in src/tools.c and annotation save in
 src/main.c.
 
 Linux 8.0 changed these areas:
+- undo depth increased to 40 steps in every mode;
 - vector PDF export;
 - page undo/redo;
 - paint-bucket vector preservation;
@@ -644,7 +651,7 @@ Legend:
 
 Linux 8.0 change                                      Windows action
 ----------------------------------------------------  ---------------------
-Editable HTML hints with CSS colours                  APPLY
+Bundled HTML hints with CSS colours                   APPLY
 Hints 700x500, centred once, title bar/border         APPLY
 About button in hints before Close                    APPLY
 Hints user file, env override and path footer         APPLY
@@ -762,11 +769,10 @@ C. Menus, icons and dialogs
 - Actions contains Switch Mode, Undo, Redo, Clear Screen, Toggle Visibility,
   Screenshot, Show toolbar, Show Floating Icon and Show Hints.
 - Screenshot in Actions using screenshot.png.
-- Editable HTML hints from data/hints.html.
-- User hints override under the config directory.
-- SCREENATOR_HINTS_FILE environment override.
+- Bundled HTML hints loaded from the installed file on every open.
+- No user hints override and no SCREENATOR_HINTS_FILE selection.
 - All dialogs have a title bar, close button and visible border.
-- All configuration, annotations, user tool config and hints override live in
+- All configuration, annotations and user tool config live in
   ~/.config/Screenator; old flat files are migrated.
 - F4 screenshot in Screen and Paper modes.
 - First Escape/right click closes handles and keeps the tool.
@@ -819,8 +825,16 @@ E. Timer, cursor and input
 - Startup has no drawing tool; Cursor is active even if a tool was selected on
   exit.
 - Normal pointer no longer appears while a tool is active.
+- Screen mode has no right-click colour/thickness/marker popup menu.
+- Right click only acts as Escape/closes handles.
 - Right click/stylus side button 2 acts as Escape while typing or while handles
   are uncommitted.
+- Stylus first side button and middle mouse activate the temporary eraser on a
+  normal press, with no long press.
+- The stylus first side button changes colour instead while handles are active.
+- Switching paper type or opening another PDF while in Paper mode keeps the
+  active tool; resetting a paper still selects Cursor.
+- Undo depth is 40 steps in every mode.
 - After commit, the same button becomes the temporary eraser and keeps the
   selected tool.
 - While typing: wheel and stylus side button 1 change text colour.

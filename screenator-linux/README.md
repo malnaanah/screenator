@@ -43,10 +43,9 @@ and you can keep using your applications while it is visible.
   Opacity** menu offers 10% to 90%.
 - Marker draws a translucent highlighter stroke with a fixed 32 px width,
   using the current line colour. Its opacity is 40% by default and is
-  independent of the global pen opacity. Long right click, or a long press of
-  the stylus second side button, opens the **Marker Opacity** menu with 10%,
-  20%, 30%, 40%, 50%, 60%, 70%, 80% and 90%; the choice is remembered across
-  restarts. Selecting the Marker switches the line colour to yellow; leaving
+  independent of the global pen opacity. The **Marker Opacity** menu with 10%,
+  20%, 30%, 40%, 50%, 60%, 70%, 80% and 90% is available from the app menu and
+  tool bar; the choice is remembered across restarts. Selecting the Marker switches the line colour to yellow; leaving
   the Marker or exiting painting restores the colour that was active before.
   The mouse wheel or the stylus first side button changes its colour.
 - **Timer** (F12) is available in Screen Annotation mode only. It releases the
@@ -60,15 +59,11 @@ and you can keep using your applications while it is visible.
   the frozen background.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
-- While painting mode is active, the mouse wheel changes the setting selected
-  in the Scroll Mode menu: **Color** steps the line colours (including the
-  custom colour), or the shape fill colours over the Paint Bucket; **Thickness**
-  steps through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels. With the Eraser tool
-  selected, the wheel changes the eraser size instead. Long-press the right
-  mouse button to choose Color or Thickness; a short right click finishes the
-  current shape or exits painting like Escape. The change is the same as
-  picking it from the menu, so it is kept when another tool is selected and is
-  shown in the settings indicator and the menus.
+- While painting mode is active, the mouse wheel steps the line colours,
+  including the custom colour, or the shape fill colours over the Paint Bucket.
+  With the Eraser tool selected, it changes the eraser size instead. There is
+  no long-right-click menu; a right click finishes the current shape or exits
+  painting like Escape.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the
@@ -209,9 +204,10 @@ and you can keep using your applications while it is visible.
   first. Selecting a paper type, or opening a PDF, switches to
   **Paper** mode automatically and brings the Paper window to the front.
   Switching between **Screen** and **Paper** always exits the current tool and
-  leaves **Cursor** selected. Every type keeps its own pages, drawings and
+  leaves **Cursor** selected. The same applies when selecting a paper type,
+  resetting a paper or opening a PDF. Every type keeps its own pages, drawings and
   loaded PDF while another type is shown, so switching back restores them
-  without a save prompt. The selected paper type and PDF file are remembered
+  without a save prompt. Switching paper types keeps the active tool. The selected paper type and PDF file are remembered
   across restarts, and each PDF file remembers the page it was last closed on,
   both when reopened from Screenator and when opened from the desktop. Paper
   saves write a PDF and show a progress overlay until the file is complete.
@@ -304,23 +300,17 @@ and you can keep using your applications while it is visible.
   Screenator always starts on the normal desktop; unsaved paper pages are not
   restored.
 - A single, colourful **Hints** dialog appears when Screenator starts. It is a
-  750x550 scrollable column that summarises the common mouse and stylus
+  700x500 scrollable column that summarises the common mouse and stylus
   controls plus Shape Editing tips, the global **F9** shortcut and the Screen
   and Paper mode shortcuts in one place instead of repeating them for
-  every tool, and it emphasises that a long right click — or a long press of
-  the stylus second side button —
-  opens the **Scroll Mode** menu to choose **Color** or **Thickness** for
-  scrolling. A "Never show hints again" option beside the Close button is
+  every tool. A "Never show hints again" option beside the Close button is
   remembered across restarts.
   **Show Hints** in the menu opens the dialog again, and Reset app settings
-  and drawings keeps the choice. The hints text is loaded from an HTML file
-  each time the dialog opens. Copy `/usr/share/screenator/hints.html` to
-  `~/.config/Screenator/hints.html` to customise it, or set
-  `SCREENATOR_HINTS_FILE` to another HTML file. Headings, paragraphs, lists,
-  bold/italic/underline text, links and coloured spans are supported.
-  Simple `<style>` rules such as `h2 { color: #008800; }` and
-  `span { color: #0000aa; }` also work, and the hints window shows the file
-  path at the bottom.
+  and drawings keeps the choice. The hints text is loaded from the installed
+  HTML file each time the dialog opens; it is not edited after installation.
+  Headings, paragraphs, lists, bold/italic/underline text, links and coloured
+  spans are supported. Simple `<style>` rules such as
+  `h2 { color: #008800; }` and `span { color: #0000aa; }` also work.
 - Pen, marker, font, eraser, shape and **Paper** mode settings are saved in
   `~/.config/Screenator/screenator.ini` and restored on the next start, together with the
   floating icon and settings indicator visibility, the selected paper type,
@@ -343,24 +333,21 @@ and you can keep using your applications while it is visible.
   Num Lock on. `Esc` first finishes the current shape or closes its handles
   and keeps the selected tool. Press it again to exit the tool and select the
   **Cursor** tool, so its icon becomes active. Drawing undo is used first
-  while drawing history exists.
+  while drawing history exists. Undo history keeps 40 steps in every mode.
 - Stylus: **IMPORTANT:** In your stylus configuration, set button 1 (near the
   tip) to **Middle Click** and button 2 to **Right Click**. The tip draws like
   the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
-  first side button has two short-press settings, chosen in the stylus menu:
-  **Color** steps the line colour (or the fill colour over the Paint Bucket)
-  and **Thickness** steps through the line thicknesses. A long press of the
-  first side button activates the eraser while it is held, even when the pen
-  is hovering above the tablet. The second side button acts like Escape/right
-  click on a short click, finishing the shape being edited and keeping the tool
-  active, or leaving painting mode when no shape is being edited. A long press
-  opens the **Button 1 Mode** menu with Color and Thickness. In **Paper
-  Drawing** the buttons change roles: hold side button 1 or the middle mouse
-  button to pan, and hold side button 2 or the right mouse button to erase.
-  No long press is needed; releasing the right button or side button 2 brings
-  the previous tool back. The mouse wheel scrolls the pages. The hints dialog
-  covers the
+  first side button and the middle mouse button activate the temporary eraser
+  on a normal press, with no long press. While a text or shape still shows its
+  handles, the first side button changes its colour instead. The second side
+  button acts like Escape/right click, finishing the shape being edited and
+  keeping the tool active, or leaving painting mode when no shape is being
+  edited. There is no side-button popup menu. In **Paper Drawing** the buttons
+  change roles: hold side button 1 or the middle mouse button to pan, and hold
+  side button 2 or the right mouse button to erase. No long press is needed;
+  releasing the right button or side button 2 brings the previous tool back.
+  The mouse wheel scrolls the pages. The hints dialog covers the
   stylus controls at startup and can be reopened with **Show Hints**.
 
 ## Build

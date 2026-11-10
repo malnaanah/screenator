@@ -105,6 +105,7 @@ static void set_paper_pan_cursor (ScreenatorData *data);
 static void restore_paper_cursor (ScreenatorData *data);
 static void paper_update_hover_cursor (ScreenatorData *data);
 static void paper_refresh_active_cursor (ScreenatorData *data);
+static void paper_reactivate_selected_tool (ScreenatorData *data);
 static void screenator_activate_cursor_state (ScreenatorData *data);
 static void paper_refresh_controls_hover (ScreenatorData *data);
 static void paper_controls_attach_hover (ScreenatorData *data,
@@ -538,15 +539,6 @@ static void apply_scroll_step (ScreenatorData *data, gboolean down,
 static gboolean editable_handles_active (ScreenatorData *data);
 static void apply_stylus_step (ScreenatorData *data, gboolean down);
 static void paper_cycle_setting (ScreenatorData *data, gboolean down);
-static void show_stylus_menu (ScreenatorData *data,
-			      ScreenatorDeviceData *devdata,
-			      gint x, gint y);
-static void show_wheel_menu (ScreenatorData *data,
-			     ScreenatorDeviceData *devdata,
-			     gint x, gint y);
-static void show_marker_menu (ScreenatorData *data,
-			      ScreenatorDeviceData *devdata,
-			      gint x, gint y);
 static void show_hints_dialog (ScreenatorData *data, gboolean startup);
 static void on_show_hints (GtkMenuItem *menuitem, gpointer user_data);
 static void on_action_screenshot (GtkMenuItem *menuitem, gpointer user_data);
@@ -4887,468 +4879,6 @@ event_source_is_stylus (const GdkEvent *event)
 	 device_name_looks_like_stylus (device);
 }
 
-typedef struct
-{
-  ScreenatorData       *data;
-  ScreenatorDeviceData *devdata;
-  gboolean              was_grabbed;
-} StylusMenu;
-
-static void
-stylus_menu_color (GtkMenuItem *item, gpointer user_data)
-{
-  ((StylusMenu *) user_data)->data->stylus_mode =
-    SCREENATOR_STYLUS_COLOR;
-}
-
-static void
-stylus_menu_thickness (GtkMenuItem *item, gpointer user_data)
-{
-  ((StylusMenu *) user_data)->data->stylus_mode =
-    SCREENATOR_STYLUS_THICKNESS;
-}
-
-/* A bold, non-selectable heading for a section of the stylus menu. */
-static GtkWidget *
-stylus_menu_heading (const gchar *text)
-{
-  GtkWidget *item = gtk_menu_item_new_with_label (text);
-  GtkWidget *label = gtk_bin_get_child (GTK_BIN (item));
-  gchar *markup = g_markup_printf_escaped ("<b>%s</b>", text);
-
-  if (label)
-    gtk_label_set_markup (GTK_LABEL (label), markup);
-  g_free (markup);
-  gtk_widget_set_sensitive (item, FALSE);
-  return item;
-}
-
-static void
-stylus_menu_done (GtkMenuShell *menu, gpointer user_data)
-{
-  StylusMenu *ctx = user_data;
-
-  if (ctx->data->stylus_menu == GTK_WIDGET (menu))
-    ctx->data->stylus_menu = NULL;
-
-  if (ctx->devdata)
-    ctx->devdata->menu_button_down = FALSE;
-
-  /* The menu only selects a Button 1 Mode, so painting always resumes. */
-  if (ctx->was_grabbed)
-    acquire_grab (ctx->data, NULL);
-
-  g_free (ctx);
-}
-
-/* Show the stylus side-button menu at the pen position.  The painting grab is
- * released while the menu is open so the menu can take the pointer and
- * keyboard, and it is taken back when the menu closes. */
-static void
-show_stylus_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
-		  gint x, gint y)
-{
-  StylusMenu *ctx;
-  GtkWidget *menu, *mode_heading, *color, *thickness;
-  GdkWindow *root;
-  GdkRectangle rect;
-  gboolean was_grabbed;
-
-  if (data->stylus_menu)
-    return;
-
-  /* A side-button action may still be in progress when the menu opens. */
-  devdata->stylus_eraser_active = FALSE;
-  devdata->menu_button_down = FALSE;
-  devdata->stylus_side_button_down = FALSE;
-
-  if (data->stylus_eraser_hold_id)
-    {
-      g_source_remove (data->stylus_eraser_hold_id);
-      data->stylus_eraser_hold_id = 0;
-      data->stylus_eraser_hold_devdata = NULL;
-    }
-
-  was_grabbed = screenator_any_grabbed (data);
-  if (was_grabbed)
-    release_grab (data, NULL);
-
-  ctx = g_new0 (StylusMenu, 1);
-  ctx->data = data;
-  ctx->devdata = devdata;
-  ctx->was_grabbed = was_grabbed;
-
-  menu = gtk_menu_new ();
-  mode_heading = stylus_menu_heading ("Button 1 Mode");
-  color = gtk_radio_menu_item_new_with_label (NULL, "Color");
-  thickness = gtk_radio_menu_item_new_with_label_from_widget (
-    GTK_RADIO_MENU_ITEM (color), "Thickness");
-
-  if (data->stylus_mode == SCREENATOR_STYLUS_THICKNESS)
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (thickness), TRUE);
-  else
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
-
-  g_signal_connect (color, "activate",
-		    G_CALLBACK (stylus_menu_color), ctx);
-  g_signal_connect (thickness, "activate",
-		    G_CALLBACK (stylus_menu_thickness), ctx);
-
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), mode_heading);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), color);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), thickness);
-  gtk_widget_show_all (menu);
-
-  data->stylus_menu = menu;
-  g_signal_connect (menu, "selection-done",
-		    G_CALLBACK (stylus_menu_done), ctx);
-
-  root = gdk_screen_get_root_window (gdk_screen_get_default ());
-  rect.x = x;
-  rect.y = y;
-  rect.width = 1;
-  rect.height = 1;
-  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
-			  GDK_GRAVITY_NORTH_WEST,
-			  GDK_GRAVITY_NORTH_WEST, NULL);
-
-  /* GTK's menu popup can silently fail when another application holds the
-   * keyboard grab.  Recover instead of leaving painting mode released. */
-  if (!gtk_widget_get_visible (menu))
-    {
-      data->stylus_menu = NULL;
-      g_signal_handlers_disconnect_by_data (menu, ctx);
-      gtk_widget_destroy (menu);
-      if (was_grabbed)
-	acquire_grab (data, NULL);
-      g_free (ctx);
-    }
-}
-
-typedef struct
-{
-  ScreenatorData       *data;
-  ScreenatorDeviceData *devdata;
-  gboolean              was_grabbed;
-} WheelMenu;
-
-static void
-wheel_menu_color (GtkMenuItem *item, gpointer user_data)
-{
-  ((WheelMenu *) user_data)->data->wheel_mode = SCREENATOR_WHEEL_COLOR;
-}
-
-static void
-wheel_menu_thickness (GtkMenuItem *item, gpointer user_data)
-{
-  ((WheelMenu *) user_data)->data->wheel_mode =
-    SCREENATOR_WHEEL_THICKNESS;
-}
-
-static void
-wheel_menu_done (GtkMenuShell *menu, gpointer user_data)
-{
-  WheelMenu *ctx = user_data;
-
-  if (ctx->data->wheel_menu == GTK_WIDGET (menu))
-    ctx->data->wheel_menu = NULL;
-
-  if (ctx->devdata)
-    ctx->devdata->menu_button_down = FALSE;
-
-  if (ctx->was_grabbed)
-    acquire_grab (ctx->data, NULL);
-
-  g_free (ctx);
-}
-
-/* Long right-click menu for the mouse: what the wheel changes. */
-static void
-show_wheel_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
-		 gint x, gint y)
-{
-  WheelMenu *ctx;
-  GtkWidget *menu, *heading, *color, *thickness;
-  GdkWindow *root;
-  GdkRectangle rect;
-  gboolean was_grabbed;
-
-  if (data->wheel_menu)
-    return;
-
-  devdata->menu_button_down = FALSE;
-
-  was_grabbed = screenator_any_grabbed (data);
-  if (was_grabbed)
-    release_grab (data, NULL);
-
-  ctx = g_new0 (WheelMenu, 1);
-  ctx->data = data;
-  ctx->devdata = devdata;
-  ctx->was_grabbed = was_grabbed;
-
-  menu = gtk_menu_new ();
-  heading = stylus_menu_heading ("Scroll Mode");
-  color = gtk_radio_menu_item_new_with_label (NULL, "Color");
-  thickness = gtk_radio_menu_item_new_with_label_from_widget (
-    GTK_RADIO_MENU_ITEM (color), "Thickness");
-
-  if (data->wheel_mode == SCREENATOR_WHEEL_THICKNESS)
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (thickness), TRUE);
-  else
-    gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (color), TRUE);
-
-  g_signal_connect (color, "activate",
-		    G_CALLBACK (wheel_menu_color), ctx);
-  g_signal_connect (thickness, "activate",
-		    G_CALLBACK (wheel_menu_thickness), ctx);
-
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), color);
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), thickness);
-  gtk_widget_show_all (menu);
-
-  data->wheel_menu = menu;
-  g_signal_connect (menu, "selection-done",
-		    G_CALLBACK (wheel_menu_done), ctx);
-
-  root = gdk_screen_get_root_window (gdk_screen_get_default ());
-  rect.x = x;
-  rect.y = y;
-  rect.width = 1;
-  rect.height = 1;
-  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
-			  GDK_GRAVITY_NORTH_WEST,
-			  GDK_GRAVITY_NORTH_WEST, NULL);
-
-  if (!gtk_widget_get_visible (menu))
-    {
-      data->wheel_menu = NULL;
-      g_signal_handlers_disconnect_by_data (menu, ctx);
-      gtk_widget_destroy (menu);
-      if (was_grabbed)
-	acquire_grab (data, NULL);
-      g_free (ctx);
-    }
-}
-
-typedef struct
-{
-  ScreenatorData       *data;
-  ScreenatorDeviceData *devdata;
-  gboolean              was_grabbed;
-  gboolean              first_release_ignored;
-} MarkerMenu;
-
-/* The menu opens while the button that opened it is still held.  Swallow that
- * first release so it cannot activate the item under the pointer. */
-static gboolean
-marker_menu_button_release (GtkWidget *widget, GdkEventButton *event,
-			    gpointer user_data)
-{
-  MarkerMenu *ctx = user_data;
-
-  if (ctx->first_release_ignored)
-    return FALSE;
-
-  ctx->first_release_ignored = TRUE;
-  return TRUE;
-}
-
-static void
-marker_menu_opacity (GtkMenuItem *item, gpointer user_data)
-{
-  MarkerMenu *ctx = user_data;
-  guint percent = GPOINTER_TO_UINT (
-    g_object_get_data (G_OBJECT (item), "marker-opacity"));
-
-  ctx->data->marker_opacity = percent / 100.0;
-  ctx->data->marker_color.alpha = ctx->data->marker_opacity;
-  if (ctx->data->default_marker)
-    gdk_cairo_set_source_rgba (ctx->data->default_marker->paint_ctx,
-			       &ctx->data->marker_color);
-
-  write_keyfile (ctx->data);
-}
-
-static void
-marker_menu_done (GtkMenuShell *menu, gpointer user_data)
-{
-  MarkerMenu *ctx = user_data;
-
-  if (ctx->data->marker_menu == GTK_WIDGET (menu))
-    ctx->data->marker_menu = NULL;
-
-  if (ctx->devdata)
-    ctx->devdata->menu_button_down = FALSE;
-
-  if (ctx->was_grabbed)
-    acquire_grab (ctx->data, NULL);
-
-  g_free (ctx);
-}
-
-/* Long right-click menu for the Marker: its own opacity, independent of the
- * global pen opacity. */
-static void
-show_marker_menu (ScreenatorData *data, ScreenatorDeviceData *devdata,
-		  gint x, gint y)
-{
-  static const guint percents[] = { 10, 20, 30, 40, 50, 60, 70, 80, 90 };
-  MarkerMenu *ctx;
-  GtkWidget *menu, *heading, *item, *first = NULL;
-  GtkWidget *items[G_N_ELEMENTS (percents)];
-  GdkWindow *root;
-  GdkRectangle rect;
-  gboolean was_grabbed;
-  guint i;
-
-  if (data->marker_menu)
-    return;
-
-  devdata->menu_button_down = FALSE;
-
-  was_grabbed = screenator_any_grabbed (data);
-  if (was_grabbed)
-    release_grab (data, NULL);
-
-  ctx = g_new0 (MarkerMenu, 1);
-  ctx->data = data;
-  ctx->devdata = devdata;
-  ctx->was_grabbed = was_grabbed;
-
-  menu = gtk_menu_new ();
-  heading = stylus_menu_heading ("Marker Opacity");
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), heading);
-
-  for (i = 0; i < G_N_ELEMENTS (percents); i++)
-    {
-      gchar *label = g_strdup_printf ("%u%%", percents[i]);
-
-      if (!first)
-	{
-	  first = gtk_radio_menu_item_new_with_label (NULL, label);
-	  item = first;
-	}
-      else
-	item = gtk_radio_menu_item_new_with_label_from_widget (
-	  GTK_RADIO_MENU_ITEM (first), label);
-      g_free (label);
-
-      g_object_set_data (G_OBJECT (item), "marker-opacity",
-			 GINT_TO_POINTER ((gint) percents[i]));
-
-      if (fabs (data->marker_opacity - percents[i] / 100.0) < 0.001)
-	gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item), TRUE);
-
-      items[i] = item;
-      gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
-    }
-
-  /* Connect after showing the menu, so any activation during construction or
-   * the initial radio selection cannot change the stored opacity. */
-  gtk_widget_show_all (menu);
-  for (i = 0; i < G_N_ELEMENTS (percents); i++)
-    g_signal_connect (items[i], "activate",
-		      G_CALLBACK (marker_menu_opacity), ctx);
-
-  data->marker_menu = menu;
-  g_signal_connect (menu, "button-release-event",
-		    G_CALLBACK (marker_menu_button_release), ctx);
-  g_signal_connect (menu, "selection-done",
-		    G_CALLBACK (marker_menu_done), ctx);
-
-  root = gdk_screen_get_root_window (gdk_screen_get_default ());
-  rect.x = x;
-  rect.y = y;
-  rect.width = 1;
-  rect.height = 1;
-  gtk_menu_popup_at_rect (GTK_MENU (menu), root, &rect,
-			  GDK_GRAVITY_NORTH_WEST,
-			  GDK_GRAVITY_NORTH_WEST, NULL);
-
-  if (!gtk_widget_get_visible (menu))
-    {
-      data->marker_menu = NULL;
-      g_signal_handlers_disconnect_by_data (menu, ctx);
-      gtk_widget_destroy (menu);
-      if (was_grabbed)
-	acquire_grab (data, NULL);
-      g_free (ctx);
-    }
-}
-
-/* A long press on the second side button opens the menu; a short click on the
- * release performs Escape instead. */
-#define MENU_HOLD_MS 500
-
-static gboolean
-menu_hold_timeout (gpointer user_data)
-{
-  ScreenatorData *data = user_data;
-  ScreenatorDeviceData *devdata = data->menu_hold_devdata;
-
-  data->menu_hold_id = 0;
-  data->menu_hold_devdata = NULL;
-
-  if (devdata)
-    {
-      /* The Marker opens its own opacity menu; the Eraser uses the first
-       * side button for its size and has no menu.  A short click still
-       * performs Escape when it is released. */
-      if (marker_tool_active (data))
-	show_marker_menu (data, devdata,
-			  data->menu_hold_x, data->menu_hold_y);
-      else if (data->menu_hold_is_stylus && eraser_tool_active (data))
-	{
-	  /* No menu for the Eraser tool. */
-	}
-      else if (data->menu_hold_is_stylus)
-	show_stylus_menu (data, devdata,
-			  data->menu_hold_x, data->menu_hold_y);
-      else
-	show_wheel_menu (data, devdata,
-			 data->menu_hold_x, data->menu_hold_y);
-    }
-
-  return G_SOURCE_REMOVE;
-}
-
-/* A long press of the first side button temporarily activates the eraser,
- * even while the pen hovers above the tablet. */
-#define STYLUS_ERASER_HOLD_MS 500
-
-static gboolean
-stylus_eraser_hold_timeout (gpointer user_data)
-{
-  ScreenatorData *data = user_data;
-  ScreenatorDeviceData *devdata = data->stylus_eraser_hold_devdata;
-
-  data->stylus_eraser_hold_id = 0;
-  data->stylus_eraser_hold_devdata = NULL;
-
-  if (!devdata || !devdata->is_grabbed ||
-      !devdata->stylus_side_button_down)
-    return G_SOURCE_REMOVE;
-
-  devdata->stylus_eraser_active = TRUE;
-
-  if (devdata->cur_context != data->default_eraser)
-    {
-      devdata->saved_context = devdata->cur_context;
-      devdata->cur_context = data->default_eraser;
-    }
-
-  set_device_cursor (data, devdata->device, data->default_eraser);
-
-  data->maxwidth = data->default_eraser->width;
-  stroke_begin (data, devdata->device);
-  draw_line (data, devdata->device, devdata->lastx, devdata->lasty,
-	     devdata->lastx, devdata->lasty);
-
-  return G_SOURCE_REMOVE;
-}
-
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
@@ -5505,47 +5035,22 @@ gboolean on_buttonpress (GtkWidget *win,
   if (!devdata->is_grabbed)
     return FALSE;
 
-  /* The right button is a dual-action button: a short click acts like Escape
-   * / right click and a long press opens the mouse wheel menu.  On a stylus
-   * the same applies to the second side button (button 3), which opens the
-   * Button 1 Mode menu instead.  In Paper Drawing the right button is the
-   * temporary eraser instead. */
+  /* In Screen mode the right button only performs Escape.  It no longer
+   * opens a colour, thickness or opacity menu after a long press. */
   if (ev->button == 3 && data->paper == SCREENATOR_PAPER_NONE)
     {
       devdata->menu_button_down = TRUE;
-
-      if (data->menu_hold_id)
-	g_source_remove (data->menu_hold_id);
-
-      data->menu_hold_devdata = devdata;
-      data->menu_hold_is_stylus =
-	event_source_is_stylus ((GdkEvent *) ev);
-      data->menu_hold_x = ev->x_root;
-      data->menu_hold_y = ev->y_root;
-      data->menu_hold_id = g_timeout_add (MENU_HOLD_MS,
-					  menu_hold_timeout,
-					  data);
       return TRUE;
     }
 
-  /* The stylus first side button (button 2): a short press steps through
-   * colors or thicknesses, a long press activates the eraser.  In Paper
-   * Drawing this button pans instead. */
+  /* The stylus first side button changes the colour of a text or shape that
+   * still shows its handles.  Otherwise it falls through to the temporary
+   * eraser below, like the middle mouse button. */
   if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
-      data->paper == SCREENATOR_PAPER_NONE)
+      data->paper == SCREENATOR_PAPER_NONE &&
+      editable_handles_active (data))
     {
-      devdata->stylus_side_button_down = TRUE;
-      devdata->lastx = ev->x;
-      devdata->lasty = ev->y;
-      devdata->motion_time = ev->time;
-
-      if (data->stylus_eraser_hold_id)
-	g_source_remove (data->stylus_eraser_hold_id);
-
-      data->stylus_eraser_hold_devdata = devdata;
-      data->stylus_eraser_hold_id =
-	g_timeout_add (STYLUS_ERASER_HOLD_MS,
-		       stylus_eraser_hold_timeout, data);
+      apply_stylus_step (data, TRUE);
       return TRUE;
     }
 
@@ -5623,6 +5128,11 @@ gboolean on_buttonpress (GtkWidget *win,
       /* Show the eraser cursor (at the selected eraser size) while the
        * middle button erases. */
       set_device_cursor (data, ev->device, data->default_eraser);
+
+      /* A stylus side button can be pressed while the pen is hovering.  Keep
+       * the eraser active for that stroke even when pressure stays at zero. */
+      if (event_source_is_stylus ((GdkEvent *) ev))
+	devdata->stylus_eraser_active = TRUE;
     }
 
   /* Shapes are drawn by dragging.  Only remember the anchor here and show a
@@ -6023,16 +5533,6 @@ gboolean on_motion (GtkWidget *win,
       return TRUE;
     }
 
-  /* While the first side button is waiting for its long press, keep the
-   * pointer position fresh but do not draw. */
-  if (devdata->stylus_side_button_down && !devdata->stylus_eraser_active)
-    {
-      devdata->lastx = ev->x;
-      devdata->lasty = ev->y;
-      devdata->motion_time = ev->time;
-      return TRUE;
-    }
-
   if(data->debug)
       g_printerr("DEBUG: Device '%s': motion to (x,y)=(%.2f : %.2f)\n", gdk_device_get_name(ev->device), ev->x, ev->y);
 
@@ -6348,32 +5848,12 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
-  /* Right button: a short click performs Escape; a long press has opened the
-   * mode menu and consumes its own release.  In Paper Drawing it ends the
-   * temporary eraser stroke instead. */
+  /* The right button performs Escape on release.  In Paper Drawing it ends
+   * the temporary eraser stroke instead. */
   if (ev->button == 3 && data->paper == SCREENATOR_PAPER_NONE)
     {
       devdata->menu_button_down = FALSE;
-
-      if (data->menu_hold_id)
-	{
-	  g_source_remove (data->menu_hold_id);
-	  data->menu_hold_id = 0;
-	  data->menu_hold_devdata = NULL;
-	  screenator_exit_tool (data);
-	}
-      return TRUE;
-    }
-
-  if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
-      data->stylus_eraser_hold_id)
-    {
-      /* Short press: step through the selected colours or thicknesses. */
-      g_source_remove (data->stylus_eraser_hold_id);
-      data->stylus_eraser_hold_id = 0;
-      data->stylus_eraser_hold_devdata = NULL;
-      devdata->stylus_side_button_down = FALSE;
-      apply_stylus_step (data, TRUE);
+      screenator_exit_tool (data);
       return TRUE;
     }
 
@@ -6400,9 +5880,6 @@ gboolean on_buttonrelease (GtkWidget *win,
 	paper_finish_temporary_eraser (data);
       return FALSE;
     }
-
-  if (ev->button == 2)
-    devdata->stylus_side_button_down = FALSE;
 
   if (ev->button == 2 && devdata->stylus_eraser_active)
     devdata->stylus_eraser_active = FALSE;
@@ -9221,6 +8698,7 @@ paper_pdf_prepare_active (ScreenatorData *data, ScreenatorPaperDocument *doc)
   paper_ensure_background (data, doc, index, page);
   paper_load_continuous_view (data, doc);
   paper_top_bar_update_active_tool (data);
+  paper_reactivate_selected_tool (data);
 }
 
 static void
@@ -9326,6 +8804,7 @@ paper_pdf_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
   reset_undo_history (data);
   paper_top_bar_update_active_tool (data);
   paper_repaint (data);
+  paper_reactivate_selected_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -10243,6 +9722,76 @@ paper_refresh_active_cursor (ScreenatorData *data)
   paper_update_hover_cursor (data);
 }
 
+/* A page or PDF switch can leave the toolbar icon selected while the device
+ * context or grab is stale.  Reapply the selected tool before the next event
+ * so the cursor and the actual drawing tool agree. */
+static void
+paper_reactivate_selected_tool (ScreenatorData *data)
+{
+  ScreenatorPaintContext *context;
+  GHashTableIter it;
+  gpointer value;
+
+  if (!data || data->paper == SCREENATOR_PAPER_NONE || data->timer_active ||
+      data->text_editor || data->quick_menu || data->top_dialog ||
+      data->native_dialog_open)
+    return;
+
+  context = data->forced_context;
+  if (!context && data->pen_tool == 0)
+    return;
+
+  if (!context)
+    {
+      switch (data->pen_tool)
+	{
+	case 1:
+	  context = data->default_pen;
+	  break;
+	case 3:
+	  context = data->default_eraser;
+	  break;
+	case 4:
+	  context = data->default_text;
+	  break;
+	case 11:
+	  context = data->default_marker;
+	  break;
+	default:
+	  if (data->pen_tool > 0)
+	    context = data->default_shape;
+	  break;
+	}
+      data->forced_context = context;
+    }
+
+  if (!context)
+    return;
+
+  if (data->pen_tool == 11)
+    screenator_marker_prepare (data);
+
+  if (data->devdatatable)
+    {
+      g_hash_table_iter_init (&it, data->devdatatable);
+      while (g_hash_table_iter_next (&it, NULL, &value))
+	{
+	  ScreenatorDeviceData *devdata = value;
+
+	  devdata->state = 0;
+	  devdata->saved_context = NULL;
+	  devdata->cur_context = context;
+
+	  if (devdata->is_grabbed)
+	    set_device_cursor (data, devdata->device, context);
+	}
+    }
+
+  acquire_grab (data, NULL);
+  paper_refresh_active_cursor (data);
+  paper_top_bar_update_active_tool (data);
+}
+
 /* Recompute the control-window hover state from the real pointer position.
  * Crossing events can be missing after a menu, dialog or toolbar drag. */
 static void
@@ -10978,6 +10527,18 @@ paper_run_native_dialog (ScreenatorData *data, GtkFileChooserNative *dialog)
   return response;
 }
 
+/* Changing, resetting or replacing a paper starts from Cursor.  Commit any
+ * text/shape that is still being edited before the tool is closed. */
+static void
+paper_prepare_document_change (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  text_editor_finish (data);
+  screenator_exit_tool (data);
+}
+
 /* Switch the active paper to another selected type.  The current page is
  * stored first and the new document is loaded into the shared backbuffer. */
 static void
@@ -10988,6 +10549,9 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
 
   if (data->paper == SCREENATOR_PAPER_NONE || data->paper == type)
     return;
+
+  /* Switching paper type keeps the active tool.  Only a Screen <-> Paper
+   * mode change exits to Cursor. */
 
   if (data->paper == SCREENATOR_PAPER_PDF)
     paper_pdf_remember_current (data);
@@ -11048,6 +10612,7 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
   reset_undo_history (data);
   paper_refresh_active_cursor (data);
   paper_repaint (data);
+  paper_reactivate_selected_tool (data);
   paper_bring_to_front (data);
   schedule_tray_menu_refresh (data);
 }
@@ -11092,7 +10657,11 @@ on_paper_window_delete (GtkWidget *widget, GdkEvent *event, gpointer user_data)
   (void) widget;
   (void) event;
 
-  screenator_exit_paper_drawing (data);
+  /* Alt+F4 and the Paper window's close button must quit Screenator, not
+   * merely leave Paper mode.  Ctrl+Q remains the way to return to Screen
+   * mode.  Returning TRUE keeps the window alive if the user cancels the
+   * quit/save dialog. */
+  screenator_request_quit (data);
   return TRUE;
 }
 
@@ -11679,6 +11248,7 @@ paper_load_pdf_file (ScreenatorData *data, const gchar *path)
       return FALSE;
     }
 
+  /* Opening or replacing a PDF keeps the active tool. */
   paper_pdf_remember_current (data);
 
   doc = paper_ensure_document (data, SCREENATOR_PAPER_PDF);
@@ -11746,6 +11316,7 @@ paper_load_pdf_file (ScreenatorData *data, const gchar *path)
     paper_switch_to (data, SCREENATOR_PAPER_PDF);
 
   paper_refresh_active_cursor (data);
+  paper_reactivate_selected_tool (data);
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
@@ -12223,6 +11794,7 @@ paper_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
   paper_load_page (data, page);
   reset_undo_history (data);
   paper_repaint (data);
+  paper_reactivate_selected_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -13143,11 +12715,16 @@ build_general_settings_page (SettingsDialog *sd)
   sd->timer_delay_combo = combo;
   gtk_grid_attach (GTK_GRID (grid), combo, 1, 2, 1, 1);
 
+  label = gtk_label_new ("Text font");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 3, 1, 1);
+
   row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   button = gtk_button_new_with_label ("Change Font...");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (settings_change_font), sd);
   gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
+  gtk_grid_attach (GTK_GRID (grid), row, 1, 3, 1, 1);
 
 
   gtk_box_pack_start (GTK_BOX (box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
@@ -13724,6 +13301,8 @@ paper_reset_document (ScreenatorData *data, ScreenatorPaperType type)
 
   if (!doc || type == SCREENATOR_PAPER_PDF)
     return;
+
+  paper_prepare_document_change (data);
 
   if (data->paper == type)
     {
@@ -19393,35 +18972,16 @@ hints_html_to_markup (const gchar *html)
   return hints_cleanup_markup (out);
 }
 
-/* Prefer a per-user file, then the installed file.  SCREENATOR_HINTS_FILE is
- * useful for testing a copy without installing it. */
+/* Load the hints shipped with the installed application.  Hints are not
+ * edited after installation, so there is no per-user copy. */
 static gchar *
 hints_load_html (void)
 {
-  const gchar *env = g_getenv ("SCREENATOR_HINTS_FILE");
-  const gchar *data_dir;
-  gchar *path;
-  gchar *contents = NULL;
-
-  if (env && *env && g_file_get_contents (env, &contents, NULL, NULL))
-    return contents;
-  g_free (contents);
-  contents = NULL;
-
-  path = screenator_config_path ("hints.html");
-  if (g_file_get_contents (path, &contents, NULL, NULL))
-    {
-      g_free (path);
-      return contents;
-    }
-  g_free (path);
-  g_free (contents);
-  contents = NULL;
-
-  data_dir = icon_data_dir ();
-  path = data_dir
+  const gchar *data_dir = icon_data_dir ();
+  gchar *path = data_dir
     ? g_build_filename (data_dir, "screenator", "hints.html", NULL)
     : g_build_filename ("/usr/share/screenator", "hints.html", NULL);
+  gchar *contents = NULL;
 
   if (!g_file_get_contents (path, &contents, NULL, NULL))
     {
@@ -19429,18 +18989,11 @@ hints_load_html (void)
       contents = NULL;
     }
 
-  /* Make the user copy the canonical editable file.  Once it exists, later
-   * edits there are what the hints window reads. */
-  if (contents && !g_file_test (path, G_FILE_TEST_EXISTS))
-    g_file_set_contents (path, contents, -1, NULL);
-
   g_free (path);
 
   if (!contents)
     contents = g_strdup (
       "<h2 style=\"color:#c0392b\">Hints file not found</h2>"
-      "<p>Edit <b>~/.config/Screenator/hints.html</b> or install "
-      "<b>/usr/share/screenator/hints.html</b>.</p>"
       "<ul>"
       "<li><b>F9</b> shows or hides the floating icon.</li>"
       "<li><b>F8</b> selects the Pen, <b>F6</b> the Arrow and "
@@ -19570,26 +19123,6 @@ show_hints_dialog (ScreenatorData *data, gboolean startup)
 
   gtk_container_add (GTK_CONTAINER (content), scroll);
   gtk_container_add (GTK_CONTAINER (scroll), box);
-
-  {
-    gchar *user_path = screenator_config_path ("hints.html");
-    gchar *escaped = g_markup_escape_text (user_path, -1);
-    gchar *path_markup = g_strdup_printf (
-      "<span size=\"small\" foreground=\"#7f8c8d\">Edit hints: %s</span>",
-      escaped);
-    GtkWidget *path_label = gtk_label_new (NULL);
-
-    gtk_label_set_markup (GTK_LABEL (path_label), path_markup);
-    gtk_label_set_xalign (GTK_LABEL (path_label), 0.0);
-    gtk_widget_set_margin_start (path_label, 14);
-    gtk_widget_set_margin_end (path_label, 14);
-    gtk_widget_set_margin_bottom (path_label, 4);
-    gtk_box_pack_start (GTK_BOX (content), path_label, FALSE, FALSE, 0);
-
-    g_free (user_path);
-    g_free (escaped);
-    g_free (path_markup);
-  }
 
   hints_html = hints_load_html ();
   hints_markup = hints_html_to_markup (hints_html);

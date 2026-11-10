@@ -65,7 +65,6 @@ MSYS2; see `screenator-windows/README.md`.
   `/etc/screenator/screenator.cfg`.
 - `~/.config/Screenator/screenator-annotations.png` — saved Screen-mode
   annotations.
-- `~/.config/Screenator/hints.html` — optional user override for the hints.
 - `%APPDATA%\Screenator\screenator.ini` — Windows settings.
 
 ## License

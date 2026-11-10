@@ -197,13 +197,13 @@ Tool bar actions added or updated:
 - Actions contains Switch Mode, Undo, Redo, Clear Screen, Toggle Visibility,
   Screenshot, Show toolbar, Show Floating Icon and Show Hints.
 - Added Screenshot to the Actions menu using screenshot.png.
-- The Hints text is loaded from data/hints.html, so it can be edited without
-  rebuilding.  A copy in ~/.config/Screenator/hints.html overrides the
-  installed file, and SCREENATOR_HINTS_FILE selects another file.
+- The Hints text is loaded from the installed HTML file each time the dialog
+  opens. It is not edited after installation, so there is no user override or
+  environment-selected hints file.
 - All dialogs now show a title bar with a close button and a visible border.
-- All configuration, saved annotations, user tool configuration and hints
-  override now live in ~/.config/Screenator.  Old ~/.config/screenator.*
-  files are migrated automatically.
+- All configuration, saved annotations and user tool configuration now live in
+  ~/.config/Screenator.  Old ~/.config/screenator.* files are migrated
+  automatically.
 - F4 saves a screenshot in both Screen and Paper modes.
 - The first Escape or right click now closes the current shape/text handles and
   keeps the selected tool.  A further Escape exits the tool, selects the Cursor
@@ -211,8 +211,11 @@ Tool bar actions added or updated:
   the current tool and returns to Cursor immediately.
 - Switching between Screen and Paper modes exits the current tool and leaves
   Cursor selected.
-- Selecting a paper type, resetting a paper, or opening a PDF brings the Paper
-  window to the front above other applications.
+- Switching from one paper type to another, or opening another PDF while
+  already in Paper mode, keeps the active tool and brings the Paper window to
+  the front.  Resetting a paper still exits to Cursor.
+- Changing pages, PDFs or paper types reapplies the selected tool after the
+  switch, so the tool cursor and the actual drawing tool stay in sync.
 - The startup Hints window is fixed at 700x500 and stays centred instead of
   moving and resizing repeatedly while it opens.
 - Added a Show Hints toolbar button directly after Settings.  Toolbar
@@ -236,6 +239,7 @@ Tool bar actions added or updated:
 - Added a new Floating Icon settings tab for icon size and position.
 - Added a new Shortcuts settings tab for editable keyboard shortcuts.
 - Tool bar direction and icon size live in the Toolbar tab.
+- The Text Font control is in the General tab and opens the font chooser.
 - Renamed the old Paper Drawing settings tab to Paper.
 - Shortcuts are persisted in the [Shortcuts] section of screenator.ini and are
   re-grabbed immediately when the dialog closes.
@@ -257,6 +261,9 @@ Tool bar actions added or updated:
 --------------------------
 - Changed the Timer shortcut from F2 to F12.
 - Fixed the F12 Timer shortcut so it works globally.
+- Ctrl/Alt letter shortcuts now work with non-Latin keyboard layouts such as
+  Arabic by matching the physical keycode instead of the active layout
+  character. This includes Ctrl+D and Ctrl+W.
 - The Timer now locks tool selection during the countdown and activates Pen at
   the end.
 - Replaced the Hand tool with the Cursor tool using cursor.png.
@@ -268,10 +275,15 @@ Tool bar actions added or updated:
 - On startup, no drawing tool is active; Cursor is the active tool even if a
   tool was selected when the app last exited.
 - Fixed cases where the normal pointer appeared while a tool was active.
-- Right click or stylus side button 2 acts as Escape while text is being typed
-  or a shape/text still has uncommitted handles.
-- After the object is committed, the same button becomes the temporary eraser
-  and keeps the selected tool.
+- In Screen mode, the right button no longer opens colour, thickness, marker
+  opacity or similar popup menus.  It acts as Escape and closes handles.
+- In Screen mode, the stylus first side button and the middle mouse button
+  activate the temporary eraser on a normal press; no long press is required.
+- While a text or shape still shows its handles, the stylus first side button
+  changes its colour in both Screen and Paper modes.
+- In Paper mode, right click/stylus side button 2 still becomes the temporary
+  eraser after the current object is committed.
+- Undo history now keeps 40 steps in every mode.
 - While typing text, the mouse wheel and stylus side button 1 change the text
   colour.  Right click, stylus side button 2 or mouse button 2 accepts the text
   like Enter; Escape still cancels it.
@@ -344,6 +356,8 @@ Tool bar actions added or updated:
 - Fixed the normal cursor appearing while a tool was active.
 - Fixed PDFs opened from the file browser not reaching a running instance.
 - Fixed stale tool selection after restarting the application.
+- Fixed Alt+F4 in Paper mode only leaving Paper mode instead of quitting
+  Screenator.  Ctrl+Q still returns to Screen mode.
 - Fixed spline preview segments after editing points or handles.
 - Fixed transparent vector strokes showing overlapping-cap dots in saved PDFs.
 - Fixed PDF export using rasterized page backgrounds.

@@ -70,7 +70,7 @@
 #define GA_DATA       gdk_atom_intern ("Screenator/data", FALSE)
 #define GA_TOGGLEDATA gdk_atom_intern ("Screenator/toggledata", FALSE)
 
-#define SCREENATOR_MAX_UNDO 4
+#define SCREENATOR_MAX_UNDO 40
 
 /* Smallest size a placed frame shape can be resized to. */
 #define FRAME_MIN_SIZE 8.0
@@ -550,11 +550,10 @@ typedef struct
   gdouble               frame_press_distance;
   guint                 frame_seed;
 
-  /* State of the current stylus side-button action.  The tip is button 1, the
-   * first side button is button 2 (eraser or scroll) and the second side
-   * button is button 3 (opens the stylus menu). */
+  /* State of the current stylus side-button action.  The tip is button 1,
+   * the first side button is button 2 (temporary eraser or colour step) and
+   * the second side button is button 3 (Escape). */
   gboolean             stylus_eraser_active;
-  gboolean             stylus_side_button_down;
   gboolean             menu_button_down;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
@@ -570,9 +569,6 @@ typedef struct
 typedef struct
 {
   GtkWidget   *win;
-  GtkWidget   *stylus_menu;
-  GtkWidget   *wheel_menu;
-  GtkWidget   *marker_menu;
   GtkWidget   *quick_menu;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
@@ -580,13 +576,6 @@ typedef struct
   gboolean     hints_shown;
   guint        hints_id;
   GtkWidget   *hints_dialog;
-  guint        menu_hold_id;
-  ScreenatorDeviceData *menu_hold_devdata;
-  gboolean     menu_hold_is_stylus;
-  gint         menu_hold_x;
-  gint         menu_hold_y;
-  guint        stylus_eraser_hold_id;
-  ScreenatorDeviceData *stylus_eraser_hold_devdata;
   AppIndicator *trayicon;
 
   /* Movable on-screen icon window */

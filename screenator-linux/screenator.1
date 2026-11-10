@@ -34,20 +34,18 @@ floating icon is hidden.
 .br
 The Marker draws a highlighter stroke with a fixed 32 pixel width, using the
 current line colour. Its opacity is 40% by default and is independent of the
-global pen opacity. Long right click, or a long press of the stylus second side
-button, opens the Marker Opacity menu with 10%, 20%, 30%, 40%, 50%, 60%, 70%,
-80% and 90%; the choice is remembered across restarts. Selecting the Marker switches the line
+global pen opacity. The Marker Opacity menu with 10%, 20%, 30%, 40%, 50%, 60%,
+70%, 80% and 90% is available from the app menu and tool bar; the choice is
+remembered across restarts. Selecting the Marker switches the line
 colour to yellow; leaving the Marker or exiting painting restores the colour
 that was active before. The mouse wheel or the stylus first side button changes
 its colour.
 .br
-While painting mode is active, the mouse wheel changes the setting selected in
-the Scroll Mode menu: Color steps the line colours, including the custom
-colour, or the shape fill colours over the Paint Bucket; Thickness steps
-through 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels. With the Eraser tool selected,
-the wheel changes the eraser size instead. Long-press the right mouse button
-to choose Color or Thickness; a short right click finishes the current shape
-or exits painting like Escape. The change is the same as picking it from
+While painting mode is active, the mouse wheel steps through the line colours,
+including the custom colour, or the shape fill colours over the Paint Bucket.
+With the Eraser tool selected, the wheel changes the eraser size instead.
+There is no long-right-click menu; a right click finishes the current shape or
+exits painting like Escape. The change is the same as picking it from
 the menu, so it is kept when another tool is selected and is shown in the
 settings indicator and the menus.
 .br
@@ -93,8 +91,11 @@ Screenator asks whether to save it in the Documents folder first. Selecting a
 paper type, or opening a PDF, switches to Paper mode
 automatically and brings the Paper window to the front.  Switching between
 Screen and Paper always exits the current tool and leaves Cursor selected.
+The same applies when selecting a paper type, resetting a paper or opening a
+PDF.
 Every type keeps its own pages, drawings and loaded PDF while
 another type is shown, so switching back restores them without a save prompt.
+Switching paper types keeps the active tool.
 The selected paper type and PDF file are remembered across restarts.  Each PDF
 file also remembers the page it was last closed on, whether reopened from
 Screenator or from the desktop.  Paper saves show a progress overlay until the
@@ -329,19 +330,16 @@ when Screenator quits and restored on the next start; changed papers are
 offered for saving on exit. "Clear Screen" removes the saved drawing.
 .br
 A single, colourful Hints dialog appears when Screenator starts. It is a
-750x550 scrollable column that summarises the common mouse and stylus controls
+700x500 scrollable column that summarises the common mouse and stylus controls
 plus shape-editing tips, the global F9 shortcut and the Screen and Paper mode
-shortcuts in one place instead of repeating them for every tool,
-and it emphasises that a long right click, or a long press of the stylus second
-side button, opens the Scroll Mode menu to
-choose Color or Thickness for scrolling. A "Never show hints again" option
-beside the Close button is remembered across restarts. "Show Hints" in the menu opens the
-dialog again, and Reset app settings and drawings keeps the choice. The hints
-text is loaded from an HTML file each time the dialog opens. Copy
-/usr/share/screenator/hints.html to ~/.config/Screenator/hints.html to
-customise it, or set SCREENATOR_HINTS_FILE to another HTML file. Headings,
-paragraphs, lists, bold/italic/underline text, links and coloured spans are
-supported. Simple <style> rules such as h2 { color: #008800; } and
+shortcuts in one place instead of repeating them for every tool.
+A "Never show hints again" option
+beside the Close button is remembered across restarts. "Show Hints" in the
+menu opens the dialog again, and Reset app settings and drawings keeps the
+choice. The hints text is loaded from the installed HTML file each time the
+dialog opens; it is not edited after installation. Headings, paragraphs,
+lists, bold/italic/underline text, links and coloured spans are supported.
+Simple <style> rules such as h2 { color: #008800; } and
 span { color: #0000aa; } also work.
 .br
 .SH KEYBOARD CONTROL
@@ -375,7 +373,8 @@ While painting mode is active, the usual
 and
 .B Ctrl+Shift+Z
 shortcuts undo and redo drawing strokes and page insertion or deletion.
-Drawing undo is used first while drawing history exists. Pressing
+Drawing undo is used first while drawing history exists. Undo history keeps 40
+steps in every mode. Pressing
 .B Esc
 first finishes the current shape or closes its handles and keeps the selected
 tool. Pressing it again exits the tool and selects the Cursor tool so its icon
@@ -387,16 +386,14 @@ In your stylus configuration, set button 1 (near the tip) to Middle Click and
 button 2 to Right Click.
 The stylus tip draws like the left mouse button, using the selected line
 width; pen pressure is ignored so it draws exactly like the mouse. The first
-side button has two short-press settings chosen in the stylus menu: Color steps
-the line colour (or the fill colour over the Paint Bucket), and Thickness steps
-through the line thicknesses. A long press of the first side button activates
-the eraser while it is held, also while the pen hovers above the tablet. A
-short click of the second side button acts like Escape/right click, finishing
-the shape being edited and keeping the tool active, or leaving painting mode
-when no shape is being edited. A long press opens the "Button 1 Mode" menu with
-Color and Thickness. In Paper mode the buttons change roles: hold side
-button 1 or the middle mouse button to pan, and hold side button 2 or the right
-mouse button to erase. No long press is needed; releasing the right button or
+side button and the middle mouse button activate the temporary eraser on a
+normal press, with no long press. While a text or shape still shows its
+handles, the first side button changes its colour instead. A short click of the
+second side button acts like Escape/right click, finishing the shape being
+edited and keeping the tool active, or leaving painting mode when no shape is
+being edited. There is no side-button popup menu. In Paper mode the buttons
+change roles: hold side button 1 or the middle mouse button to pan, and hold
+side button 2 or the right mouse button to erase. No long press is needed; releasing the right button or
 side button 2 brings the previous tool back. While a shape or text is
 unfinished, side button 2 acts as Escape. The mouse wheel scrolls the pages.
 The hints dialog
