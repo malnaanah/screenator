@@ -2954,9 +2954,11 @@ static char *hints_rtf(void)
   sb_addf(&b, "\\cf1\\b\\fs22 Mouse\\b0\\fs18\\par\n");
       sb_addf(&b, "\\cf1\\bullet\\cf0  Left click and drag to draw with the "
                   "selected tool. In Paper mode, dragging with Cursor or Paint "
-                  "Bucket scrolls the pages; a Paint Bucket click still fills.\\par\n");
-      sb_addf(&b, "\\cf1\\bullet\\cf0  While text or shape handles are being edited, middle click changes color and keeps editing active. After editing ends, it does nothing in Screen mode with the Text or a shape tool selected. Otherwise it erases while held, except with the Pen tool, or pans the page in Paper mode. With Paint Bucket selected in Paper mode, middle-drag scrolls and a middle click still changes fill color.\\par\n");
-      sb_addf(&b, "\\cf1\\bullet\\cf0  In Screen mode, the mouse wheel changes color only while typing text or editing text/shape handles. Otherwise it does nothing, even with a tool selected. In Paper mode it scrolls outside editing.\\par\n");
+                  "Bucket scrolls the pages. With Paint Bucket or Eraser, hold "
+                  "the left or middle button 200 ms before dragging to scroll; "
+                  "short clicks keep their tool action.\\par\n");
+      sb_addf(&b, "\\cf1\\bullet\\cf0  While text or shape handles are being edited, middle click changes color and keeps editing active. After editing ends, it does nothing in Screen mode with the Text or a shape tool selected. Otherwise it erases while held, except with the Pen tool, or pans the page in Paper mode. In Paper mode, short middle clicks with Paint Bucket or Eraser keep their fill-color or eraser-size action.\\par\n");
+      sb_addf(&b, "\\cf1\\bullet\\cf0  In Screen mode, the mouse wheel changes color only while typing text or editing text/shape handles. Otherwise it does nothing, even with a tool selected. In Paper mode it scrolls outside editing, including with Paint Bucket selected.\\par\n");
       sb_addf(&b, "\\cf1\\bullet\\cf0  Right click first accepts text, then "
                   "finishes shape editing; the next right click erases while "
                   "held.\\par\n");

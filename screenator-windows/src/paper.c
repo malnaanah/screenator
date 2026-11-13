@@ -2030,6 +2030,7 @@ static void paper_switch_index(int idx, int scroll_to_page)
   if (pages[page_index].bg == PAPER_PDF && pdf_path[0])
     pdf_history_remember(pdf_path, page_index);
   app_render_all();
+  toolbar_refresh();
   ui_refresh_tray();
   if (g.tool != TOOL_NONE)
     {
@@ -2178,6 +2179,7 @@ int paper_goto_page(int index)
           paper_scroll_y = paper_page_top(page_index);
           paper_scroll_clamp();
           app_render_all();
+          toolbar_refresh();
         }
       return 1;
     }

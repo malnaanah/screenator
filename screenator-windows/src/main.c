@@ -20,6 +20,7 @@ App g;
 #define WM_PAPER_SHORTCUT (WM_APP + 7)
 #define TIMER_HINTS      4
 #define TIMER_PAPER_PAN  11
+#define PAPER_SCROLL_HOLD_MS 200
 #define ICON_RING_EXTRA  14
 static const wchar_t *OVERLAY_CLASS = L"ScreenatorOverlay";
 static const wchar_t *ICON_CLASS = L"ScreenatorIcon";
@@ -63,9 +64,11 @@ static int paper_left_pending;
 static int paper_left_panning;
 static Pt paper_left_view;
 static Pt paper_left_origin;
+static ULONGLONG paper_left_pressed_at;
 static int paper_middle_pending;
 static Pt paper_middle_view;
 static Pt paper_middle_origin;
+static ULONGLONG paper_middle_pressed_at;
 static int paper_normal_mode;
 static int app_paper_on_top;
 static void text_accept_and_restart(Pt p);
@@ -853,15 +856,46 @@ void app_set_click_through(int on)
   if (!g.inputwin) return;
   if (paper_normal_mode)
     {
+      /* Paper's visible window is already activatable. Keep the hidden input
+       * surface non-activating while it is not in use. */
+      LONG_PTR ex = GetWindowLongPtrW(g.inputwin, GWL_EXSTYLE);
+      if (!(ex & WS_EX_NOACTIVATE))
+        {
+          SetWindowLongPtrW(g.inputwin, GWL_EXSTYLE,
+                            ex | WS_EX_NOACTIVATE);
+          SetWindowPos(g.inputwin, NULL, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                       SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
       ShowWindow(g.inputwin, SW_HIDE);
       return;
     }
   if (on)
     {
+      LONG_PTR ex = GetWindowLongPtrW(g.inputwin, GWL_EXSTYLE);
+      if (!(ex & WS_EX_NOACTIVATE))
+        {
+          SetWindowLongPtrW(g.inputwin, GWL_EXSTYLE,
+                            ex | WS_EX_NOACTIVATE);
+          SetWindowPos(g.inputwin, NULL, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                       SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
       ShowWindow(g.inputwin, SW_HIDE);
     }
   else
     {
+      LONG_PTR ex = GetWindowLongPtrW(g.inputwin, GWL_EXSTYLE);
+      int activate_on_click = g.paper == PAPER_NONE && g.tool == TOOL_TEXT;
+      LONG_PTR updated = activate_on_click
+        ? ex & ~WS_EX_NOACTIVATE : ex | WS_EX_NOACTIVATE;
+      if (updated != ex)
+        {
+          SetWindowLongPtrW(g.inputwin, GWL_EXSTYLE, updated);
+          SetWindowPos(g.inputwin, NULL, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                       SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
       SetWindowPos(g.inputwin, HWND_NOTOPMOST, g.vx, g.vy, g.vw,
                    app_paper_view_height(),
                    SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -1150,6 +1184,17 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
           if (editable_handles_active())
             {
               stylus_step(dir, 1);
+              return 1;
+            }
+          if (g.paper != PAPER_NONE && g.tool == TOOL_BUCKET)
+            {
+              if (paper_continuous_active())
+                paper_scroll_step(-dir);
+              else if (dir > 0)
+                {
+                  if (paper_prev_page()) config_save();
+                }
+              else if (paper_next_page()) config_save();
               return 1;
             }
           if (g.tool == TOOL_BUCKET && our_foreground())
@@ -3403,15 +3448,18 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       mouse_reset_pen_state();
       if (g.pen_seen && is_pen_mouse()) return 0;
       if (g.pen_pointer_active || g.pen_eraser_down) return 0;
-      /* In Paper mode, a left drag pans only with Cursor or Bucket selected.
-       * Bucket filling is deferred until release so a click still fills. */
+      /* In Paper mode, left drag pans with Cursor or Bucket selected.
+       * Bucket fills and Eraser strokes are deferred so short clicks retain
+       * their action; Bucket and Eraser panning requires a 200 ms hold. */
       if (g.paper != PAPER_NONE &&
-          (g.tool == TOOL_NONE || g.tool == TOOL_BUCKET) &&
+          (g.tool == TOOL_NONE || g.tool == TOOL_BUCKET ||
+           g.tool == TOOL_ERASER) &&
           !editable_handles_active() && !g.pen_id && !pen_input_recent())
         {
           paper_left_pending = 1;
           paper_left_panning = 0;
           paper_left_view = overlay_point(lp);
+          paper_left_pressed_at = GetTickCount64();
           POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
           ClientToScreen(hwnd, &pt);
           paper_left_origin = (Pt) { (double) pt.x, (double) pt.y };
@@ -3451,19 +3499,36 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
             Pt mp = { (double) pt.x, (double) pt.y };
             if (paper_drag_started(paper_left_origin, mp))
               {
-                paper_left_pending = 0;
-                paper_left_panning = 1;
-                paper_pan_begin(paper_left_origin);
-                paper_pan_move(mp);
+                ULONGLONG held = GetTickCount64() - paper_left_pressed_at;
+                if (held >= PAPER_SCROLL_HOLD_MS)
+                  {
+                    paper_left_pending = 0;
+                    paper_left_panning = 1;
+                    paper_pan_begin(paper_left_origin);
+                    paper_pan_move(mp);
+                    return 0;
+                  }
+                if (g.tool == TOOL_ERASER)
+                  {
+                    /* A quick eraser drag remains an erase stroke. */
+                    paper_left_pending = 0;
+                    g.button_down = 1;
+                    tools_pointer_down(
+                      paper_view_point(paper_left_view, 1), 0,
+                      (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                      (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+                  }
               }
-            return 0;
+            if (paper_left_pending || g.paper_panning) return 0;
           }
         if (paper_middle_pending && (wp & MK_MBUTTON))
           {
             POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
             ClientToScreen(hwnd, &pt);
             Pt mp = { (double) pt.x, (double) pt.y };
-            if (paper_drag_started(paper_middle_origin, mp))
+            if (paper_drag_started(paper_middle_origin, mp) &&
+                GetTickCount64() - paper_middle_pressed_at >=
+                  PAPER_SCROLL_HOLD_MS)
               {
                 paper_middle_pending = 0;
                 paper_pan_middle_prev = 1;
@@ -3544,6 +3609,14 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
               tools_pointer_up(p,
                                (GetKeyState(VK_CONTROL) & 0x8000) != 0,
                                (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+            }
+          else if (g.tool == TOOL_ERASER)
+            {
+              Pt p = paper_view_point(paper_left_view, 1);
+              g.button_down = 1;
+              tools_pointer_down(p, 0, 0, 0);
+              g.button_down = 0;
+              tools_pointer_up(p, 0, 0);
             }
           return 0;
         }
@@ -3641,12 +3714,14 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       if (ui_is_modal()) return 0;
       /* Bucket middle-click changes fill color. Defer that click in Paper
        * mode so a middle drag can pan without changing the color. */
-      if (g.paper != PAPER_NONE && g.tool == TOOL_BUCKET &&
+      if (g.paper != PAPER_NONE &&
+          (g.tool == TOOL_BUCKET || g.tool == TOOL_ERASER) &&
           !editable_handles_active() && !g.pen_id && !is_pen_mouse() &&
           !pen_input_recent())
         {
           paper_middle_pending = 1;
           paper_middle_view = overlay_point(lp);
+          paper_middle_pressed_at = GetTickCount64();
           POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
           ClientToScreen(hwnd, &pt);
           paper_middle_origin = (Pt) { (double) pt.x, (double) pt.y };
@@ -3724,6 +3799,9 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
               pen_scroll_tap(p, 1);
               pen_barrel_end();
             }
+          else if (g.tool == TOOL_ERASER && g.paper != PAPER_NONE &&
+                   GetTickCount64() - paper_middle_pressed_at < 500)
+            step_eraser_width(1);
           return 0;
         }
       if (g.middle_erasing)

@@ -22,6 +22,21 @@ project-neutral language so they can be copied to other repositories.
   packaging, help text, or release metadata.
 - Keep backward compatibility for existing user configuration where practical.
 
+## Repository-specific scope restrictions
+
+- Do not edit either `screenator-windows/assets/hints.html` or
+  `screenator-linux/data/hints.html` unless the user explicitly authorizes
+  changes to that file.
+- This restriction takes precedence over the documentation guidance below.
+  Update other permitted user documents and in-app help when needed, but do
+  not update these HTML files as part of that work.
+- Keep platform-specific changes inside the current operating system's tree:
+  when working on Windows, do not edit `screenator-linux/`; when working on
+  Linux, do not edit `screenator-windows/`.
+- If a requested change appears to require editing the other platform's tree,
+  explain the boundary and ask the user to handle it in a session on that
+  platform. Do not make the cross-platform edit from the current OS session.
+
 ## Build and verification
 
 - Use the repository's own build script or documented build command.

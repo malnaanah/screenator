@@ -124,8 +124,11 @@ version 8.0.
   other types. Both paths offer to save when the page or PDF has annotations.
 - The tool bar snaps flush to the screen edge with no gap.
 - In Paper mode, dragging with the left button pans pages when Cursor or Paint
-  Bucket is selected. A Paint Bucket click still fills; dragging the middle
-  button pans while a middle click still changes the bucket fill color.
+  Bucket is selected. With Paint Bucket or Eraser, hold the left or middle
+  button for 200 ms before dragging to pan; a short left click still fills or
+  erases, and a short middle click keeps its fill-color or eraser-size action.
+  Other tools and stylus input keep their existing behavior. The mouse wheel
+  scrolls Paper pages with Paint Bucket selected as well.
 - In Paper mode the middle mouse button or the first stylus side button changes
   color while text or shape handles are being edited. After editing is finished,
   the middle button pans the continuous strip. Right click and stylus button 2
@@ -364,8 +367,9 @@ error path. The normal settings and annotation files are not changed.
   Cairo frame) that is topmost only while it is active, so Windows Ink delivers
   live stylus side-button drags and other applications still cover the paper
   when the user switches away.
-- Starting text entry raises the Screenator input surface above the drawing
-  overlay so clicks do not fall through to another application's window.
+- In Screen mode, the Text tool's input surface activates Screenator when you
+  click to place text, so the inline editor receives keyboard input even if
+  another application was in front.
 - Pango/Cairo provide the same anti-aliased drawing and text rendering,
   including right-to-left text.
 - Stylus pens use Windows Ink pointer input plus a raw HID fallback: the tip
