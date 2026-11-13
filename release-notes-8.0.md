@@ -1,12 +1,11 @@
 # Screenator 8.0
 
-Screenator 8.0 is the Linux release that adds the full Paper Drawing/PDF
-feature set and the accumulated tool, toolbar, settings, hints and input
-changes.  The native Windows port remains at 7.0 and is not part of this
-release.
+Screenator 8.0 brings Paper Drawing and PDF support to Linux and Windows,
+along with the configurable tool bar, editable shortcuts, and updated input
+and drawing behavior. Linux and Windows use separate native implementations.
 
-Generated: 2026-11-09
-Scope: Linux application (Screenator 8.0)
+Updated: 2026-11-13
+Scope: Linux and Windows applications (Screenator 8.0)
 
 1. Paper mode and paper documents
 --------------------------------
@@ -289,8 +288,8 @@ Tool bar actions added or updated:
 - On startup, no drawing tool is active; Cursor is the active tool even if a
   tool was selected when the app last exited.
 - Fixed cases where the normal pointer appeared while a tool was active.
-- In Screen mode, middle click temporarily erases without exiting the selected
-  tool. Right click accepts typed text, commits visible handles on another
+- In Screen mode, right click temporarily erases without exiting the selected
+  tool. It accepts typed text, commits visible handles on another
   click, then starts erasing on a later click. Paper mode middle clicks pan
   after committing.
 - While editing text or shape/text handles, the mouse wheel changes colour
@@ -397,7 +396,7 @@ Tool bar actions added or updated:
 - Added marker_opacity.png to all package icon lists.
 - Updated desktop MIME association to application/pdf.
 - Updated appdata metadata for PDF support.
-- Updated README.md, info.txt, screenator.1 and the in-app hints for:
+- Updated the README files, screenator.1 and the in-app hints for:
   - Screen and Paper mode terminology
   - Paper persistence and switching
   - Automatic Documents saving and file names
@@ -409,10 +408,25 @@ Tool bar actions added or updated:
   - Text/shape right-click and scrolling behaviour
 - The Linux version is 8.0.
 
-9. Not included in the Windows port yet
----------------------------------------
-- All items above are Linux changes.
-- screenator-windows/ is still a separate native Win32 implementation at 7.0
-  and has not been updated since the v7.0 release.
-- Porting requires a manual feature-by-feature update in the Windows sources or
-  a future shared-core refactor.
+9. Windows 8.0
+--------------
+- Added Paper mode with Plain, Ruled, Graph and PDF documents, multi-page
+  editing, continuous scrolling, page insertion and deletion, page navigation,
+  and page-level undo and redo.
+- Added vector PDF export that preserves source PDF pages and exports
+  annotations as vector paths and text.
+- Added the persistent configurable tool bar, tabbed Settings dialog and
+  editable shortcuts.
+- Updated pointer and stylus behavior, text editing, timer selection, saving,
+  screenshot capture, and toolbar actions to match the 8.0 workflow.
+- Added a per-user installer that registers Screenator as a PDF opener without
+  changing the default PDF application.
+- See [Windows 8.0 release notes](screenator-windows/RELEASE_NOTES.md) and the
+  [Windows guide](screenator-windows/README.md) for full details.
+
+10. Release packages
+--------------------
+- Linux: `screenator_8.0_amd64.deb`, `screenator-8.0-1.x86_64.rpm` and
+  `Screenator-8.0-x86_64.AppImage`.
+- Windows: `Screenator-8.0-win64.zip` and
+  `Screenator-8.0-win64-setup.exe`.

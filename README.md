@@ -1,74 +1,54 @@
 # Screenator
 
-Screenator is a screen annotation tool for X11, based on
-[Gromit-MPX](https://github.com/bk138/gromit-mpx) 1.4.2.
+Screenator is a screen annotation tool for Linux and Windows, based on
+[Gromit-MPX](https://github.com/bk138/gromit-mpx) 1.4.2. Version 8.0 brings
+Paper Drawing and PDF support to Linux and Windows, with a shared set of
+features and platform-specific implementations.
 
-Draw over any running application with a pen, marker, arrows, text, shapes or
-eraser, change the line colour, thickness and opacity, choose the text font,
-and resize the floating icon. The annotation stays on screen as long as you
-need it, and you can keep using your applications while it is visible.
+Draw over applications with the pen, marker, text, eraser and shape tools.
+Paper mode provides Plain, Ruled, Graph and PDF documents with multiple pages,
+continuous scrolling, page navigation and undo. Save paper documents as PDF
+with vector annotations. The configurable tool bar, editable shortcuts and
+updated input controls are available on both platforms.
 
-A small draggable on-screen icon (and a matching tray icon) opens the tool and
-settings menu.
+## Documentation
 
+- [Linux guide](screenator-linux/README.md)
+- [Windows guide](screenator-windows/README.md)
+- [Screenator 8.0 release notes](release-notes-8.0.md)
+- [Windows 8.0 release notes](screenator-windows/RELEASE_NOTES.md)
 
-
-
-
-https://github.com/user-attachments/assets/9b04ff90-14df-458c-ae8f-5d2038690ce3
-
-
-
-## Layout
-
-| Path | Contents |
-|---|---|
-| `screenator-linux/` | Linux source code, data files, documentation and the build script |
-| `screenator-linux/src/` | C sources (`screenator.c`, callbacks, config, input) |
-| `screenator-linux/data/` | Icons, cursors, default tool configuration, desktop entry, AppStream metadata |
-| `screenator-windows/` | Windows source code and build files, prepared separately |
-| `info.txt` | Package and feature description |
-
-## Build
+## Build Linux packages
 
 Dependencies: GTK+ 3, Ayatana AppIndicator 3, XInput 2, X11, CMake and a C
-compiler. On Debian/Ubuntu:
+compiler. On Debian or Ubuntu:
 
-```
+```sh
 sudo apt install build-essential cmake libgtk-3-dev \
     libayatana-appindicator3-dev libxi-dev libx11-dev librsvg2-bin
-```
-
-Then:
-
-```
 cd screenator-linux
 ./build.sh
 ```
 
-The script produces the Linux packages in `../build/`:
+The script creates the DEB, RPM and AppImage packages in `build/` at the
+repository root:
 
-- `screenator_8.0_amd64.deb` — install with `sudo apt install ./screenator_8.0_amd64.deb`
-- `screenator-8.0-1.x86_64.rpm` — install with `sudo rpm -i ./screenator-8.0-1.x86_64.rpm`
-- `Screenator-8.0-x86_64.AppImage` — make executable and run
+- `screenator_8.0_amd64.deb`
+- `screenator-8.0-1.x86_64.rpm`
+- `Screenator-8.0-x86_64.AppImage`
 
-The Windows application is built separately from `screenator-windows/` with
-MSYS2; see `screenator-windows/README.md`.
+See [the Windows guide](screenator-windows/README.md) for building the native
+Windows application with MSYS2.
 
 ## Configuration
 
-- `~/.config/Screenator/screenator.ini` — menu settings (colour, width,
-  eraser size, opacity, font, shape fill, icon size, last tool, Paper mode
-  and shortcuts).
-- `~/.config/Screenator/screenator.cfg` — optional per-user tool/button
-  mapping; falls back to the bundled (AppImage) or system-wide
-  `/etc/screenator/screenator.cfg`.
-- `~/.config/Screenator/screenator-annotations.png` — saved Screen-mode
-  annotations.
-- `%APPDATA%\Screenator\screenator.ini` — Windows settings.
+- Linux menu settings: `~/.config/Screenator/screenator.ini`
+- Linux per-user tool/button mapping: `~/.config/Screenator/screenator.cfg`
+- Windows settings: `%APPDATA%\Screenator\screenator.ini`
 
 ## License
 
 GNU General Public License version 2 or later. Screenator contains code from
 Gromit-MPX 1.4.2 (Copyright 2009–2022 Christian Beier) and Gromit
-(Copyright 2000 Simon Budig). See `screenator-linux/COPYING` for the full text.
+(Copyright 2000 Simon Budig). See the platform `COPYING` files for the full
+text.

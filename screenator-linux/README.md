@@ -66,8 +66,9 @@ kept.
   entry closest to the current width.
 - While painting mode is active, the mouse wheel steps the line colours,
   including the custom colour, or the shape fill colours over the Paint Bucket.
-  In Screen mode, with the Eraser tool selected, it changes the eraser size instead. Middle
-  clicks never erase. Right click accepts typed text first, then commits
+  With Paint Bucket selected, a middle click changes the fill colour; with
+  Eraser selected, it changes the eraser size. Middle clicks do not erase.
+  Right click accepts typed text first, then commits
   visible handles on another click; a later right click starts erasing without
   exiting the selected tool.
   In Screen mode, with Eraser selected, right click or stylus button 2 changes its size.
