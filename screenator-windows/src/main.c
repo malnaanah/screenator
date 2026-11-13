@@ -59,6 +59,13 @@ static int paper_pan_timer_started;
 static ULONGLONG paper_pan_started_at;
 static Pt paper_pan_origin;
 static int paper_pan_moved;
+static int paper_left_pending;
+static int paper_left_panning;
+static Pt paper_left_view;
+static Pt paper_left_origin;
+static int paper_middle_pending;
+static Pt paper_middle_view;
+static Pt paper_middle_origin;
 static int paper_normal_mode;
 static int app_paper_on_top;
 static void text_accept_and_restart(Pt p);
@@ -880,6 +887,12 @@ void app_activate_overlay_input(void)
                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
   app_set_window_topmost(g.overlay,
                          !(g.paper != PAPER_NONE && !g.paper_topmost));
+  /* The overlay is transparent to mouse input. Put its owned input surface
+   * above it after raising the owner, or clicks can fall through to another
+   * foreground application. */
+  if (g.inputwin && IsWindowVisible(g.inputwin) && !paper_normal_mode)
+    SetWindowPos(g.inputwin, HWND_TOPMOST, g.vx, g.vy, g.vw, g.vh,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
   app_raise_icon();
 }
 
@@ -1664,6 +1677,9 @@ void app_set_paper(Paper p, int grab_focus)
     }
   else
     {
+      paper_left_pending = 0;
+      paper_left_panning = 0;
+      paper_middle_pending = 0;
       if (was_active) paper_leave();
       g.paper = PAPER_NONE;
     }
@@ -2090,6 +2106,10 @@ void app_begin_text(Pt p)
   g.text_editor_click_y = (int) p.y;
   app_hotkeys_refresh();
   editor_make_font();
+  /* Another foreground app may have covered the click-through overlay since
+   * Text was selected. Raise the input surfaces again before focusing the
+   * inline editor. */
+  app_activate_overlay_input();
   int x = (int) p.x;
   int y = (int) p.y;
   if (g.paper != PAPER_NONE) y += paper_current_page_view_top();
@@ -3257,6 +3277,16 @@ static Pt overlay_point_page(LPARAM lp, int prepare)
   return p;
 }
 
+static Pt paper_view_point(Pt p, int prepare)
+{
+  if (g.paper != PAPER_NONE)
+    {
+      if (prepare) paper_prepare_point(&p);
+      else paper_map_point(&p);
+    }
+  return p;
+}
+
 /* Map a viewport point for a continuous-paper move, splitting a live pen,
  * marker or temporary-eraser stroke when it crosses onto the adjacent page so
  * each part lands on the page it was drawn over. */
@@ -3338,6 +3368,14 @@ static void paper_pan_finish(void)
   if (step) step_eraser_width(1);
 }
 
+static int paper_drag_started(Pt origin, Pt point)
+{
+  int dx = (int) fabs(point.x - origin.x);
+  int dy = (int) fabs(point.y - origin.y);
+  return dx >= GetSystemMetrics(SM_CXDRAG) ||
+         dy >= GetSystemMetrics(SM_CYDRAG);
+}
+
 static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
                                      LPARAM lp)
 {
@@ -3365,6 +3403,21 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       mouse_reset_pen_state();
       if (g.pen_seen && is_pen_mouse()) return 0;
       if (g.pen_pointer_active || g.pen_eraser_down) return 0;
+      /* In Paper mode, a left drag pans only with Cursor or Bucket selected.
+       * Bucket filling is deferred until release so a click still fills. */
+      if (g.paper != PAPER_NONE &&
+          (g.tool == TOOL_NONE || g.tool == TOOL_BUCKET) &&
+          !editable_handles_active() && !g.pen_id && !pen_input_recent())
+        {
+          paper_left_pending = 1;
+          paper_left_panning = 0;
+          paper_left_view = overlay_point(lp);
+          POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+          ClientToScreen(hwnd, &pt);
+          paper_left_origin = (Pt) { (double) pt.x, (double) pt.y };
+          SetCapture(hwnd);
+          return 0;
+        }
       /* Clicks usually arrive on the invisible input window.  Making that
        * window the foreground window would add it to the Alt+Tab history, so
        * the first Alt+Tab would only move between the input window and the
@@ -3391,6 +3444,34 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_MOUSEMOVE:
       {
         if (ui_is_modal()) return 0;
+        if (paper_left_pending && (wp & MK_LBUTTON))
+          {
+            POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ClientToScreen(hwnd, &pt);
+            Pt mp = { (double) pt.x, (double) pt.y };
+            if (paper_drag_started(paper_left_origin, mp))
+              {
+                paper_left_pending = 0;
+                paper_left_panning = 1;
+                paper_pan_begin(paper_left_origin);
+                paper_pan_move(mp);
+              }
+            return 0;
+          }
+        if (paper_middle_pending && (wp & MK_MBUTTON))
+          {
+            POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            ClientToScreen(hwnd, &pt);
+            Pt mp = { (double) pt.x, (double) pt.y };
+            if (paper_drag_started(paper_middle_origin, mp))
+              {
+                paper_middle_pending = 0;
+                paper_pan_middle_prev = 1;
+                paper_pan_begin(paper_middle_origin);
+                paper_pan_move(mp);
+              }
+            return 0;
+          }
         if (g.paper_panning)
           {
             /* Promoted pen movement and real mouse movement both pan.  Use
@@ -3442,6 +3523,30 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       }
       return 0;
     case WM_LBUTTONUP:
+      if (paper_left_panning)
+        {
+          paper_left_panning = 0;
+          paper_pan_end();
+          return 0;
+        }
+      if (paper_left_pending)
+        {
+          paper_left_pending = 0;
+          if (GetCapture() == hwnd) ReleaseCapture();
+          if (g.tool == TOOL_BUCKET)
+            {
+              Pt p = paper_view_point(paper_left_view, 1);
+              g.button_down = 1;
+              tools_pointer_down(p, 0,
+                                 (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                                 (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+              g.button_down = 0;
+              tools_pointer_up(p,
+                               (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                               (GetKeyState(VK_SHIFT) & 0x8000) != 0);
+            }
+          return 0;
+        }
       if (g.pen_seen && is_pen_mouse()) return 0;
       if (g.pen_pointer_active || g.pen_eraser_down) return 0;
       if (g.button_down)
@@ -3453,6 +3558,11 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
                            (GetKeyState(VK_SHIFT) & 0x8000) != 0);
           ReleaseCapture();
         }
+      return 0;
+    case WM_CAPTURECHANGED:
+      paper_left_pending = 0;
+      paper_middle_pending = 0;
+      if (g.paper_panning) paper_pan_end();
       return 0;
     case WM_RBUTTONDBLCLK:
     case WM_RBUTTONDOWN:
@@ -3529,6 +3639,20 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_MBUTTONDOWN:
       if (ui_modal_outside_click(overlay_point(lp))) return 0;
       if (ui_is_modal()) return 0;
+      /* Bucket middle-click changes fill color. Defer that click in Paper
+       * mode so a middle drag can pan without changing the color. */
+      if (g.paper != PAPER_NONE && g.tool == TOOL_BUCKET &&
+          !editable_handles_active() && !g.pen_id && !is_pen_mouse() &&
+          !pen_input_recent())
+        {
+          paper_middle_pending = 1;
+          paper_middle_view = overlay_point(lp);
+          POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+          ClientToScreen(hwnd, &pt);
+          paper_middle_origin = (Pt) { (double) pt.x, (double) pt.y };
+          SetCapture(hwnd);
+          return 0;
+        }
       if (g.tool == TOOL_BUCKET && !editable_handles_active())
         {
           pen_scroll_tap(overlay_point_page(lp, 1), 1);
@@ -3588,6 +3712,18 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       if (g.paper_panning)
         {
           paper_pan_finish();
+          return 0;
+        }
+      if (paper_middle_pending)
+        {
+          paper_middle_pending = 0;
+          if (GetCapture() == hwnd) ReleaseCapture();
+          if (g.tool == TOOL_BUCKET && g.paper != PAPER_NONE)
+            {
+              Pt p = paper_view_point(paper_middle_view, 1);
+              pen_scroll_tap(p, 1);
+              pen_barrel_end();
+            }
           return 0;
         }
       if (g.middle_erasing)
@@ -4081,6 +4217,11 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
           if (g.tool == TOOL_BUCKET && g.pen_barrel_down &&
               pen_first_scroll_only)
+            {
+              paper_pan_middle_prev = down;
+              return 0;
+            }
+          if (paper_middle_pending)
             {
               paper_pan_middle_prev = down;
               return 0;

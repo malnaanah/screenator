@@ -19,6 +19,11 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 - In Screen mode, the mouse wheel changes color only while typing text or
   editing text/shape handles. Outside editing it no longer changes tool color
   or size, even with a tool selected.
+- In Paper mode, left-button dragging pans pages with Cursor or Paint Bucket
+  selected, while Bucket clicks still fill. Middle-button dragging pans with
+  Paint Bucket selected, while a middle click still changes fill color. Text
+  entry also raises the input surface above the overlay so another app does
+  not intercept the click.
 - Updated pointer behavior to match Linux 8.0: right click and stylus Button 2
   accept text first, finish visible shape editing next, then erase while held.
   Middle click does nothing with Pen selected. With Eraser selected, stylus
