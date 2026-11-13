@@ -98,9 +98,9 @@ Scope: Linux application (Screenator 8.0)
   minimized/in the taskbar.
 - Vector annotations on pages after the first are saved at the correct
   vertical position in exported PDFs.
-- The Paper menu's Open PDF... action is now Reset/Open PDF.: it resets the
-  current Plain/Ruled/Graph paper to one empty page, or opens another PDF when
-  the current paper is PDF, asking to save unsaved changes first.
+- The Paper menu's Open PDF... action is now Reset Page or PDF File: it resets
+  the current Plain/Ruled/Graph paper to one empty page, or opens another PDF
+  when the current paper is PDF File, asking to save unsaved changes first.
 - All Paper presentations (fullscreen, Ctrl+D and Window mode) now use the same
   local input model: the tool and cursor only act over the Paper window, there
   is no global pointer grab, and Ctrl/Alt shortcuts are only received while the
@@ -131,6 +131,9 @@ Scope: Linux application (Screenator 8.0)
   Home/End.
 - Drawings that cross a page boundary remain on both pages after scrolling.
 - Added paper size settings: Screen, A4 portrait, A4 landscape and Custom.
+- A4 and Custom pages now always take the current screen or Paper window
+  width, with their height following the paper ratio. PDF export keeps the
+  physical A4 or Custom page size.
 - Added a separate Settings > Paper tab for continuous scrolling and paper size.
 
 2. Tool bar
@@ -152,6 +155,9 @@ Scope: Linux application (Screenator 8.0)
   buttons change its width.
 - The thickness icon uses horizontal lines in a vertical bar and vertical
   lines in a horizontal bar, so its thickness always expands across the bar.
+  It is a square icon with a 70%-length line and flat ends.
+- The tool bar Thickness menu lists each choice as a pixel value instead of a
+  line sample.
 - The tool bar can be dragged with the pointer and snaps/clamps to screen edges.
 - Tool bar visibility and icon order are remembered across restarts.
 - Removed the special extra spacing around Switch Mode and Quit; all buttons now
@@ -200,7 +206,11 @@ Tool bar actions added or updated:
 - The Hints text is loaded from the installed HTML file each time the dialog
   opens. It is not edited after installation, so there is no user override or
   environment-selected hints file.
+- Nested lists in the hints are indented under their parent list for easier
+  reading.
 - All dialogs now show a title bar with a close button and a visible border.
+- Dialog title bars use a flat, simpler close button instead of the theme's
+  large circular decoration.
 - All configuration, saved annotations and user tool configuration now live in
   ~/.config/Screenator.  Old ~/.config/screenator.* files are migrated
   automatically.
@@ -253,6 +263,10 @@ Tool bar actions added or updated:
 - Expanded "Reset app settings and drawings" to delete configuration and saved
   drawings, clear every paper page, restore defaults, and show/hide the
   controls appropriately.
+- The General tab now has an "Open Configuration Folder" button beside Reset
+  app settings and drawings, with the configuration folder path shown below
+  them.  The "Settings are applied when the dialog is closed" note was
+  removed.
 - Reset now restores a visible horizontal tool bar with all icons.
 - The default Timer delay is 2 seconds.
 - Tool bar visibility and floating-icon visibility default to visible.
@@ -275,21 +289,35 @@ Tool bar actions added or updated:
 - On startup, no drawing tool is active; Cursor is the active tool even if a
   tool was selected when the app last exited.
 - Fixed cases where the normal pointer appeared while a tool was active.
-- In Screen mode, the right button no longer opens colour, thickness, marker
-  opacity or similar popup menus.  It acts as Escape and closes handles.
-- In Screen mode, the stylus first side button and the middle mouse button
-  activate the temporary eraser on a normal press; no long press is required.
+- In Screen mode, middle click temporarily erases without exiting the selected
+  tool. Right click accepts typed text, commits visible handles on another
+  click, then starts erasing on a later click. Paper mode middle clicks pan
+  after committing.
+- While editing text or shape/text handles, the mouse wheel changes colour
+  in Screen mode and changes colour instead of scrolling in Paper mode.
+- With Eraser selected, right click or stylus button 2 changes eraser size.
 - While a text or shape still shows its handles, the stylus first side button
   changes its colour in both Screen and Paper modes.
-- In Paper mode, right click/stylus side button 2 still becomes the temporary
-  eraser after the current object is committed.
+- In Paper mode, right click/stylus side button 2 accepts typed text first,
+  commits visible handles on another click, then starts erasing on a later
+  click.
 - Undo history now keeps 50 steps in every mode.
+- Undo and redo now cover the whole document instead of only the active page.
+  Switching pages does not clear the history; undoing a step returns to the
+  page and view where it was made.
 - While typing text, the mouse wheel and stylus side button 1 change the text
   colour.  Right click, stylus side button 2 or mouse button 2 accepts the text
   like Enter; Escape still cancels it.
+- In Screen mode, a left click or stylus tip while typing accepts the current
+  text, commits its handles and starts a new one at the click position.
 - While a placed shape or text shows its handles, the wheel and stylus side
   button 1 change its colour instead of scrolling.
 - Added Page Up/Page Down/Home/End page navigation in Paper mode.
+- Polygon/star editing now has four corner scale handles; they resize in X
+  and Y independently and scaling is applied after rotation, with the opposite
+  corner kept fixed.
+- Holding Ctrl while dragging an ellipse or rounded rectangle makes a circle
+  or square.
 - Spline node and handle editing no longer shows a stray preview line beyond
   the last point.
 - The spline rubber-band preview remains hidden after editing a node or handle

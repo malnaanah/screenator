@@ -110,6 +110,8 @@ export C_INCLUDE_PATH="$STAGE/include:$STAGE/include/glib-2.0:$LIBDIR/glib-2.0/i
 cmake -S "$SRC" -B "$CBUILD" \
       -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+      -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
       -DCMAKE_INSTALL_PREFIX=/usr \
       -DCMAKE_C_FLAGS="-I$STAGE/include -I$STAGE/include/glib-2.0 \
                        -I$LIBDIR/glib-2.0/include \
@@ -242,6 +244,7 @@ mkdir -p "$RPMTOP/BUILD" "$RPMTOP/BUILDROOT" "$RPMTOP/RPMS" \
 cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
 %global debug_package %{nil}
 %define _build_id_links none
+%global __os_install_post %{nil}
 Name:           screenator
 Version:        8.0
 Release:        1
@@ -379,7 +382,7 @@ export LINUXDEPLOY_OUTPUT_VERSION=8.0
 if command -v gtk-update-icon-cache >/dev/null 2>&1 \
    && command -v glib-compile-schemas >/dev/null 2>&1; then
   echo "==> Running linuxdeploy (with GTK plugin) ..."
-  if ! "$TOOLS/linuxdeploy-x86_64.AppImage" \
+  if ! NO_STRIP=1 "$TOOLS/linuxdeploy-x86_64.AppImage" \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/screenator" \
         --desktop-file "$APPDIR/usr/share/applications/screenator.desktop" \

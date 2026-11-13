@@ -309,6 +309,8 @@ typedef struct
   gdouble radius;
   gdouble inner;
   gdouble rotation;
+  gdouble scale_x;
+  gdouble scale_y;
   gint    points;
 } ScreenatorStar;
 
@@ -321,6 +323,10 @@ typedef enum
   SCREENATOR_STAR_HANDLE_INNER,
   SCREENATOR_STAR_HANDLE_ROTATION,
   SCREENATOR_STAR_HANDLE_POINTS,
+  SCREENATOR_STAR_HANDLE_SCALE_TL,
+  SCREENATOR_STAR_HANDLE_SCALE_TR,
+  SCREENATOR_STAR_HANDLE_SCALE_BL,
+  SCREENATOR_STAR_HANDLE_SCALE_BR,
   SCREENATOR_STAR_HANDLE_CENTRE,
   /* Not a visible handle: the drag that sets the radius and rotation from a
    * newly placed centre. */
@@ -506,6 +512,10 @@ typedef struct
   gint                 star_press_y;
   gdouble              star_press_cx;
   gdouble              star_press_cy;
+  gdouble              star_scale_fixed_x;
+  gdouble              star_scale_fixed_y;
+  gdouble              star_scale_base_x;
+  gdouble              star_scale_base_y;
 
   /* Triangle tool: three vertex handles keep the shape editable until it is
    * committed. */
@@ -550,9 +560,9 @@ typedef struct
   gdouble               frame_press_distance;
   guint                 frame_seed;
 
-  /* State of the current stylus side-button action.  The tip is button 1,
-   * the first side button is button 2 (temporary eraser or colour step) and
-   * the second side button is button 3 (Escape). */
+  /* State of the current stylus side-button action. The tip is button 1,
+   * the first side button is button 2 (colour step, or Eraser when selected)
+   * and the second side button is button 3 (Escape). */
   gboolean             stylus_eraser_active;
   gboolean             menu_button_down;
 
@@ -839,6 +849,7 @@ typedef struct
   gboolean     paper_window_fullscreen;
   gboolean     paper_window_mode;
   gboolean     paper_window_focused;
+  guint        paper_window_fit_id;
 
   /* Guards against a dialog-opening menu entry firing twice. */
   gboolean     paper_pdf_chooser_busy;
@@ -868,6 +879,15 @@ typedef struct
    * annotation surface. */
   cairo_surface_t *vector_undobuffer[SCREENATOR_MAX_UNDO];
   gboolean         vector_undo_valid[SCREENATOR_MAX_UNDO];
+
+  /* Page and view that belong to each undo/redo slot, so one document-wide
+   * history can step across pages and restore the view that was active when
+   * the drawing was made. */
+  ScreenatorPaperType undo_paper[SCREENATOR_MAX_UNDO];
+  guint              undo_page[SCREENATOR_MAX_UNDO];
+  gint               undo_view_x[SCREENATOR_MAX_UNDO];
+  gint               undo_view_y[SCREENATOR_MAX_UNDO];
+  gint               undo_scroll_y[SCREENATOR_MAX_UNDO];
 
   /* Undo/redo for page insertion and deletion.  Drawing undo takes
    * precedence while its own history is non-empty. */
@@ -971,6 +991,10 @@ void snap_undo_state (ScreenatorData *data);
 void undo_drawing (ScreenatorData *data);
 void redo_drawing (ScreenatorData *data);
 void screenator_undo (ScreenatorData *data);
+void screenator_paper_restore_undo_state (ScreenatorData *data,
+					  ScreenatorPaperType paper,
+					  guint page, gint view_x, gint view_y,
+					  gint scroll_y);
 void screenator_redo (ScreenatorData *data);
 void screenator_page_history_clear (ScreenatorData *data);
 void screenator_page_redo_clear (ScreenatorData *data);

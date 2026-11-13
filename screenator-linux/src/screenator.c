@@ -1790,6 +1790,40 @@ paper_vector_undo_clear (ScreenatorData *data)
     }
 }
 
+/* Store the page and view that belong to the snapshot in this undo slot. */
+static void
+paper_undo_record_position (ScreenatorData *data, gint index)
+{
+  ScreenatorPaperDocument *doc;
+  ScreenatorPaperPage *page;
+  guint page_index;
+
+  if (!data || index < 0 || index >= SCREENATOR_MAX_UNDO)
+    return;
+
+  data->undo_paper[index] = SCREENATOR_PAPER_NONE;
+  data->undo_page[index] = 0;
+  data->undo_view_x[index] = 0;
+  data->undo_view_y[index] = 0;
+  data->undo_scroll_y[index] = 0;
+
+  if (data->paper == SCREENATOR_PAPER_NONE)
+    return;
+
+  doc = data->paper_docs[data->paper];
+  if (!doc || !doc->pages || doc->pages->len == 0)
+    return;
+
+  page_index = MIN (doc->page, doc->pages->len - 1);
+  page = &g_array_index (doc->pages, ScreenatorPaperPage, page_index);
+
+  data->undo_paper[index] = data->paper;
+  data->undo_page[index] = page_index;
+  data->undo_view_x[index] = page->view_x;
+  data->undo_view_y[index] = page->view_y;
+  data->undo_scroll_y[index] = doc->pdf_scroll_y;
+}
+
 void snap_undo_state (ScreenatorData *data)
 {
   if(data->debug)
@@ -1797,6 +1831,7 @@ void snap_undo_state (ScreenatorData *data)
 
   copy_surface(data->undobuffer[data->undo_head], data->backbuffer);
   paper_vector_undo_snapshot (data, data->undo_head);
+  paper_undo_record_position (data, data->undo_head);
 
   // Increment head position
   data->undo_head++;
@@ -1873,17 +1908,29 @@ void swap_surfaces (cairo_surface_t *a, cairo_surface_t *b)
   cairo_surface_destroy(temp);
 }
 
-/* Undo and redo belong to one drawing layer.  They are cleared whenever the
- * active layer changes (Screen Annotation to a Paper Drawing page, or from
- * one page to another), so a step can never be replayed onto another page. */
+/* The drawing history is document-wide while Paper mode is active.  It is
+ * cleared when the document is replaced or reset, when the paper type or mode
+ * changes, and when the screen or paper geometry changes, because the stored
+ * snapshots no longer match the active surface.  Ordinary page navigation and
+ * panning keep the history. */
 void
 reset_undo_history (ScreenatorData *data)
 {
+  gint i;
+
   paper_vector_undo_clear (data);
   data->undo_head = 0;
   data->undo_depth = 0;
   data->redo_depth = 0;
-  paper_vector_undo_clear (data);
+
+  for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+    {
+      data->undo_paper[i] = SCREENATOR_PAPER_NONE;
+      data->undo_page[i] = 0;
+      data->undo_view_x[i] = 0;
+      data->undo_view_y[i] = 0;
+      data->undo_scroll_y[i] = 0;
+    }
 }
 
 
@@ -1900,6 +1947,11 @@ void undo_drawing (ScreenatorData *data)
   data->undo_head--;
   if(data->undo_head < 0)
     data->undo_head += SCREENATOR_MAX_UNDO;
+
+  screenator_paper_restore_undo_state (
+    data, data->undo_paper[data->undo_head], data->undo_page[data->undo_head],
+    data->undo_view_x[data->undo_head], data->undo_view_y[data->undo_head],
+    data->undo_scroll_y[data->undo_head]);
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
   paper_vector_undo_swap (data, data->undo_head);
@@ -1923,6 +1975,11 @@ void redo_drawing (ScreenatorData *data)
 {
   if(data->redo_depth <= 0)
     return;
+
+  screenator_paper_restore_undo_state (
+    data, data->undo_paper[data->undo_head], data->undo_page[data->undo_head],
+    data->undo_view_x[data->undo_head], data->undo_view_y[data->undo_head],
+    data->undo_scroll_y[data->undo_head]);
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
   paper_vector_undo_swap (data, data->undo_head);
@@ -4554,8 +4611,10 @@ star_build_path (cairo_t *cr, const ScreenatorStar *star)
     {
       gdouble angle = star->rotation + i * G_PI / star->points;
       gdouble r = (i % 2 == 0) ? star->radius : star->radius * inner;
-      gdouble x = star->cx + r * cos (angle);
-      gdouble y = star->cy + r * sin (angle);
+      gdouble scale_x = star->scale_x > 0.0 ? star->scale_x : 1.0;
+      gdouble scale_y = star->scale_y > 0.0 ? star->scale_y : 1.0;
+      gdouble x = star->cx + r * cos (angle) * scale_x;
+      gdouble y = star->cy + r * sin (angle) * scale_y;
 
       if (i == 0)
 	cairo_move_to (cr, x, y);
@@ -4572,11 +4631,14 @@ static void
 star_stroke_outside (cairo_t *cr, const ScreenatorStar *star,
 		     gint line_width)
 {
-  gdouble r = MAX (star->radius, 1.0) + line_width + 8.0;
+  gdouble scale_x = star->scale_x > 0.0 ? star->scale_x : 1.0;
+  gdouble scale_y = star->scale_y > 0.0 ? star->scale_y : 1.0;
+  gdouble rx = MAX (star->radius * scale_x, 1.0) + line_width + 8.0;
+  gdouble ry = MAX (star->radius * scale_y, 1.0) + line_width + 8.0;
 
   cairo_save (cr);
   cairo_new_path (cr);
-  cairo_rectangle (cr, star->cx - r, star->cy - r, 2.0 * r, 2.0 * r);
+  cairo_rectangle (cr, star->cx - rx, star->cy - ry, 2.0 * rx, 2.0 * ry);
   star_build_path (cr, star);
   cairo_set_fill_rule (cr, CAIRO_FILL_RULE_EVEN_ODD);
   cairo_clip (cr);
@@ -4625,8 +4687,6 @@ draw_star (ScreenatorData *data, cairo_t *cr, const ScreenatorStar *star)
 void
 star_get_bounds (const ScreenatorStar *star, gint pad, GdkRectangle *bounds)
 {
-  gdouble r;
-
   if (!star)
     {
       bounds->x = bounds->y = bounds->width = bounds->height = 0;
@@ -4635,12 +4695,17 @@ star_get_bounds (const ScreenatorStar *star, gint pad, GdkRectangle *bounds)
 
   /* A star that is still being dragged out has no radius yet; keep a small
    * box around the centre so its handles are erased when it is dropped. */
-  r = MAX (star->radius, 8.0) + pad;
+  {
+    gdouble scale_x = star->scale_x > 0.0 ? star->scale_x : 1.0;
+    gdouble scale_y = star->scale_y > 0.0 ? star->scale_y : 1.0;
+    gdouble rx = MAX (star->radius * scale_x, 8.0) + pad;
+    gdouble ry = MAX (star->radius * scale_y, 8.0) + pad;
 
-  bounds->x = (gint) floor (star->cx - r);
-  bounds->y = (gint) floor (star->cy - r);
-  bounds->width = (gint) ceil (2.0 * r);
-  bounds->height = (gint) ceil (2.0 * r);
+    bounds->x = (gint) floor (star->cx - rx);
+    bounds->y = (gint) floor (star->cy - ry);
+    bounds->width = (gint) ceil (2.0 * rx);
+    bounds->height = (gint) ceil (2.0 * ry);
+  }
 }
 
 
@@ -5516,21 +5581,9 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   */
   read_keyfile(data);
 
-  /* Always start on the normal desktop, even if Paper Drawing was selected
-   * when the application last exited.  Keep the saved paper type (including
-   * PDF) so F3 can turn Paper Drawing back on with it. */
-  if (data->paper_selected < SCREENATOR_PAPER_PLAIN ||
-      data->paper_selected > SCREENATOR_PAPER_PDF)
-    data->paper_selected =
-      (data->paper >= SCREENATOR_PAPER_PLAIN &&
-       data->paper <= SCREENATOR_PAPER_GRAPH)
-      ? data->paper : SCREENATOR_PAPER_PLAIN;
-
-  /* A selected PDF needs a remembered file; otherwise fall back to Plain. */
-  if (data->paper_selected == SCREENATOR_PAPER_PDF &&
-      (!data->paper_pdf_path || !*data->paper_pdf_path))
-    data->paper_selected = SCREENATOR_PAPER_PLAIN;
-
+  /* Start on the desktop with Plain selected. Keep the remembered PDF and
+   * paper documents so their pages and paper-size settings remain available. */
+  data->paper_selected = SCREENATOR_PAPER_PLAIN;
   data->paper = SCREENATOR_PAPER_NONE;
 
   /* The saved paper type changes how much of the window is visible. */

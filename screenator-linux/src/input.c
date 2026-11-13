@@ -1563,6 +1563,15 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  return TRUE;
 	}
 
+      if (!data->text_editor_active &&
+	  (event->state & GDK_CONTROL_MASK) != 0 &&
+	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
+	  shortcut_event_matches_key (event, GDK_KEY_o))
+	{
+	  screenator_paper_open_pdf (data);
+	  return TRUE;
+	}
+
       /* Ctrl+W switches between fullscreen and Window mode. */
       if ((event->state & GDK_CONTROL_MASK) != 0 &&
 	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
@@ -1579,16 +1588,6 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  shortcut_event_matches_key (event, GDK_KEY_d))
 	{
 	  screenator_toggle_paper_panel (data);
-	  return TRUE;
-	}
-
-      if (screenator_shortcut_matches (data,
-				       SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
-				       event))
-	{
-	  if (data->text_editor_active)
-	    return FALSE;
-	  toggle_drawings_visibility (data);
 	  return TRUE;
 	}
 
@@ -1660,6 +1659,17 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	      return TRUE;
 	    }
 	}
+    }
+
+  if (data->paper == SCREENATOR_PAPER_NONE && !data->quick_menu &&
+      screenator_shortcut_matches (data,
+				   SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
+				   event))
+    {
+      if (data->text_editor_active)
+	return FALSE;
+      toggle_drawings_visibility (data);
+      return TRUE;
     }
 
   /* The screenshot shortcut works in both Screen and Paper modes. */

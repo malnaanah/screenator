@@ -9,13 +9,17 @@ change the line colour, thickness and opacity, choose the text font, and
 resize the floating icon. The drawing stays on screen as long as you need it,
 and you can keep using your applications while it is visible.
 
+Screenator starts in Screen mode with Plain selected for the next time Paper
+mode is opened. Remembered PDF files, their pages and paper-size settings are
+kept.
+
 ## Features
 
 - A small draggable floating icon. Left or right click opens the menu with:
-  Pen, Text, Eraser, Arrow, Timer, Shapes (Marker, Line, Spline, Polygon,
+  Cursor, Pen, Text, Eraser, Arrow, Timer, Shapes (Marker, Line, Spline, Polygon,
   Triangle, Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel
   Lines, Random Signal), Actions (Switch Mode, Undo, Redo, Clear Screen,
-  Toggle Visibility, Screenshot, Show toolbar, Show Floating Icon, Show
+  Toggle Visibility (Screen mode only), Screenshot, Show toolbar, Show Floating Icon, Show
   Hints), Line Thickness, Line Color, Shapes Fill Color, Paper, Eraser Size,
   Opacity, Marker Opacity, Settings..., About and Quit. Quit uses `quit.png` and is also the
   last button in the toolbar. The icon turns into its active (red)
@@ -24,7 +28,8 @@ and you can keep using your applications while it is visible.
   and suspends drawing.
   **Settings**
   opens a tabbed dialog with a **General** tab (save annotations, font,
-  settings indicator, timer delay, reset settings), a **Paper** tab
+  settings indicator, timer delay, reset settings, open configuration folder),
+  a **Paper** tab
   (continuous scrolling and paper size), a **Toolbar** tab (direction, icon
   size, and each icon's visibility and order, changed by dragging), a
   **Floating Icon** tab (icon size and position) and a
@@ -61,9 +66,11 @@ and you can keep using your applications while it is visible.
   entry closest to the current width.
 - While painting mode is active, the mouse wheel steps the line colours,
   including the custom colour, or the shape fill colours over the Paint Bucket.
-  With the Eraser tool selected, it changes the eraser size instead. There is
-  no long-right-click menu; a right click finishes the current shape or exits
-  painting like Escape.
+  With the Eraser tool selected, it changes the eraser size instead. Middle
+  clicks never erase. Right click accepts typed text first, then commits
+  visible handles on another click; a later right click starts erasing without
+  exiting the selected tool.
+  With Eraser selected, right click or stylus button 2 changes its size.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the
@@ -89,14 +96,14 @@ and you can keep using your applications while it is visible.
   annotation.
 - Polygon: the first click sets its centre, and dragging sets the radius and
   rotation around that centre; a plain click keeps a default size. The shape
-  stays editable until it is committed. Four handles shape it: the square
+  stays editable until it is committed. Six handles shape it: the square
   handle controls the number of sides (3 to 16); pressing it resets the shape
   to 3 sides. Moving away from the handle in any direction adds sides, and
   moving back towards it removes them again, down to 3 at the handle. One
-  round handle sets the radius, one sets the rotation, and one moves the inner
-  vertices outwards until the shape becomes a regular polygon; that handle
-  snaps to the flat edge when it gets close, so a regular polygon is easy to
-  hit. Drag inside the shape to move it. Clicking empty space commits it and
+  round handle sets the radius, one sets the rotation, one moves the inner
+  vertices outwards until the shape becomes a regular polygon, and four corner
+  handles scale it in X and Y after rotation; the inner handle snaps to the
+  flat edge when it gets close, so a regular polygon is easy to hit. Drag inside the shape to move it. Clicking empty space commits it and
   places the next one; double-click or right-click commits it.
 - Triangle: each click places the next vertex. A line follows the pointer after
   the first click, and the remaining sides follow after the second click.
@@ -114,7 +121,8 @@ and you can keep using your applications while it is visible.
   holding `Ctrl` snaps it to 0, 30, 45, 60, 90 and so on. The rounded
   rectangle keeps a roundness handle on its top edge as well: drag it away from
   the corner to round the corners more, or towards the corner for sharper
-  corners. Clicking outside, double-clicking or right-clicking commits the
+  corners. While dragging an ellipse or rounded rectangle, hold `Ctrl` to make
+  a circle or square. Clicking outside, double-clicking or right-clicking commits the
   shape.
 - Math Function opens a dialog for the expression and the range. The
   Rectangular mode plots `y = f(x)` over an x range; type a function of `x`.
@@ -165,12 +173,15 @@ and you can keep using your applications while it is visible.
 - The Text tool shows an I-beam cursor and writes directly at the click
   position: a small inline editor appears where you click, using the pen
   colour and the chosen font; the text is centred vertically on the click
-  point. Press `Enter` to place the text or `Esc` to cancel. While the editor
-  is open the mouse buttons are disabled, so a click cannot leave painting mode
-  or reach the application below; `Enter` or `Esc` enables them again. The text
+  point. Press `Enter` to place the text or `Esc` to cancel. In Screen mode, a
+  left click or a stylus tip while the editor is open accepts the current text,
+  commits its handles and starts a new one at the click position; in Paper mode
+  a click does not place it. No click reaches the application below, and
+  `Enter` or `Esc` enables the mouse again. The text
   and its blinking caret are drawn above the annotations and the paper page,
-  so they stay visible even over a drawing. The middle mouse button still
-  erases while it is held, also with the Text tool selected. Right-to-left text
+  so they stay visible even over a drawing. The middle mouse button does not
+  erase in Screen mode and pans in Paper mode; it accepts typed text first.
+  Right-to-left text
   such as Arabic extends to the left of the click position. A placed text stays editable: drag it to move it, drag
   a corner handle to change the font size and its round handle to rotate it.
 - The same menu is shown by the system tray icon.
@@ -191,14 +202,14 @@ and you can keep using your applications while it is visible.
   visible border, and each dialog is raised as it opens, which also works in
   virtual machines without a compositor.
 - A **Paper** submenu holds the paper tools, and **Actions** holds Switch
-  Mode (F3), Undo, Redo, Clear Screen, Toggle Visibility, Screenshot, Show
+  Mode (F3), Undo, Redo, Clear Screen, Screenshot, Show
   toolbar (F10), Show Floating Icon (F9) and Show Hints. **Switch Mode**
   turns **Paper** mode on or off and is also the first item in the toolbar.
   Plain, Ruled and Graph
   are white pages (with blue writing lines for Ruled and a grey square grid for
-  Graph), and selecting **PDF** opens the desktop's own file chooser (KDE,
-  GNOME, etc.). **Reset/Open PDF.** in the Paper menu or the tool bar's Paper
-  Type menu resets the current Plain, Ruled or Graph paper to one empty page,
+  Graph), and selecting **PDF File** opens the desktop's own file chooser (KDE,
+  GNOME, etc.). **Reset Page or PDF File** in the Paper menu or the tool bar's
+  Paper Type menu resets the current Plain, Ruled or Graph paper to one empty page,
   or opens another PDF when the current paper is PDF. If the current paper has
   unsaved changes, Screenator asks whether to save it in the Documents folder
   first. Selecting a paper type, or opening a PDF, switches to
@@ -255,9 +266,9 @@ and you can keep using your applications while it is visible.
   holding the right mouse button or stylus side button 2 selects the Eraser
   and shows the eraser cursor. No long press is needed, and both work whether
   a tool is active or not; releasing the right button or stylus button 2
-  restores the previous tool. A right click or stylus side button 2 acts as
-  Escape while a shape or text is unfinished; once it is committed the same
-  button is a temporary eraser and keeps the selected tool. The mouse wheel
+  restores the previous tool. A middle click accepts typed text or commits
+  shape/text handles before panning. Right click accepts text first, commits
+  its handles on the next click, then starts erasing on a later click. The mouse wheel
   scrolls the pages, except while a placed shape or text shows its handles:
   then the wheel and stylus button 1 change its colour. While text is being
   typed, the wheel and stylus side button 1 also change the text colour.
@@ -271,7 +282,6 @@ and you can keep using your applications while it is visible.
   **Eraser**, **Arrow**, **Timer**, **Shapes**, **Undo**, **Redo**, **Save**,
   **Paper Type**, **Insert Page Before**, **Delete Page**, **Insert Page
   After**, **Current Page**, **Go to Page**, **Clear Screen**,
-  **Toggle Visibility**,
   **Eraser Size**, **Line Color**,
   **Thickness**, **Fill Color**, **Opacity**, **Marker Opacity**, **Settings**,
   **Show Hints** and **Quit** last.
@@ -279,12 +289,14 @@ and you can keep using your applications while it is visible.
   selects Plain, Ruled, Graph or
   PDF, and the insert-page buttons insert a page in an active Plain, Ruled or
   Graph paper; both are hidden in **Screen** mode. The **Timer** icon appears
-  only in **Screen** mode, and **Toggle Visibility** is hidden from the tool
-  bar in **Paper** mode. **Save** saves the paper as
+  only in **Screen** mode. Toggle Visibility and Ctrl+T are available only in
+  **Screen** mode; the menu item and toolbar icon are absent in **Paper** mode.
+  **Ctrl+O** opens a PDF in **Paper** mode. **Save** saves the paper as
   a PDF, or takes a screenshot in **Screen** mode. **Cursor** exits the
   current tool and is available in both modes. In **Paper** mode, when no tool
   is active, the middle mouse button or stylus side button 1 pans the page,
   the wheel scrolls it and the right button or stylus side button 2 erases.
+  Middle click never erases; with Eraser selected, stylus side button 1 erases.
   Drag any icon
   or the gaps between them to move the bar; a short click still selects the
   tool. The bar stays open when a tool or a menu entry is chosen, the selected
@@ -294,11 +306,19 @@ and you can keep using your applications while it is visible.
   Shortcuts**. Its open/closed state is
   remembered. **Settings > Paper** also sets continuous scrolling and the
   paper size: Screen, A4 portrait, A4 landscape, or Custom width and height in
-  millimetres. The size applies to Plain, Ruled and Graph pages and scales
-  their existing drawings; PDF pages keep the PDF's own size. Continuous PDF
+  millimetres. A4 and Custom pages always take the current screen or Paper
+  window width, with their height following the paper ratio. The size applies
+  to Plain, Ruled and Graph pages and scales their existing drawings; PDF pages
+  keep the PDF's own size. Screen-size pages follow the Paper window's width
+  and height in Window mode, and return to the display size in fullscreen.
+  Window mode scales the canvas uniformly to the window, preserving shape
+  proportions. The drawing stays anchored to the top when the window gets
+  taller and to the left when it gets wider.
+  Continuous PDF
   pages are separated by a grey gap so their edges stay visible.
-  Screenator always starts on the normal desktop; unsaved paper pages are not
-  restored.
+  Screenator always starts on the normal desktop with Plain selected for the
+  next Paper session; remembered PDF files, pages and paper-size settings stay
+  available.
 - A single, colourful **Hints** dialog appears when Screenator starts. It is a
   700x500 scrollable column that summarises the common mouse and stylus
   controls plus Shape Editing tips, the global **F9** shortcut and the Screen
@@ -318,7 +338,9 @@ and you can keep using your applications while it is visible.
   the configuration file and saved drawings, clears every paper page, and
   restores red, 6 px, 100% opacity, no shape fill, Arial Bold 24, a 60 px
   eraser, a 48x48 icon, a 2 s Timer Delay, a visible 32 px horizontal tool bar
-  with all icons, and **Paper** mode off.
+  with all icons, and **Paper** mode off. Beside it, `Open Configuration
+  Folder` opens `~/.config/Screenator`, and the folder path is shown below the
+  buttons.
 - `F9` is a global shortcut that shows or hides the floating icon at any
   time. `F8` selects the Pen tool, `F6` the Arrow tool, `F7` the Text
   tool and `F12` starts the Timer. `F10` shows or hides the tool bar in
@@ -333,21 +355,27 @@ and you can keep using your applications while it is visible.
   Num Lock on. `Esc` first finishes the current shape or closes its handles
   and keeps the selected tool. Press it again to exit the tool and select the
   **Cursor** tool, so its icon becomes active. Drawing undo is used first
-  while drawing history exists. Undo history keeps 50 steps in every mode.
+  while drawing history exists. Undo history keeps 50 steps in every mode and
+  covers the whole document: switching pages does not clear it, and undo
+  returns to the page and view where the step was made.
 - Stylus: **IMPORTANT:** In your stylus configuration, set button 1 (near the
   tip) to **Middle Click** and button 2 to **Right Click**. The tip draws like
   the left mouse button, using the selected line
   width; pen pressure is ignored so it behaves exactly like the mouse. The
-  first side button and the middle mouse button activate the temporary eraser
-  on a normal press, with no long press. While a text or shape still shows its
+  first side button and the middle mouse button do not erase. With Pen
+  selected, middle mouse does nothing. While a text or shape still shows its
   handles, the first side button changes its colour instead. The second side
-  button acts like Escape/right click, finishing the shape being edited and
-  keeping the tool active, or leaving painting mode when no shape is being
-  edited. There is no side-button popup menu. In **Paper Drawing** the buttons
+  button acts like right click: it accepts text, then commits visible handles
+  on another click before a later click erases, without exiting the tool. With Eraser selected it
+  changes eraser size; the first side button erases when Eraser is selected.
+  There is no side-button popup menu. In **Paper Drawing** the buttons
   change roles: hold side button 1 or the middle mouse button to pan, and hold
-  side button 2 or the right mouse button to erase. No long press is needed;
+  side button 2 or the right mouse button to erase. Middle click never erases.
+  No long press is needed;
   releasing the right button or side button 2 brings the previous tool back.
-  The mouse wheel scrolls the pages. The hints dialog covers the
+  A middle click accepts typed text or commits handles before panning. The
+  mouse wheel scrolls the pages except while text is being typed or handles
+  are edited, when it changes colour. The hints dialog covers the
   stylus controls at startup and can be reopened with **Show Hints**.
 
 ## Build
