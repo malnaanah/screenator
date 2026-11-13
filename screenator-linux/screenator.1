@@ -43,10 +43,10 @@ its colour.
 .br
 While painting mode is active, the mouse wheel steps through the line colours,
 including the custom colour, or the shape fill colours over the Paint Bucket.
-With the Eraser tool selected, the wheel changes the eraser size instead.
+In Screen mode, with the Eraser tool selected, the wheel changes the eraser size instead.
 There is no long-right-click menu; middle clicks never erase. Right click
 accepts typed text first, commits visible
-handles on another click, and starts erasing on a later click. With Eraser
+handles on another click, and starts erasing on a later click. In Screen mode, with Eraser
 selected, right click or stylus button 2
 changes its size. The change is the same as picking it from
 the menu, so it is kept when another tool is selected and is shown in the
@@ -150,7 +150,7 @@ next or previous page at the top or bottom edge. In Paper mode, holding the mous
 stylus side button 1 pans the
 paper and shows a hand
 cursor; holding the right mouse button or stylus side button 2 selects the
-Eraser and shows the eraser cursor. No long press is needed, and both work
+Eraser and shows the eraser cursor. Eraser and Paint Bucket panning use a 200 ms delay; other tools pan immediately, and both work
 whether a tool is active or not; releasing the right button or stylus button 2
 restores the previous tool. A middle click accepts typed text or commits
 shape/text handles before panning. Right click accepts text, commits its
@@ -281,7 +281,11 @@ is 5. Clicking the signal without dragging generates a new signal with a new
 seed. The frame can be moved, resized and rotated with the usual handles.
 .br
 The Paint Bucket fills the closed area under the click with the Shapes Fill
-Color. The area must be enclosed by drawn strokes and must not reach the screen
+Color. In Screen and Paper modes, the mouse wheel or stylus Button 1 cycles
+the fill color, regardless of the wheel or stylus setting.
+In Paper mode, short-click stylus Button 1 or middle mouse to change color;
+hold and drag to pan after a brief 200 ms delay and a small movement, including while hovering.
+The area must be enclosed by drawn strokes and must not reach the screen
 edge; otherwise nothing is filled, so clicking outside a shape cannot flood the
 whole screen. With None selected the bucket erases the enclosed fill instead,
 leaving the strokes around it. The tool shows a bucket cursor.
@@ -401,6 +405,12 @@ first finishes the current shape or closes its handles and keeps the selected
 tool. Pressing it again exits the tool and selects the Cursor tool so its icon
 becomes active. These keys are only grabbed while painting, so they keep their
 normal meaning in other applications.
+.SH PAPER ERASER CONTROLS
+In Paper mode, Clear Screen clears the whole page with the largest visible
+area and preserves neighboring pages. With Eraser selected, the wheel scrolls
+pages. A short Button 1 (middle-click) press changes eraser size; holding and dragging it
+pans the page after a brief 200 ms delay and a small movement, including while hovering.
+Holding Button 2 (right-click) erases while hovering.
 .SH STYLUS
 .B IMPORTANT:
 In your stylus configuration, set button 1 (near the tip) to Middle Click and
@@ -409,16 +419,16 @@ The stylus tip draws like the left mouse button, using the selected line
 width; pen pressure is ignored so it draws exactly like the mouse. The first
 side button and the middle mouse button do not erase on a normal press. With
 Pen selected, middle mouse does nothing.
-With Eraser selected, stylus side button 1 erases and side button 2 changes
+In Screen mode, with Eraser selected, stylus side button 1 erases and side button 2 changes
 its size. While a text or shape still shows its
 handles, the first side button changes its colour instead. The second side
 button acts like right click: it accepts text, then commits visible handles on
-another click before a later click erases, without exiting the tool. With
+another click before a later click erases, without exiting the tool. In Screen mode, with
 Eraser selected it changes
 the eraser size. There is no side-button popup menu. In Paper mode the buttons
 change roles: hold side button 1 or the middle mouse button to pan, and hold
 side button 2 or the right mouse button to erase. Middle click never erases.
-No long press is needed; releasing the right button or
+Eraser and Paint Bucket panning use a 200 ms delay; other tools pan immediately; releasing the right button or
 side button 2 brings the previous tool back. A middle click accepts typed text
 or commits handles before panning. The mouse wheel scrolls the pages except
 while text is being typed or handles are edited, when it changes colour.

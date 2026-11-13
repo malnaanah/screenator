@@ -822,6 +822,8 @@ typedef struct
   gint         paper_pan_x;
   gint         paper_pan_y;
   guint        paper_pan_button;
+  gint64       paper_pan_started;
+  gboolean     paper_pan_moved;
 
   /* Temporary eraser while the right mouse button or stylus side button 2
    * is pressed in Paper Drawing. */
@@ -877,6 +879,7 @@ typedef struct
   /* Parallel vector snapshots for the active paper page, so undo and redo
    * restore the recorded vector layer instead of falling back to the raster
    * annotation surface. */
+  cairo_surface_t *page_clear_undobuffer[SCREENATOR_MAX_UNDO];
   cairo_surface_t *vector_undobuffer[SCREENATOR_MAX_UNDO];
   gboolean         vector_undo_valid[SCREENATOR_MAX_UNDO];
 
@@ -1101,5 +1104,8 @@ void set_tray_icon (ScreenatorData *data);
 void show_dialog_above_drawings (ScreenatorData *data, GtkWidget *dialog);
 
 int app_parse_args (int argc, char **argv, ScreenatorData *data);
+
+void screenator_paper_clear_current (ScreenatorData *data);
+void screenator_paper_swap_clear (ScreenatorData *data, gint slot);
 
 #endif

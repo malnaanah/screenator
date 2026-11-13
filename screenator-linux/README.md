@@ -66,11 +66,11 @@ kept.
   entry closest to the current width.
 - While painting mode is active, the mouse wheel steps the line colours,
   including the custom colour, or the shape fill colours over the Paint Bucket.
-  With the Eraser tool selected, it changes the eraser size instead. Middle
+  In Screen mode, with the Eraser tool selected, it changes the eraser size instead. Middle
   clicks never erase. Right click accepts typed text first, then commits
   visible handles on another click; a later right click starts erasing without
   exiting the selected tool.
-  With Eraser selected, right click or stylus button 2 changes its size.
+  In Screen mode, with Eraser selected, right click or stylus button 2 changes its size.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the
@@ -162,7 +162,11 @@ kept.
   Clicking the signal without dragging generates a new signal with a new seed.
   The frame can be moved, resized and rotated with the usual handles.
 - Paint Bucket fills the closed area under the click with the current Shapes
-  Fill Color. The area must be enclosed by drawn strokes and must not reach the
+  Fill Color. In Screen and Paper modes, the mouse wheel or stylus Button 1
+  cycles the fill color, regardless of the wheel or stylus setting.
+  In Paper mode, short-click stylus Button 1 or middle mouse to change color;
+  hold and drag to pan after a brief 200 ms delay and a small movement, including while hovering.
+  The area must be enclosed by drawn strokes and must not reach the
   screen edge; otherwise nothing is filled, so clicking outside a shape cannot
   flood the whole screen. With None selected the bucket erases the enclosed
   fill instead, leaving the strokes around it. The tool shows a bucket cursor. Green is the first
@@ -264,7 +268,7 @@ kept.
   edge. In **Paper** mode, holding the mouse middle
   button or stylus side button 1 pans the paper and shows a hand cursor;
   holding the right mouse button or stylus side button 2 selects the Eraser
-  and shows the eraser cursor. No long press is needed, and both work whether
+  and shows the eraser cursor. Eraser and Paint Bucket panning use a 200 ms delay; other tools pan immediately, and both work whether
   a tool is active or not; releasing the right button or stylus button 2
   restores the previous tool. A middle click accepts typed text or commits
   shape/text handles before panning. Right click accepts text first, commits
@@ -366,8 +370,8 @@ kept.
   selected, middle mouse does nothing. While a text or shape still shows its
   handles, the first side button changes its colour instead. The second side
   button acts like right click: it accepts text, then commits visible handles
-  on another click before a later click erases, without exiting the tool. With Eraser selected it
-  changes eraser size; the first side button erases when Eraser is selected.
+  on another click before a later click erases, without exiting the tool. In Screen mode, with Eraser selected it
+  changes eraser size; the first side button erases in Screen mode when Eraser is selected.
   There is no side-button popup menu. In **Paper Drawing** the buttons
   change roles: hold side button 1 or the middle mouse button to pan, and hold
   side button 2 or the right mouse button to erase. Middle click never erases.
@@ -377,6 +381,12 @@ kept.
   mouse wheel scrolls the pages except while text is being typed or handles
   are edited, when it changes colour. The hints dialog covers the
   stylus controls at startup and can be reopened with **Show Hints**.
+
+In **Paper** mode, **Clear Screen** clears the whole page with the largest
+visible area and preserves neighboring pages. With **Eraser** selected, the
+wheel scrolls pages; a short Button 1 (middle-click) press changes eraser size,
+while holding and dragging pans the page after a brief 200 ms delay and a
+small movement, including while hovering. Holding Button 2 (right-click) erases while hovering.
 
 ## Build
 

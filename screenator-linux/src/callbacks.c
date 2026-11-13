@@ -582,6 +582,7 @@ static void activate_tool_now (ScreenatorData *data, gint pen_tool,
 static gboolean show_math_dialog (ScreenatorData *data);
 static void quick_menu_cancel (ScreenatorData *data);
 static gboolean eraser_tool_active (ScreenatorData *data);
+static gboolean bucket_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
 static void apply_icon_size (ScreenatorData *data, guint new_size);
 static void on_icon_timer (GtkMenuItem *menuitem, gpointer user_data);
@@ -5134,19 +5135,19 @@ gboolean on_buttonpress (GtkWidget *win,
     g_printerr("DEBUG: Device '%s': Button %i Down State %d at (x,y)=(%.2f : %.2f)\n",
 	       gdk_device_get_name(ev->device), ev->button, ev->state, ev->x, ev->y);
 
-  /* While the Paint Bucket is selected, middle mouse and stylus button 1
-   * cycle the fill colour instead of panning or starting another action. */
-  if (ev->button == 2 && data->forced_context &&
-      data->forced_context->type == SCREENATOR_SHAPE &&
-      data->shape_type == SCREENATOR_SHAPE_BUCKET)
+  /* In Screen mode the bucket changes colour on press. Paper mode waits
+   * for release to distinguish a short colour click from a held pan. */
+  if (ev->button == 2 && bucket_tool_active (data) &&
+      data->paper == SCREENATOR_PAPER_NONE)
     {
       apply_scroll_step (data, TRUE, TRUE);
       return TRUE;
     }
 
-  /* When Eraser is selected, the secondary mouse or stylus button changes
+  /* In Screen mode with Eraser selected, the secondary button changes
    * its size instead of starting a temporary eraser gesture. */
-  if (eraser_tool_active (data) && ev->button == 3)
+  if (data->paper == SCREENATOR_PAPER_NONE &&
+      eraser_tool_active (data) && ev->button == 3)
     {
       apply_stylus_step (data, TRUE);
       return TRUE;
@@ -5209,12 +5210,10 @@ gboolean on_buttonpress (GtkWidget *win,
 
   /* In Paper Drawing the middle mouse button and stylus side button 1 pan
    * the paper. The right mouse button and stylus side button 2 erase only
-   * while held. With Eraser selected, stylus side button 1 uses the eraser. */
+   * while held. With Eraser selected, a short button 1 click changes size. */
   if (data->paper != SCREENATOR_PAPER_NONE)
     {
-      if (ev->button == 2 &&
-          !(event_source_is_stylus ((GdkEvent *) ev) &&
-            eraser_tool_active (data)))
+      if (ev->button == 2)
 	{
 	  /* With a placed shape or text selected, the stylus first side
 	   * button recolours it instead of starting a pan. */
@@ -6139,7 +6138,15 @@ gboolean on_buttonrelease (GtkWidget *win,
 
   if (data->paper_panning && ev->button == data->paper_pan_button)
     {
+      gboolean bucket = bucket_tool_active (data);
+      gboolean step = (eraser_tool_active (data) || bucket) &&
+        !data->paper_pan_moved &&
+        g_get_monotonic_time () - data->paper_pan_started < 500000;
       screenator_paper_pan_end (data);
+      if (step && bucket)
+        apply_scroll_step (data, TRUE, TRUE);
+      else if (step)
+        apply_stylus_step (data, TRUE);
       return TRUE;
     }
 
@@ -7482,6 +7489,14 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
     apply_shape_fill (data, fill_colors[current].name);
 }
 
+static gboolean
+bucket_tool_active (ScreenatorData *data)
+{
+  return data->forced_context &&
+    data->forced_context->type == SCREENATOR_SHAPE &&
+    data->shape_type == SCREENATOR_SHAPE_BUCKET;
+}
+
 /* TRUE while the Eraser tool is the selected tool. */
 static gboolean
 eraser_tool_active (ScreenatorData *data)
@@ -7667,11 +7682,15 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  if (data->text_editor_active ||
+  if (data->forced_context &&
+      data->forced_context->type == SCREENATOR_SHAPE &&
+      data->shape_type == SCREENATOR_SHAPE_BUCKET)
+    cycle_shape_fill_color (data, down);
+  else if (data->text_editor_active ||
       (data->paper == SCREENATOR_PAPER_NONE &&
        editable_handles_active (data)))
     apply_scroll_step (data, down, TRUE);
-  else if (eraser_tool_active (data))
+  else if (data->paper == SCREENATOR_PAPER_NONE && eraser_tool_active (data))
     cycle_eraser_size (data, down);
   else if (data->paper != SCREENATOR_PAPER_NONE)
     {
@@ -8910,6 +8929,90 @@ paper_load_continuous_view (ScreenatorData *data,
 
   cairo_destroy (cr);
   data->paper_page_dirty = FALSE;
+}
+
+/* Clear the whole page with the largest visible area, keeping its background. */
+void
+screenator_paper_clear_current (ScreenatorData *data)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page;
+  guint index, i;
+  gint64 largest = -1;
+
+  if (!doc || !doc->pages || !doc->pages->len)
+    return;
+
+  paper_commit_pending (data);
+  paper_store_active_page (data);
+  index = doc->page;
+  if (paper_continuous (data))
+    for (i = 0; i < doc->pages->len; i++)
+      {
+        ScreenatorPaperPage *candidate =
+          &g_array_index (doc->pages, ScreenatorPaperPage, i);
+        gint y = g_array_index (doc->pdf_page_tops, gint, i) - doc->pdf_scroll_y;
+        gint height = MAX (0, MIN (paper_view_height (data),
+                                  y + candidate->canvas_height) - MAX (0, y));
+        gint64 area = (gint64) height * MIN ((gint) data->width,
+                                                   candidate->canvas_width);
+        if (area > largest)
+          {
+            largest = area;
+            index = i;
+          }
+      }
+
+  doc->page = index;
+  data->paper_pdf_page = index;
+  page = paper_current_page (doc);
+  if (!page || !page->annotations)
+    return;
+  if (paper_continuous (data))
+    {
+      page->view_x = 0;
+      page->view_y = doc->pdf_scroll_y -
+        g_array_index (doc->pdf_page_tops, gint, index);
+    }
+  snap_undo_state (data);
+  i = (data->undo_head + SCREENATOR_MAX_UNDO - 1) % SCREENATOR_MAX_UNDO;
+  data->page_clear_undobuffer[i] = page->annotations;
+  page->annotations = NULL;
+  if (page->vector)
+    cairo_surface_destroy (page->vector);
+  page->vector = NULL;
+  page->vector_valid = TRUE;
+  page->painted = FALSE;
+  doc->modified = TRUE;
+  if (paper_continuous (data))
+    paper_load_continuous_view (data, doc);
+  else
+    paper_load_page (data, page);
+  paper_top_bar_update_active_tool (data);
+  paper_repaint (data);
+  schedule_tray_menu_refresh (data);
+}
+
+void
+screenator_paper_swap_clear (ScreenatorData *data, gint slot)
+{
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  ScreenatorPaperPage *page = paper_current_page (doc);
+  cairo_surface_t *surface;
+
+  if (!page || !data->page_clear_undobuffer[slot])
+    return;
+  surface = page->annotations;
+  if (!surface)
+    surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+                                          page->canvas_width, page->canvas_height);
+  page->annotations = data->page_clear_undobuffer[slot];
+  data->page_clear_undobuffer[slot] = surface;
+  page->painted = TRUE;
+  if (paper_continuous (data))
+    paper_load_continuous_view (data, doc);
+  else
+    paper_load_page (data, page);
 }
 
 /* Shift the screen-sized drawing backbuffer vertically.  Scrolling then only
@@ -10352,6 +10455,8 @@ screenator_paper_pan_start (ScreenatorData *data, guint button, gint x, gint y)
   data->paper_pan_button = button;
   data->paper_pan_x = x;
   data->paper_pan_y = y;
+  data->paper_pan_started = g_get_monotonic_time ();
+  data->paper_pan_moved = FALSE;
   set_paper_pan_cursor (data);
 }
 
@@ -10365,6 +10470,16 @@ screenator_paper_pan_motion (ScreenatorData *data, gint x, gint y)
   if (!data->paper_panning)
     return;
 
+  /* A brief delay and movement threshold distinguish size/colour clicks
+   * from drags without the old half-second pause before panning. */
+  if ((eraser_tool_active (data) || bucket_tool_active (data)) &&
+      !data->paper_pan_moved &&
+      (g_get_monotonic_time () - data->paper_pan_started < 200000 ||
+       (ABS (x - data->paper_pan_x) < 4 &&
+        ABS (y - data->paper_pan_y) < 4)))
+    return;
+
+  data->paper_pan_moved = TRUE;
   dx = x - data->paper_pan_x;
   dy = y - data->paper_pan_y;
   data->paper_pan_x = x;
@@ -15038,6 +15153,9 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	                               gtk_image_new_from_pixbuf (
 	                                 load_menu_icon (shapes[i].icon)));
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), shape_item);
+	if (shapes[i].callback == G_CALLBACK (on_icon_bucket))
+	  gtk_widget_set_tooltip_text (shape_item,
+	    "Wheel: change fill color. Button 1 / middle mouse: click to change fill color; in Paper mode, hold and drag to pan after a brief 200 ms delay, including while hovering.");
 	g_signal_connect (shape_item, "activate", shapes[i].callback, data);
 	gtk_widget_show (shape_item);
       }
@@ -18311,7 +18429,9 @@ paper_top_bar_create (ScreenatorData *data)
       {
 	{ "pen.png",    "Pen (F8)",   "pen",    1, -1 },
 	{ "text.png",   "Text (F7)",  "text",   4, -1 },
-	{ "eraser.png", "Eraser",     "eraser", 3, -1 },
+	{ "eraser.png",
+          "Eraser (Paper: wheel scrolls; Button 1 / middle mouse: click changes size, hold and drag to pan after 200 ms; Button 2: hold to erase, including while hovering)",
+          "eraser", 3, -1 },
 	{ "arrow.png",  "Arrow (F6)", "arrow",  2, SCREENATOR_SHAPE_ARROW }
       };
     guint i;
@@ -18444,7 +18564,8 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Clear Screen and Toggle Visibility, after Shapes. */
-  button = paper_top_bar_icon_button (data, "trash.png", "Clear Screen");
+  button = paper_top_bar_icon_button (data, "trash.png",
+    "Clear Screen (Paper: clear the page with the largest visible area)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "clear");
   g_signal_connect (button, "clicked",

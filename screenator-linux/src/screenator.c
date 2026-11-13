@@ -56,8 +56,6 @@ static void paper_record_triangle (ScreenatorData *data,
 				   const ScreenatorTriangle *triangle);
 static void paper_record_spline (ScreenatorData *data, GArray *nodes);
 
-static void paper_clear_active_vector (ScreenatorData *data);
-
 /* Build the eraser cursor from the configured eraser width.  The ring is a
  * little larger than the erasing circle so it stays visible, and the hotspot
  * sits in its centre.  Recreating the cursor whenever the size changes keeps
@@ -1404,16 +1402,17 @@ screenator_mark_modified (ScreenatorData *data)
 
 void clear_screen (ScreenatorData *data)
 {
+  if (data->paper != SCREENATOR_PAPER_NONE)
+    {
+      screenator_paper_clear_current (data);
+      return;
+    }
+
   /* Clearing is undoable: save the drawings before they are erased.  An
    * already empty canvas does not need an undo step. */
   if (surface_has_annotations (data->backbuffer))
     {
       snap_undo_state (data);
-      if (data->paper != SCREENATOR_PAPER_NONE)
-	{
-	  screenator_mark_modified (data);
-	  paper_clear_active_vector (data);
-	}
     }
 
   cairo_t *cr = cairo_create(data->backbuffer);
@@ -1783,6 +1782,9 @@ paper_vector_undo_clear (ScreenatorData *data)
 
   for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
     {
+      if (data->page_clear_undobuffer[i])
+        cairo_surface_destroy (data->page_clear_undobuffer[i]);
+      data->page_clear_undobuffer[i] = NULL;
       if (data->vector_undobuffer[i])
 	cairo_surface_destroy (data->vector_undobuffer[i]);
       data->vector_undobuffer[i] = NULL;
@@ -1829,6 +1831,9 @@ void snap_undo_state (ScreenatorData *data)
   if(data->debug)
     g_printerr ("DEBUG: Snapping undo buffer %d.\n", data->undo_head);
 
+  if (data->page_clear_undobuffer[data->undo_head])
+    cairo_surface_destroy (data->page_clear_undobuffer[data->undo_head]);
+  data->page_clear_undobuffer[data->undo_head] = NULL;
   copy_surface(data->undobuffer[data->undo_head], data->backbuffer);
   paper_vector_undo_snapshot (data, data->undo_head);
   paper_undo_record_position (data, data->undo_head);
@@ -1955,6 +1960,7 @@ void undo_drawing (ScreenatorData *data)
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
   paper_vector_undo_swap (data, data->undo_head);
+  screenator_paper_swap_clear (data, data->undo_head);
 
   /* Undoing a Clear Screen brings the drawings back; undoing something on an
    * empty canvas leaves it empty. */
@@ -1983,6 +1989,7 @@ void redo_drawing (ScreenatorData *data)
 
   swap_surfaces(data->backbuffer, data->undobuffer[data->undo_head]);
   paper_vector_undo_swap (data, data->undo_head);
+  screenator_paper_swap_clear (data, data->undo_head);
 
   data->redo_depth--;
   data->undo_depth++;
@@ -5350,26 +5357,6 @@ void
 screenator_paper_record_spline (ScreenatorData *data, GArray *nodes)
 {
   paper_record_spline (data, nodes);
-}
-
-static void
-paper_clear_active_vector (ScreenatorData *data)
-{
-  ScreenatorPaperDocument *doc;
-  ScreenatorPaperPage *page;
-
-  if (!data || data->paper == SCREENATOR_PAPER_NONE)
-    return;
-
-  doc = data->paper_docs[data->paper];
-  if (!doc || !doc->pages || !doc->pages->len)
-    return;
-
-  page = &g_array_index (doc->pages, ScreenatorPaperPage, doc->page);
-  if (page->vector)
-    cairo_surface_destroy (page->vector);
-  page->vector = NULL;
-  page->vector_valid = TRUE;
 }
 
 /*
