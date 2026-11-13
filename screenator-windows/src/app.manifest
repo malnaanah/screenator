@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity version="7.0.0.0" processorArchitecture="*"
+  <assemblyIdentity version="8.0.0.0" processorArchitecture="*"
                     name="Screenator" type="win32"/>
   <description>Screenator screen annotation tool</description>
   <dependency>

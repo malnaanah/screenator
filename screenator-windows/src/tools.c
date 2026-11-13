@@ -149,7 +149,9 @@ void step_eraser_width(int dir)
 static void ensure_surface(cairo_surface_t **s)
 {
   if (!*s)
-    *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, g.vw, g.vh);
+    *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+                                    paper_page_width(),
+                                    paper_page_height());
 }
 
 static void copy_surface(cairo_surface_t *dst, cairo_surface_t *src)
@@ -162,10 +164,18 @@ static void copy_surface(cairo_surface_t *dst, cairo_surface_t *src)
   cairo_surface_mark_dirty(dst);
 }
 
+/* Document/page each undo/redo snapshot belongs to, so history can span
+ * pages and paper documents. */
+static int undo_token[MAX_UNDO];
+static int redo_token[MAX_UNDO];
+
 void tools_push_undo(void)
 {
+  paper_note_drawing_change();
   ensure_surface(&g.undo[g.undo_head]);
   copy_surface(g.undo[g.undo_head], g.backbuf);
+  paper_vector_undo_push(g.undo_head);
+  undo_token[g.undo_head] = paper_undo_token();
   g.undo_head = (g.undo_head + 1) % MAX_UNDO;
   if (g.undo_depth < MAX_UNDO) g.undo_depth++;
   g.redo_depth = 0;
@@ -174,46 +184,101 @@ void tools_push_undo(void)
 
 void tools_undo(void)
 {
+  int slot, token;
+
   if (g.undo_depth <= 0) return;
   tools_commit(0);
+  paper_note_drawing_change();
 
+  slot = (g.undo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  token = undo_token[slot];
+  if (token >= 0 && !paper_undo_goto(token)) return;
+  /* Capture the page being undone, not the page the user was viewing. */
   ensure_surface(&g.redo[g.redo_head]);
   copy_surface(g.redo[g.redo_head], g.backbuf);
+  paper_vector_capture_redo(g.redo_head);
+  redo_token[g.redo_head] = token;
   g.redo_head = (g.redo_head + 1) % MAX_UNDO;
   if (g.redo_depth < MAX_UNDO) g.redo_depth++;
 
-  g.undo_head = (g.undo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  g.undo_head = slot;
   g.undo_depth--;
-  copy_surface(g.backbuf, g.undo[g.undo_head]);
+  copy_surface(g.backbuf, g.undo[slot]);
+  paper_vector_swap_undo(slot);
+  paper_sync_current();
   app_request_render();
   ui_refresh_tray();
 }
 
 void tools_redo(void)
 {
+  int slot, token;
+
   if (g.redo_depth <= 0) return;
   tools_commit(0);
-
+  paper_note_drawing_change();
+  /* Committing an edit can invalidate redo. */
+  if (g.redo_depth <= 0) return;
+  slot = (g.redo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  token = redo_token[slot];
+  if (token >= 0 && !paper_undo_goto(token)) return;
   ensure_surface(&g.undo[g.undo_head]);
   copy_surface(g.undo[g.undo_head], g.backbuf);
+  paper_vector_undo_push(g.undo_head);
+  undo_token[g.undo_head] = token;
   g.undo_head = (g.undo_head + 1) % MAX_UNDO;
   if (g.undo_depth < MAX_UNDO) g.undo_depth++;
 
-  g.redo_head = (g.redo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  g.redo_head = slot;
   g.redo_depth--;
-  copy_surface(g.backbuf, g.redo[g.redo_head]);
+  copy_surface(g.backbuf, g.redo[slot]);
+  paper_vector_swap_redo(slot);
+  paper_sync_current();
   app_request_render();
   ui_refresh_tray();
+}
+
+/* Clear drawing history when a document is replaced or its pages change.
+ * Ordinary page navigation keeps the shared history and its page tokens. */
+void tools_clear_undo(void)
+{
+  for (int i = 0; i < MAX_UNDO; i++)
+    {
+      if (g.undo[i])
+        {
+          cairo_surface_destroy(g.undo[i]);
+          g.undo[i] = NULL;
+        }
+      if (g.redo[i])
+        {
+          cairo_surface_destroy(g.redo[i]);
+          g.redo[i] = NULL;
+        }
+    }
+  g.undo_head = g.undo_depth = 0;
+  g.redo_head = g.redo_depth = 0;
+  paper_vector_undo_clear();
 }
 
 void tools_clear(void)
 {
   tools_commit(0);
+  if (g.paper != PAPER_NONE) paper_select_view_page();
   tools_push_undo();
   cairo_t *cr = cairo_create(g.backbuf);
   cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
   cairo_paint(cr);
   cairo_destroy(cr);
+  {
+    cairo_t *v = paper_vector_context();
+    if (v)
+      {
+        cairo_set_operator(v, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(v);
+        cairo_destroy(v);
+      }
+    paper_clear_erase();
+  }
   if (!g.smoke) annotations_remove();
   app_request_render();
   ui_refresh_tray();
@@ -249,6 +314,11 @@ static void marker_leave(void)
 void tools_activate(Tool t)
 {
   dlog("tools_activate %d (current %d)", (int) t, (int) g.tool);
+  if (g.timer_running)
+    {
+      dlog("tool selection locked by timer");
+      return;
+    }
   g.tool_delay_deferred = 0;
   if (t == TOOL_MATH && !g.math_ready)
     {
@@ -291,10 +361,7 @@ void tools_activate(Tool t)
 
   app_activate_overlay_input();
   app_install_wheel_hook();
-  RegisterHotKey(g.msgwin, HK_ESC, MOD_NOREPEAT, VK_ESCAPE);
-  RegisterHotKey(g.msgwin, HK_UNDO, MOD_CONTROL | MOD_NOREPEAT, 'Z');
-  RegisterHotKey(g.msgwin, HK_REDO,
-                 MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Z');
+  app_hotkeys_refresh();
 
   app_update_cursor();
   ui_update_icon();
@@ -304,6 +371,11 @@ void tools_activate(Tool t)
 
 void tools_request(Tool t)
 {
+  if (g.timer_running)
+    {
+      dlog("tool request locked by timer");
+      return;
+    }
   if (t == g.tool && g.edit == EDIT_NONE)
     {
       tools_activate(t);
@@ -323,6 +395,7 @@ void tools_request(Tool t)
 void tools_exit(void)
 {
   dlog("tools_exit");
+  app_cancel_timer();
   /* A captured menu belongs to the active tool session.  Do not let it
    * outlive the tool when Screenator becomes idle again. */
   app_clear_menu_ghost();
@@ -345,19 +418,8 @@ void tools_exit(void)
   g.poly_placing = 0;
   g.tri_placing = 0;
 
-  UnregisterHotKey(g.msgwin, HK_ESC);
-  UnregisterHotKey(g.msgwin, HK_UNDO);
-  UnregisterHotKey(g.msgwin, HK_REDO);
-
   app_remove_wheel_hook();
-
-  if (g.paper != PAPER_NONE)
-    {
-      /* The screen paper keeps the undo shortcuts even without a tool. */
-      RegisterHotKey(g.msgwin, HK_UNDO, MOD_CONTROL | MOD_NOREPEAT, 'Z');
-      RegisterHotKey(g.msgwin, HK_REDO,
-                     MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 'Z');
-    }
+  app_hotkeys_refresh();
 
   app_deactivate_overlay_input();
   app_update_cursor();
@@ -374,6 +436,89 @@ int tools_editing(void)
 /* ------------------------------------------------------------------ */
 /* committing                                                         */
 /* ------------------------------------------------------------------ */
+
+/* The vertical extent of the shape being edited, in the current page's local
+ * coordinates.  Used to split a shape or text that spans two pages in the
+ * continuous strip. */
+static int shape_vertical_bounds(double *miny, double *maxy)
+{
+  switch (g.edit)
+    {
+    case EDIT_LINE:
+      {
+        double a = g.line.y0 < g.line.y1 ? g.line.y0 : g.line.y1;
+        double b = g.line.y0 > g.line.y1 ? g.line.y0 : g.line.y1;
+        *miny = a;
+        *maxy = b;
+        return 1;
+      }
+    case EDIT_FRAME:
+      {
+        {
+          double hw = g.frame.frame.w / 2.0;
+          double hh = g.frame.frame.h / 2.0;
+          double s = sin(g.frame.frame.rotation);
+          double cc = cos(g.frame.frame.rotation);
+          double ey = fabs(hw * s) + fabs(hh * cc);
+          *miny = g.frame.frame.cy - ey;
+          *maxy = g.frame.frame.cy + ey;
+        }
+        return 1;
+      }
+    default:
+      return 0;
+    }
+}
+
+/* Draw the edited shape into the current page's raster and vector layers,
+ * translated vertically by dy.  The page surface clips any overflow. */
+static void commit_draw_shape(int dy, Color c)
+{
+  cairo_t *cr = cairo_create(g.backbuf);
+  cairo_save(cr);
+  if (dy) cairo_translate(cr, 0, (double) dy);
+  switch (g.edit)
+    {
+    case EDIT_LINE: draw_line_shape(cr, &g.line, g.pen_width, c); break;
+    case EDIT_SPLINE: draw_spline_shape(cr, g.nodes, g.nnodes, g.pen_width, c); break;
+    case EDIT_POLYGON: draw_polygon_shape(cr, &g.poly, g.pen_width, c); break;
+    case EDIT_TRIANGLE: draw_triangle_shape(cr, &g.tri, g.pen_width, c); break;
+    case EDIT_FRAME: draw_frame_shape(cr, &g.frame); break;
+    default: break;
+    }
+  cairo_restore(cr);
+  cairo_destroy(cr);
+  cairo_surface_mark_dirty(g.backbuf);
+  {
+    cairo_t *v = paper_vector_context();
+    if (v)
+      {
+        cairo_save(v);
+        if (dy) cairo_translate(v, 0, (double) dy);
+        switch (g.edit)
+          {
+          case EDIT_LINE: draw_line_shape(v, &g.line, g.pen_width, c); break;
+          case EDIT_SPLINE: draw_spline_shape(v, g.nodes, g.nnodes, g.pen_width, c); break;
+          case EDIT_POLYGON: draw_polygon_shape(v, &g.poly, g.pen_width, c); break;
+          case EDIT_TRIANGLE: draw_triangle_shape(v, &g.tri, g.pen_width, c); break;
+          case EDIT_FRAME:
+            if (g.frame.type != SHAPE_TEXT) draw_frame_shape(v, &g.frame);
+            break;
+          default: break;
+          }
+        cairo_restore(v);
+        cairo_destroy(v);
+      }
+  }
+  /* Text is exported from the page's text list, not the recording surface, so
+   * add a copy with the same vertical offset to each page it covers. */
+  if (g.edit == EDIT_FRAME && g.frame.type == SHAPE_TEXT)
+    {
+      FrameShape tmp = g.frame;
+      tmp.frame.cy += (double) dy;
+      paper_add_text(&tmp);
+    }
+}
 
 void tools_commit(int cancel)
 {
@@ -392,29 +537,44 @@ void tools_commit(int cancel)
   if (draw_it)
     {
       tools_push_undo();
-      cairo_t *cr = cairo_create(g.backbuf);
-      switch (g.edit)
-        {
-        case EDIT_LINE:
-          draw_line_shape(cr, &g.line, g.pen_width, c);
-          break;
-        case EDIT_SPLINE:
-          draw_spline_shape(cr, g.nodes, g.nnodes, g.pen_width, c);
-          break;
-        case EDIT_POLYGON:
-          draw_polygon_shape(cr, &g.poly, g.pen_width, c);
-          break;
-        case EDIT_TRIANGLE:
-          draw_triangle_shape(cr, &g.tri, g.pen_width, c);
-          break;
-        case EDIT_FRAME:
-          draw_frame_shape(cr, &g.frame);
-          break;
-        default:
-          break;
-        }
-      cairo_destroy(cr);
-      cairo_surface_mark_dirty(g.backbuf);
+      /* In the continuous strip a shape that spans two pages is split so each
+       * page shows its own portion, exactly like a pen stroke. */
+      {
+        /* A page's visible area in the next page's local coordinates is
+         * [stride, stride + page_h) and in the previous page's local
+         * coordinates is [-stride, -stride + page_h), so the split boundary
+         * is the page edge, not the stride (the gap strip covers anything
+         * drawn between the pages, like a pen stroke crossing). */
+        int base = paper_page_index();
+        int stride = paper_page_stride();
+        int pageh = paper_page_height();
+        double miny = 0, maxy = 0;
+        if (g.paper != PAPER_NONE && paper_continuous_active() &&
+            shape_vertical_bounds(&miny, &maxy))
+          {
+            int k = 1;
+            while (maxy > (double) (k - 1) * stride + pageh)
+              {
+                int idx = base + k;
+                if (idx >= paper_page_count()) break;
+                paper_switch_page_index(idx);
+                commit_draw_shape(-k * stride, c);
+                k++;
+              }
+            paper_switch_page_index(base);
+            k = 1;
+            while (miny < (double) pageh - (double) k * stride)
+              {
+                int idx = base - k;
+                if (idx < 0) break;
+                paper_switch_page_index(idx);
+                commit_draw_shape(k * stride, c);
+                k++;
+              }
+            paper_switch_page_index(base);
+          }
+        commit_draw_shape(0, c);
+      }
     }
 
   if (g.edit == EDIT_FRAME && g.frame.type == SHAPE_TEXT)
@@ -471,6 +631,18 @@ static cairo_t *stroke_cr(void)
   return cairo_create(g.backbuf);
 }
 
+/* Points of the current pen stroke, recorded so the whole translucent stroke
+ * can be written to the vector layer as one path in pen_finish(). */
+#define VEC_STROKE_MAX 8192
+static Pt vec_points[VEC_STROKE_MAX];
+static int vec_npoints;
+static int vec_stroke_on;
+
+static void vec_stroke_add(Pt p)
+{
+  if (vec_npoints < VEC_STROKE_MAX) vec_points[vec_npoints++] = p;
+}
+
 static void stroke_clear(void)
 {
   if (!g.strokebuf) return;
@@ -495,6 +667,12 @@ static void pen_begin(Pt p)
   g.pen_drawing = 1;
   g.smooth_first = 1;
   g.smooth_last = p;
+  if (g.paper != PAPER_NONE)
+    {
+      vec_npoints = 0;
+      vec_stroke_on = 1;
+      vec_stroke_add(p);
+    }
 
   cairo_t *cr = stroke_cr();
   Color c = g.pen_color;
@@ -525,6 +703,7 @@ static void pen_move(Pt p)
   cairo_destroy(cr);
   g.smooth_last = p;
   g.smooth_first = 0;
+  if (vec_stroke_on) vec_stroke_add(p);
 }
 
 static void pen_finish(void)
@@ -543,6 +722,36 @@ static void pen_finish(void)
     }
   g.stroke_buffer_active = 0;
   cairo_surface_mark_dirty(g.backbuf);
+
+  if (vec_stroke_on)
+    {
+      vec_stroke_on = 0;
+      if (vec_npoints > 0)
+        {
+          cairo_t *v = paper_vector_context();
+          if (v)
+            {
+              Color c = g.pen_color;
+              c.a = g.marker_active ? g.marker_opacity : g.opacity;
+              if (c.a < 0.05) c.a = 0.05;
+              set_source_color(v, c);
+              cairo_set_line_width(v, g.tool == TOOL_MARKER ? 32.0
+                                                             : g.pen_width);
+              cairo_set_line_cap(v, CAIRO_LINE_CAP_ROUND);
+              cairo_set_line_join(v, CAIRO_LINE_JOIN_ROUND);
+              cairo_move_to(v, vec_points[0].x, vec_points[0].y);
+              for (int i = 1; i < vec_npoints; i++)
+                cairo_line_to(v, vec_points[i].x, vec_points[i].y);
+              if (vec_npoints == 1)
+                cairo_line_to(v, vec_points[0].x + 0.01,
+                              vec_points[0].y + 0.01);
+              cairo_stroke(v);
+              cairo_destroy(v);
+            }
+        }
+      vec_npoints = 0;
+    }
+
   app_request_render();
   ui_refresh_tray();
 }
@@ -554,6 +763,8 @@ static void erase_dot(Pt p)
   cairo_arc(cr, p.x, p.y, g.eraser_width / 2.0, 0, 2 * M_PI);
   cairo_fill(cr);
   cairo_destroy(cr);
+  paper_note_erase();
+  paper_erase_add_point(p, g.eraser_width);
   cairo_surface_mark_dirty(g.backbuf);
   g.smooth_last = p;
 }
@@ -570,6 +781,8 @@ static void erase_segment(Pt p)
   cairo_arc(cr, p.x, p.y, g.eraser_width / 2.0, 0, 2 * M_PI);
   cairo_fill(cr);
   cairo_destroy(cr);
+  paper_note_erase();
+  paper_erase_add_point(p, g.eraser_width);
   cairo_surface_mark_dirty(g.backbuf);
   g.smooth_last = p;
 }
@@ -603,8 +816,23 @@ void tools_erase_end(void)
 {
   if (!g.middle_erasing) return;
   g.middle_erasing = 0;
+  paper_erase_end();
   app_update_cursor();
   app_request_render();
+}
+
+/* Finish a live freehand/marker stroke and a temporary eraser on the current
+ * page.  Called before switching to an adjacent page so a stroke that crosses
+ * a page boundary is split onto the correct pages. */
+void tools_split_page_stroke(void)
+{
+  if (g.pen_drawing)
+    {
+      pen_finish();
+      g.pen_drawing = 0;
+    }
+  if (g.middle_erasing)
+    tools_erase_end();
 }
 
 /* ------------------------------------------------------------------ */
@@ -695,22 +923,40 @@ static int line_hit(Pt p, int *handle)
 static int polygon_hit(Pt p, int *handle)
 {
   double r = g.poly.radius;
+  double sx = g.poly.sx > 0.01 ? g.poly.sx : 1.0;
+  double sy = g.poly.sy > 0.01 ? g.poly.sy : 1.0;
+  double rx = r * sx, ry = r * sy;
   Pt pts[64];
   int n = 0;
 
-  if (dist_pt(p, (Pt) { g.poly.cx + r + 22, g.poly.cy }) <= 9)
+  /* Corner handles scale the polygon on the x and y axes independently. */
+  if (dist_pt(p, (Pt) { g.poly.cx - rx, g.poly.cy - ry }) <= 9)
+    { *handle = PH_SCALE_TL; return 1; }
+  if (dist_pt(p, (Pt) { g.poly.cx + rx, g.poly.cy - ry }) <= 9)
+    { *handle = PH_SCALE_TR; return 1; }
+  if (dist_pt(p, (Pt) { g.poly.cx - rx, g.poly.cy + ry }) <= 9)
+    { *handle = PH_SCALE_BL; return 1; }
+  if (dist_pt(p, (Pt) { g.poly.cx + rx, g.poly.cy + ry }) <= 9)
+    { *handle = PH_SCALE_BR; return 1; }
+
+  if (dist_pt(p, (Pt) { g.poly.cx + rx + 22, g.poly.cy }) <= 9)
     { *handle = PH_POINTS; return 1; }
-  if (dist_pt(p, (Pt) { g.poly.cx + r, g.poly.cy }) <= 9)
+  if (dist_pt(p, (Pt) { g.poly.cx + rx, g.poly.cy }) <= 9)
     { *handle = PH_RADIUS; return 1; }
-  if (dist_pt(p, (Pt) { g.poly.cx + cos(g.poly.rotation) * r,
-                        g.poly.cy + sin(g.poly.rotation) * r }) <= 9)
-    { *handle = PH_ROTATION; return 1; }
-  if (dist_pt(p, (Pt) {
-        g.poly.cx + cos(g.poly.rotation + M_PI / g.poly.points) *
-                        r * g.poly.inner,
-        g.poly.cy + sin(g.poly.rotation + M_PI / g.poly.points) *
-                        r * g.poly.inner }) <= 9)
-    { *handle = PH_INNER; return 1; }
+  {
+    double c = cos(g.poly.rotation), s = sin(g.poly.rotation);
+    if (dist_pt(p, (Pt) { g.poly.cx + r * c * sx,
+                          g.poly.cy + r * s * sy }) <= 9)
+      { *handle = PH_ROTATION; return 1; }
+    {
+      double rr = r * g.poly.inner;
+      double vx = cos(M_PI / g.poly.points) * rr;
+      double vy = sin(M_PI / g.poly.points) * rr;
+      if (dist_pt(p, (Pt) { g.poly.cx + (vx * c - vy * s) * sx,
+                            g.poly.cy + (vx * s + vy * c) * sy }) <= 9)
+        { *handle = PH_INNER; return 1; }
+    }
+  }
 
   polygon_vertices(&g.poly, pts, &n);
   if (point_in_poly(p, pts, n))
@@ -740,6 +986,8 @@ static void default_polygon(double x, double y)
   g.poly.cy = y;
   g.poly.radius = 64;
   g.poly.inner = 0.45;
+  g.poly.sx = 1.0;
+  g.poly.sy = 1.0;
   g.poly.rotation = -M_PI / 2;
   g.poly.points = 5;
   g.edit = EDIT_POLYGON;
@@ -943,8 +1191,8 @@ void tools_pointer_down(Pt p, int button, int ctrl, int shift)
               line_press[3] = g.line.y1;
               return;
             }
+          /* Finish the old line and start a new one with this same click. */
           tools_commit(0);
-          return;
         }
       if (g.edit == EDIT_SPLINE)
         {
@@ -960,6 +1208,7 @@ void tools_pointer_down(Pt p, int button, int ctrl, int shift)
               g.press_cx = g.poly.cx;
               g.press_cy = g.poly.cy;
               g.press_distance = dist_pt(p, (Pt) { g.poly.cx, g.poly.cy });
+              g.press_w = g.poly.radius;
               angle0 = atan2(p.y - g.poly.cy, p.x - g.poly.cx);
               if (h == PH_POINTS) g.poly.points = 3;
               g.drag_started = 0;
@@ -1024,8 +1273,13 @@ void tools_pointer_down(Pt p, int button, int ctrl, int shift)
             }
           Tool keep = g.tool;
           tools_commit(0);
-          if (keep == TOOL_TEXT) app_begin_text(p);
-          return;
+          /* Text starts a new editor at this click; every other frame tool
+           * falls through and starts a new shape with the same click. */
+          if (keep == TOOL_TEXT)
+            {
+              app_begin_text(p);
+              return;
+            }
         }
 
       tools_commit(0);
@@ -1267,9 +1521,13 @@ void tools_pointer_move(Pt p, int ctrl, int shift)
           double dx = p.x - g.poly.cx;
           double dy = p.y - g.poly.cy;
           double dist = hypot(dx, dy);
+          double sx = g.poly.sx > 0.01 ? g.poly.sx : 1.0;
           if (dist > 12.0)
             {
-              g.poly.radius = dist;
+              /* The handle sits at cx + radius * sx; keep it under the
+               * pointer when the polygon is already scaled. */
+              g.poly.radius = g.poly_placing ? dist : fabs(dx) / sx;
+              if (g.poly.radius < 8.0) g.poly.radius = 8.0;
               /* While the polygon is being placed, the drag direction also
                * sets its rotation; the centre stays where it was clicked. */
               if (g.poly_placing)
@@ -1282,7 +1540,10 @@ void tools_pointer_move(Pt p, int ctrl, int shift)
         }
       else if (g.handle == PH_ROTATION)
         {
-          g.poly.rotation = atan2(p.y - g.poly.cy, p.x - g.poly.cx);
+          double sx = g.poly.sx > 0.01 ? g.poly.sx : 1.0;
+          double sy = g.poly.sy > 0.01 ? g.poly.sy : 1.0;
+          g.poly.rotation = atan2((p.y - g.poly.cy) / sy,
+                                  (p.x - g.poly.cx) / sx);
           if (ctrl) g.poly.rotation = snap_common_rotation(g.poly.rotation);
         }
       else if (g.handle == PH_INNER)
@@ -1290,19 +1551,38 @@ void tools_pointer_move(Pt p, int ctrl, int shift)
           double d = dist_pt(p, (Pt) { g.poly.cx, g.poly.cy });
           if (g.poly.radius > 1)
             {
-              double inner = d / g.poly.radius;
-              double tolerance = g.poly.radius * 0.08;
+              double sx = g.poly.sx > 0.01 ? g.poly.sx : 1.0;
+              double sy = g.poly.sy > 0.01 ? g.poly.sy : 1.0;
+              double ia = M_PI / g.poly.points;
+              double f = hypot(cos(ia) * sx, sin(ia) * sy);
+              double base = g.poly.radius * (f > 0.01 ? f : 1.0);
+              double inner = d / base;
+              double tolerance = base * 0.08;
               if (tolerance < 3.0) tolerance = 3.0;
               if (tolerance > 10.0) tolerance = 10.0;
-              double flat = cos(M_PI / g.poly.points);
+              double flat = cos(ia);
 
-              if (fabs(d - g.poly.radius * flat) <= tolerance)
+              if (fabs(d - base * flat) <= tolerance)
                 inner = flat;
 
               if (inner < 0.08) inner = 0.08;
               if (inner > 1.0) inner = 1.0;
               g.poly.inner = inner;
             }
+        }
+      else if (g.handle == PH_SCALE_TL || g.handle == PH_SCALE_TR ||
+               g.handle == PH_SCALE_BL || g.handle == PH_SCALE_BR)
+        {
+          /* Change the x and y scale independently, like the frame corners. */
+          double r = g.poly.radius > 1.0 ? g.poly.radius : 1.0;
+          double nx = fabs(p.x - g.poly.cx) / r;
+          double ny = fabs(p.y - g.poly.cy) / r;
+          if (nx < 0.05) nx = 0.05;
+          if (ny < 0.05) ny = 0.05;
+          if (nx > 20.0) nx = 20.0;
+          if (ny > 20.0) ny = 20.0;
+          g.poly.sx = nx;
+          g.poly.sy = ny;
         }
       else if (g.handle == PH_POINTS)
         {
@@ -1366,10 +1646,21 @@ void tools_pointer_move(Pt p, int ctrl, int shift)
     {
       if (g.drag_new_frame)
         {
-          g.frame.frame.cx = (g.press.x + p.x) / 2.0;
-          g.frame.frame.cy = (g.press.y + p.y) / 2.0;
-          g.frame.frame.w = fabs(p.x - g.press.x);
-          g.frame.frame.h = fabs(p.y - g.press.y);
+          double x2 = p.x, y2 = p.y;
+          /* Ctrl makes a rectangle/rounded rectangle/ellipse square or a
+           * circle (1:1 aspect ratio) while it is being drawn. */
+          if (ctrl && (g.frame.type == SHAPE_RRECT ||
+                       g.frame.type == SHAPE_ELLIPSE))
+            {
+              double dx = x2 - g.press.x, dy = y2 - g.press.y;
+              double m = fabs(dx) > fabs(dy) ? fabs(dx) : fabs(dy);
+              x2 = g.press.x + (dx < 0 ? -m : m);
+              y2 = g.press.y + (dy < 0 ? -m : m);
+            }
+          g.frame.frame.cx = (g.press.x + x2) / 2.0;
+          g.frame.frame.cy = (g.press.y + y2) / 2.0;
+          g.frame.frame.w = fabs(x2 - g.press.x);
+          g.frame.frame.h = fabs(y2 - g.press.y);
           app_request_render();
           return;
         }
@@ -1417,6 +1708,16 @@ void tools_pointer_move(Pt p, int ctrl, int shift)
               else { ox = -saved.w / 2; oy = -saved.h / 2; }
 
               double nw = fabs(lx - ox), nh = fabs(ly - oy);
+              /* Ctrl keeps the rectangle/ellipse corners square while
+               * resizing, like the 1:1 aspect used while drawing. */
+              if (ctrl && (g.frame.type == SHAPE_RRECT ||
+                           g.frame.type == SHAPE_ELLIPSE))
+                {
+                  double m = nw > nh ? nw : nh;
+                  nw = nh = m;
+                  lx = ox + (lx < ox ? -m : m);
+                  ly = oy + (ly < oy ? -m : m);
+                }
               if (nw < FRAME_MIN_SIZE) nw = FRAME_MIN_SIZE;
               if (nh < FRAME_MIN_SIZE) nh = FRAME_MIN_SIZE;
 
@@ -1491,6 +1792,7 @@ void tools_pointer_up(Pt p, int ctrl, int shift)
   if (g.middle_erasing)
     {
       g.middle_erasing = 0;
+      paper_erase_end();
       app_update_cursor();
       g.last = p;
       app_request_render();
@@ -1574,7 +1876,9 @@ void tools_right_short(Pt p)
 
 void tools_wheel(int delta)
 {
-  if (g.tool == TOOL_NONE) return;
+  /* Screen-mode wheel input only recolours active edits, handled by the
+   * caller before reaching the normal tool settings. */
+  if (g.paper == PAPER_NONE || g.tool == TOOL_NONE) return;
   int dir = delta > 0 ? 1 : -1;
 
   if (g.tool == TOOL_ERASER)
@@ -1663,6 +1967,57 @@ void tools_text_commit(const char *text, int cancelled)
 static int bucket_match(unsigned int *pix, unsigned int target)
 {
   return pix[0] == target;
+}
+
+static void vector_record_bucket(unsigned char *mask, unsigned char *data,
+                                 int stride, int erase)
+{
+  int w = g.vw, h = g.vh, x, y;
+  cairo_surface_t *patch;
+  unsigned char *pd;
+  int pstride;
+  cairo_t *v;
+
+  if (g.paper == PAPER_NONE) return;
+  patch = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+  if (cairo_surface_status(patch) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy(patch);
+      return;
+    }
+  cairo_surface_flush(patch);
+  pd = cairo_image_surface_get_data(patch);
+  pstride = cairo_image_surface_get_stride(patch);
+  memset(pd, 0, (size_t) pstride * (size_t) h);
+
+  for (y = 0; y < h; y++)
+    {
+      unsigned int *dst = (unsigned int *) (pd + (size_t) y * pstride);
+      unsigned int *src = (unsigned int *) (data + (size_t) y * stride);
+      for (x = 0; x < w; x++)
+        {
+          if (!mask[(size_t) y * w + x]) continue;
+          dst[x] = erase ? 0xFFFFFFFFu : src[x];
+        }
+    }
+  cairo_surface_mark_dirty(patch);
+
+  v = paper_vector_context();
+  if (v)
+    {
+      if (erase)
+        {
+          cairo_set_operator(v, CAIRO_OPERATOR_CLEAR);
+          cairo_mask_surface(v, patch, 0, 0);
+        }
+      else
+        {
+          cairo_set_source_surface(v, patch, 0, 0);
+          cairo_paint(v);
+        }
+      cairo_destroy(v);
+    }
+  cairo_surface_destroy(patch);
 }
 
 void bucket_fill(Pt p)
@@ -1844,8 +2199,25 @@ void bucket_fill(Pt p)
     }
 
   free(stack);
-  free(mask);
   cairo_surface_mark_dirty(g.backbuf);
+  if (!erase) vector_record_bucket(mask, data, stride, 0);
+  if (erase)
+    {
+      for (int yy = 0; yy < g.vh; yy++)
+        {
+          int xx = 0;
+          while (xx < g.vw)
+            {
+              while (xx < g.vw && !mask[(size_t) yy * g.vw + xx]) xx++;
+              if (xx >= g.vw) break;
+              int x1 = xx;
+              while (xx < g.vw && mask[(size_t) yy * g.vw + xx]) xx++;
+              paper_erase_add_span(x1, yy, xx - 1, yy, 1.0);
+            }
+        }
+      paper_erase_end();
+    }
+  free(mask);
   app_request_render();
   ui_refresh_tray();
 #undef PUSH

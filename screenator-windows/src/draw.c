@@ -128,6 +128,13 @@ void draw_paper(cairo_t *cr, Paper paper, int w, int h)
 {
   if (paper == PAPER_NONE) return;
 
+  /* PDF pages are rendered by paper.c (PDFium raster image). */
+  if (paper == PAPER_PDF)
+    {
+      paper_draw_pdf_page(cr, w, h);
+      return;
+    }
+
   cairo_save(cr);
   set_source_color(cr, color_rgb(255, 255, 255));
   cairo_rectangle(cr, 0, 0, w, h);
@@ -302,12 +309,22 @@ void draw_spline_shape(cairo_t *cr, const SplineNode *nodes, int count,
 void polygon_vertices(const StarShape *poly, Pt *out, int *count)
 {
   int n = poly->points * 2;
+  double sx = poly->sx > 0.01 ? poly->sx : 1.0;
+  double sy = poly->sy > 0.01 ? poly->sy : 1.0;
+  double c = cos(poly->rotation), s = sin(poly->rotation);
+
   for (int i = 0; i < n; i++)
     {
-      double angle = poly->rotation + (double) i * M_PI / poly->points;
+      double a = (double) i * M_PI / poly->points;
       double r = (i % 2 == 0) ? poly->radius : poly->radius * poly->inner;
-      out[i].x = poly->cx + cos(angle) * r;
-      out[i].y = poly->cy + sin(angle) * r;
+      /* Rotate the vertex first, then scale it along the screen's x and y
+       * axes, so the scale handles keep their meaning when the shape is
+       * rotated. */
+      double vx = cos(a) * r, vy = sin(a) * r;
+      double rx = vx * c - vy * s;
+      double ry = vx * s + vy * c;
+      out[i].x = poly->cx + rx * sx;
+      out[i].y = poly->cy + ry * sy;
     }
   *count = n;
 }
@@ -1160,8 +1177,14 @@ void draw_handles(cairo_t *cr)
         }
       frame_handle_pos(&g.frame, FH_ROTATE, &p);
       handle_circle(cr, p.x, p.y);
-      cairo_move_to(cr, g.frame.frame.cx, g.frame.frame.cy -
-                    g.frame.frame.h / 2);
+      {
+        /* The guide must start at the frame's rotated top edge, not at the
+         * unrotated top-centre position. */
+        double rc = cos(g.frame.frame.rotation);
+        double rs = sin(g.frame.frame.rotation);
+        cairo_move_to(cr, g.frame.frame.cx + g.frame.frame.h / 2 * rs,
+                      g.frame.frame.cy - g.frame.frame.h / 2 * rc);
+      }
       cairo_line_to(cr, p.x, p.y);
       cairo_set_line_width(cr, 1.0);
       cairo_set_source_rgba(cr, 0.15, 0.35, 0.85, 0.9);
@@ -1220,8 +1243,11 @@ void draw_handles(cairo_t *cr)
         {
           if (i > 0)
             {
+              /* Each tangent handle gets its own line from the node; chaining
+               * them made the second handle start where the first one ended. */
               cairo_move_to(cr, g.nodes[i].p.x, g.nodes[i].p.y);
               cairo_line_to(cr, g.nodes[i].in.x, g.nodes[i].in.y);
+              cairo_move_to(cr, g.nodes[i].p.x, g.nodes[i].p.y);
               cairo_line_to(cr, g.nodes[i].out.x, g.nodes[i].out.y);
               cairo_set_line_width(cr, 1.0);
               cairo_set_source_rgba(cr, 0.2, 0.2, 0.2, 0.55);
@@ -1237,17 +1263,34 @@ void draw_handles(cairo_t *cr)
       Pt verts[64];
       int n = 0;
       double r = g.poly.radius, rr = r * g.poly.inner;
+      double sx = g.poly.sx > 0.01 ? g.poly.sx : 1.0;
+      double sy = g.poly.sy > 0.01 ? g.poly.sy : 1.0;
+      double rx = r * sx, ry = r * sy;
+      double rc = cos(g.poly.rotation), rs = sin(g.poly.rotation);
       polygon_vertices(&g.poly, verts, &n);
 
-      handle_square(cr, g.poly.cx + r + 22, g.poly.cy);
-      handle_label(cr, g.poly.cx + r + 22, g.poly.cy,
+      /* Corner handles scale the polygon on the x and y axes independently. */
+      handle_square(cr, g.poly.cx - rx, g.poly.cy - ry);
+      handle_square(cr, g.poly.cx + rx, g.poly.cy - ry);
+      handle_square(cr, g.poly.cx - rx, g.poly.cy + ry);
+      handle_square(cr, g.poly.cx + rx, g.poly.cy + ry);
+
+      handle_square(cr, g.poly.cx + rx + 22, g.poly.cy);
+      handle_label(cr, g.poly.cx + rx + 22, g.poly.cy,
                    g.poly.points < 3 ? 3 : (g.poly.points > 16 ? 16 :
                                             g.poly.points));
-      handle_circle(cr, g.poly.cx + r, g.poly.cy);
-      handle_circle(cr, g.poly.cx + cos(g.poly.rotation) * r,
-                    g.poly.cy + sin(g.poly.rotation) * r);
-      handle_circle(cr, g.poly.cx + cos(g.poly.rotation + M_PI / g.poly.points) * rr,
-                    g.poly.cy + sin(g.poly.rotation + M_PI / g.poly.points) * rr);
+      handle_circle(cr, g.poly.cx + rx, g.poly.cy);
+      {
+        /* First vertex (rotation handle) and the inner vertex, both rotated
+         * and then scaled on the screen axes. */
+        double vx = r, vy = 0;
+        handle_circle(cr, g.poly.cx + (vx * rc - vy * rs) * sx,
+                      g.poly.cy + (vx * rs + vy * rc) * sy);
+        vx = cos(M_PI / g.poly.points) * rr;
+        vy = sin(M_PI / g.poly.points) * rr;
+        handle_circle(cr, g.poly.cx + (vx * rc - vy * rs) * sx,
+                      g.poly.cy + (vx * rs + vy * rc) * sy);
+      }
       handle_circle(cr, g.poly.cx, g.poly.cy);
     }
   else if (g.edit == EDIT_TRIANGLE)
@@ -1349,6 +1392,39 @@ void draw_text_editor(cairo_t *cr)
 
   pango_font_description_free(fd);
   g_object_unref(layout);
+}
+
+/* Populate the Pango/Fontconfig/FreeType caches at startup.  Without this the
+ * first text editor creation pauses for a few hundred milliseconds while the
+ * font is loaded. */
+void draw_warm_up_text(void)
+{
+  cairo_surface_t *s = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 8, 8);
+  cairo_t *cr;
+  PangoLayout *layout;
+  PangoFontDescription *fd;
+
+  if (cairo_surface_status(s) != CAIRO_STATUS_SUCCESS)
+    {
+      cairo_surface_destroy(s);
+      return;
+    }
+  cr = cairo_create(s);
+  layout = pango_cairo_create_layout(cr);
+  fd = pango_font_description_from_string(g.font);
+  if (fd)
+    {
+      pango_font_description_set_absolute_size(fd, font_pixel_size(g.font) *
+                                               PANGO_SCALE);
+      pango_layout_set_font_description(layout, fd);
+      pango_layout_set_text(layout, "Screenator", -1);
+      pango_layout_get_pixel_extents(layout, NULL, NULL);
+      pango_cairo_show_layout(cr, layout);
+      pango_font_description_free(fd);
+    }
+  g_object_unref(layout);
+  cairo_destroy(cr);
+  cairo_surface_destroy(s);
 }
 
 void draw_preview(cairo_t *cr)

@@ -35,11 +35,38 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "7.0"
-#define APP_TITLE    "Screenator 7.0"
-#define MAX_UNDO     4
+#define APP_VERSION  "8.0"
+#define APP_TITLE    "Screenator 8.0"
+#define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
+
+#define TOOLBAR_ITEMS_MAX 1024
+#define SHORTCUT_TEXT_MAX 32
+
+/* Toolbar items in their default order.  The same ids are used by the
+ * Settings > Toolbar > Configure dialog and by the toolbar builder. */
+#define TOOLBAR_DEFAULT_ITEMS \
+  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,save," \
+  "paper,page_insert_before,page_delete,page_insert_after,page_number," \
+  "goto_page,clear,visibility,eraser_size,line_color,thickness,fill_color," \
+  "opacity,marker_opacity,settings,hints,quit"
+
+/* Editable shortcuts.  Escape and Ctrl+F10 stay fixed. */
+typedef enum
+{
+  SK_ARROW = 0, SK_TEXT, SK_PEN, SK_ICON, SK_TOOLBAR, SK_SWITCH,
+  SK_SHOT, SK_TIMER, SK_UNDO, SK_REDO, SK_PAPER_Q, SK_PAPER_T,
+  SK_QUIT, SK_COUNT
+} ShortcutId;
+
+/* Popup menus opened at a toolbar button. */
+typedef enum
+{
+  TB_POPUP_NONE = 0, TB_POPUP_ERASER_SIZE, TB_POPUP_LINE_COLOR,
+  TB_POPUP_THICKNESS, TB_POPUP_FILL_COLOR, TB_POPUP_OPACITY,
+  TB_POPUP_MARKER_OPACITY, TB_POPUP_SHAPES, TB_POPUP_PAPER_TYPE
+} ToolbarPopup;
 
 /* Timer ids. */
 #define TIMER_TOOL_DELAY   1
@@ -48,6 +75,7 @@
 #define TIMER_CARET        7
 #define TIMER_STYLUS_HOLD  8
 #define TIMER_PEN_POLL     9
+#define TIMER_COUNTDOWN   10
 
 /* Hotkey ids. */
 #define HK_PEN       100
@@ -60,6 +88,11 @@
 #define HK_REDO      107
 #define HK_PAPER_Q   108
 #define HK_PAPER_T   109
+#define HK_QUIT      110
+#define HK_SWITCH    111
+#define HK_SHOT      112
+#define HK_TIMER     113
+#define HK_TOOLBAR   114
 
 /* Menu command ids. */
 enum
@@ -77,21 +110,33 @@ enum
   CMD_FILL_BASE,               /* +9 presets, first is None */
   CMD_FILL_CUSTOM = CMD_FILL_BASE + 9,
   CMD_PAPER_NONE, CMD_PAPER_PLAIN, CMD_PAPER_RULED, CMD_PAPER_GRAPH,
+  CMD_PAPER_PDF,
   CMD_ERASER_20, CMD_ERASER_40, CMD_ERASER_60, CMD_ERASER_120,
   CMD_OPACITY_10, CMD_OPACITY_20, CMD_OPACITY_30, CMD_OPACITY_40,
   CMD_OPACITY_50, CMD_OPACITY_60, CMD_OPACITY_70, CMD_OPACITY_80,
-  CMD_OPACITY_90,
+  CMD_OPACITY_90, CMD_OPACITY_100,
   CMD_ICON_16, CMD_ICON_24, CMD_ICON_32, CMD_ICON_48, CMD_ICON_64,
   CMD_ICON_128, CMD_ICON_256,
   CMD_UNDO, CMD_REDO, CMD_CLEAR, CMD_VISIBILITY,
   CMD_SHOW_ICON, CMD_SHOW_HINTS,
+  CMD_CURSOR, CMD_SWITCH_MODE, CMD_TIMER, CMD_SCREENSHOT, CMD_SAVE_OR_SHOT,
+  CMD_TOOLBAR_SHOW, CMD_TOOLBAR_HORIZ, CMD_TOOLBAR_VERT,
+  CMD_TOOLBAR_16, CMD_TOOLBAR_24, CMD_TOOLBAR_32, CMD_TOOLBAR_48,
+  CMD_SETTINGS,
   CMD_SAVE_ON_EXIT, CMD_FONT, CMD_SHOW_INDICATOR, CMD_ICON_POS,
   CMD_RESET, CMD_ABOUT, CMD_QUIT,
   CMD_WHEEL_COLOR, CMD_WHEEL_THICKNESS,
   CMD_STYLUS_COLOR, CMD_STYLUS_THICKNESS,
   CMD_MARKER_10, CMD_MARKER_20, CMD_MARKER_30, CMD_MARKER_40,
   CMD_MARKER_50, CMD_MARKER_60, CMD_MARKER_70, CMD_MARKER_80,
-  CMD_MARKER_90
+  CMD_MARKER_90,
+  CMD_TOOLBAR_CONFIGURE, CMD_SHORTCUTS,
+  /* Paper document / page commands. */
+  CMD_PAPER_OPEN_PDF, CMD_PAPER_SAVE, CMD_PAPER_INSERT_BEFORE,
+  CMD_PAPER_INSERT_AFTER, CMD_PAPER_DELETE, CMD_PAPER_PREV,
+  CMD_PAPER_NEXT, CMD_PAPER_GOTO, CMD_PAPER_PAGE_INDICATOR,
+  CMD_PAPER_UNDO, CMD_PAPER_REDO, CMD_PAPER_CONTINUOUS,
+  CMD_PAPER_RESET
 };
 
 typedef struct { double r, g, b, a; } Color;
@@ -100,8 +145,14 @@ typedef struct { double x, y; } Pt;
 
 typedef enum
 {
-  PAPER_NONE = 0, PAPER_PLAIN, PAPER_RULED, PAPER_GRAPH
+  PAPER_NONE = 0, PAPER_PLAIN, PAPER_RULED, PAPER_GRAPH, PAPER_PDF
 } Paper;
+
+typedef enum
+{
+  PAPER_SIZE_SCREEN = 0, PAPER_SIZE_A4_PORTRAIT, PAPER_SIZE_A4_LANDSCAPE,
+  PAPER_SIZE_CUSTOM
+} PaperSizeKind;
 
 typedef enum
 {
@@ -136,6 +187,7 @@ typedef struct
 typedef struct
 {
   double cx, cy, radius, inner, rotation;
+  double sx, sy;               /* independent x/y scale factors */
   int points;
 } StarShape;
 
@@ -194,7 +246,8 @@ typedef enum
 /* Polygon handles. */
 typedef enum
 {
-  PH_NONE = 0, PH_RADIUS, PH_INNER, PH_ROTATION, PH_POINTS, PH_CENTRE
+  PH_NONE = 0, PH_RADIUS, PH_INNER, PH_ROTATION, PH_POINTS, PH_CENTRE,
+  PH_SCALE_TL, PH_SCALE_TR, PH_SCALE_BL, PH_SCALE_BR
 } PolygonHandle;
 
 /* Triangle handles. */
@@ -226,7 +279,9 @@ typedef struct
   int dibw, dibh;
 
   cairo_surface_t *undo[MAX_UNDO];
+  cairo_surface_t *vec_undo[MAX_UNDO];
   cairo_surface_t *redo[MAX_UNDO];
+  cairo_surface_t *vec_redo[MAX_UNDO];
   int undo_head, undo_depth, redo_head, redo_depth;
 
   /* Settings. */
@@ -234,6 +289,16 @@ typedef struct
   Tool pending_tool;
   int tool_delay_deferred;
   unsigned tool_delay_seconds;
+  int timer_running;
+  unsigned timer_delay_seconds;
+  int show_toolbar;
+  int hide_toolbar_temp;
+  int toolbar_vertical;
+  int toolbar_icon_size;
+  int toolbar_x, toolbar_y;
+  char toolbar_items[TOOLBAR_ITEMS_MAX];
+  char toolbar_order[TOOLBAR_ITEMS_MAX];
+  char shortcuts[SK_COUNT][SHORTCUT_TEXT_MAX];
   double opacity;
   unsigned pen_width;
   unsigned eraser_width;
@@ -254,11 +319,21 @@ typedef struct
   int hide_hints;
   int hide_drawings;
   Paper paper;
+  int paper_continuous_scroll;
+  int paper_size_kind;
+  int paper_custom_w_mm;
+  int paper_custom_h_mm;
+  int paper_panning;
+  int paper_pan_pen;
+  int paper_topmost;
+  int paper_windowed;
+  Pt paper_pan_last;
   WheelMode wheel_mode;
   StylusMode stylus_mode;
   int autostart;
 
   /* Config paths. */
+  wchar_t config_dir[MAX_PATH];
   wchar_t config_path[MAX_PATH];
   wchar_t annotations_path[MAX_PATH];
 
@@ -288,6 +363,7 @@ typedef struct
   int right_short_done;
   int right_start_pending;
   int right_started_edit;
+  int right_erase_active;
   int menu_hold_is_stylus;
   Pt right_down;
   int stylus_eraser_hold;
@@ -415,10 +491,18 @@ void tools_finish_stroke(void);
 void config_load(void);
 void config_load_from(const wchar_t *path);
 void config_save(void);
+void config_shortcuts_load(const wchar_t *path);
+void config_shortcuts_save(void);
 void annotations_save(void);
 void annotations_load(void);
 void annotations_remove(void);
+void config_remove_dir(void);
 void config_defaults(void);
+int  shortcut_parse(const char *text, UINT *mods, UINT *vk);
+int  shortcut_format(UINT mods, UINT vk, char *buf, int size);
+extern const char *g_shortcut_keys[SK_COUNT];
+extern const char *g_shortcut_defaults[SK_COUNT];
+extern const char *g_shortcut_labels[SK_COUNT];
 
 /* ---- draw.c ---- */
 Color color_rgb(double r, double g, double b);
@@ -429,6 +513,7 @@ void set_source_color(cairo_t *cr, Color c);
 double font_pixel_size(const char *font);
 char *font_make(const char *family, int bold, int italic, double px);
 void measure_frame_text(FrameShape *shape);
+void draw_warm_up_text(void);
 
 void draw_paper(cairo_t *cr, Paper paper, int w, int h);
 void draw_backbuffer(cairo_t *cr);
@@ -477,6 +562,7 @@ void tools_pointer_up(Pt p, int ctrl, int shift);
 void tools_double_click(Pt p);
 void tools_right_short(Pt p);
 void tools_wheel(int delta);
+void tools_split_page_stroke(void);
 void tools_key(int vk, int ctrl, int shift);
 int  tools_editing(void);
 void tools_clear(void);
@@ -491,10 +577,95 @@ void tools_redo(void);
 void tools_push_undo(void);
 void tools_set_frame_color(void);
 void tools_text_commit(const char *text, int cancelled);
+void tools_clear_undo(void);
+
+/* ---- paper.c ---- */
+#define PAPER_MAX_PAGES 1024
+
+int  paper_page_count(void);
+int  paper_page_index(void);
+int  paper_view_page_index(void);
+void paper_select_view_page(void);
+int  paper_page_width(void);
+int  paper_page_height(void);
+int  paper_undo_token(void);
+int  paper_undo_goto(int token);
+Paper paper_page_background(void);
+int  paper_page_has_document(void);
+int  paper_doc_has_annotations(void);
+int  paper_page_has_annotations(void);
+void paper_config_load(void);
+void paper_config_save(void);
+void paper_new_document(Paper bg);
+int  paper_pdf_available(void);
+int  paper_select_type(Paper type);
+void paper_enter(Paper initial);
+void paper_leave(void);
+void paper_sync_current(void);
+void paper_reload_current(void);
+cairo_surface_t *paper_screen_annotations(void);
+void paper_set_background(Paper bg);
+int  paper_insert_page(int before);
+int  paper_delete_page(void);
+int  paper_next_page(void);
+int  paper_prev_page(void);
+int  paper_goto_page(int index);
+void paper_resize_all(int w, int h);
+void paper_replace_current_surface(cairo_surface_t *src);
+void paper_draw_pdf_page(cairo_t *cr, int w, int h);
+void paper_draw_page_margin(cairo_t *cr, int w, int h);
+int  paper_continuous_active(void);
+void paper_draw_continuous(cairo_t *cr, int w, int h);
+int  paper_current_page_view_top(void);
+void paper_map_point(Pt *p);
+void paper_prepare_point(Pt *p);
+int  paper_page_at_view(Pt p);
+void paper_switch_page_index(int idx);
+int  paper_page_stride(void);
+int  app_view_w(void);
+int  app_view_h(void);
+int  app_paper_viewport_h(void);
+void paper_scroll_reclamp(void);
+int  paper_scroll_step(int direction);
+int  paper_scroll_pixels(int delta);
+void paper_set_continuous(int enabled);
+void paper_reset_current_page(void);
+cairo_t *paper_vector_context(void);
+void paper_vector_undo_push(int slot);
+void paper_vector_capture_redo(int slot);
+void paper_vector_swap_undo(int slot);
+void paper_vector_swap_redo(int slot);
+void paper_vector_undo_clear(void);
+void paper_add_text(const FrameShape *shape);
+void paper_erase_add_point(Pt p, double width);
+void paper_erase_add_span(int x1, int y1, int x2, int y2, double width);
+void paper_erase_end(void);
+int  paper_open_pdf_dialog(void);
+int  paper_open_pdf_path(const wchar_t *path, char *error, int error_size);
+int  paper_pdf_page_count(void);
+void paper_save_dialog(void);
+int  paper_confirm_save_all(void);
+int  paper_export_path(const wchar_t *path, char *error, int error_size);
+void paper_shutdown(void);
+void paper_reset(void);
+void paper_note_drawing_change(void);
+void paper_note_erase(void);
+void paper_clear_erase(void);
+int  paper_page_change_is_last(void);
+int  paper_page_undo(void);
+int  paper_page_redo(void);
+int  paper_page_can_undo(void);
+int  paper_page_can_redo(void);
+int  paper_selfcheck(char *log, int log_size);
 
 /* ---- ui.c ---- */
 void ui_show_menu(int x, int y);
+void ui_show_toolbar_menu(int popup, int x, int y);
 void ui_menu_finish(void);
+void ui_set_font(HWND h);
+void ui_center_window(HWND h, int w, int hgt);
+void ui_run_modal(HWND h, int outside_close);
+void ui_prepare_dialog(void);
 int  ui_modal_outside_click(Pt p);
 void ui_show_wheel_menu(int marker);
 void ui_show_stylus_menu(void);
@@ -506,11 +677,16 @@ void ui_show_hints(int startup);
 void ui_show_math_dialog(void);
 void ui_show_about(void);
 void ui_show_icon_position(void);
+void ui_show_shortcuts(void);
+void ui_show_settings(void);
+void ui_show_goto_page(void);
 void ui_choose_color(int fill);
 void ui_choose_font(void);
 void ui_quick_menu(void);
 void ui_layout(void);
 void ui_rebuild_surfaces(void);
+void ui_resize_canvas(void);
+void ui_resize_canvas_for_doc(void);
 void ui_apply_pen(void);
 void ui_set_paper(Paper p);
 void ui_toggle_visibility(void);
@@ -518,12 +694,29 @@ void ui_reset_settings(void);
 void ui_message(const char *text, const char *title, UINT flags);
 int  ui_is_modal(void);
 HBITMAP ui_load_icon_bitmap(const char *name, int size);
+void ui_execute_command(int id);
+void pdfium_init(void);
+void pdfium_shutdown(void);
+void toolbar_init(void);
+void toolbar_toggle(void);
+void toolbar_refresh(void);
+void toolbar_raise(void);
+void toolbar_set_visible(int visible);
+void toolbar_hide_temporary(int hide);
+void toolbar_set_vertical(int vertical);
+void toolbar_set_icon_size(int size);
+void toolbar_reload(void);
+void toolbar_place_top_center(void);
+void toolbar_show_configure(void);
+int  toolbar_selfcheck(void);
+int  toolbar_pointer_hit(POINT p);
 void ui_init(void);
 int  ui_selfcheck(void);
 int  ui_dialog_selfcheck(void);
 void app_exe_dir(wchar_t *buf, int cap);
 void app_asset_path(wchar_t *buf, int cap, const wchar_t *name);
 void app_force_foreground(HWND hwnd);
+void app_note_paper_control_action(void);
 void dlog(const char *fmt, ...);
 void app_menu_capture_start(int kind, int marker);
 void app_menu_capture_stop(int keep);
@@ -541,7 +734,11 @@ void app_start_right_press(Pt p);
 void app_update_tray_icon(void);
 void app_raise_icon(void);
 void app_set_paper(Paper p, int grab_focus);
+void app_select_paper_type(Paper p);
 void app_exit_paper(void);
+void app_take_screenshot(void);
+void app_start_timer(void);
+void app_cancel_timer(void);
 void app_save_and_quit(void);
 void app_status(const char *text);
 void app_begin_text(Pt p);
@@ -552,5 +749,8 @@ void app_text_editor_place(void);
 void app_update_editor_font(void);
 void app_install_wheel_hook(void);
 void app_remove_wheel_hook(void);
+void app_hotkeys_refresh(void);
+int  app_hotkeys_apply(const char new_shortcuts[SK_COUNT][SHORTCUT_TEXT_MAX],
+                       char *error, int error_size);
 
 #endif
