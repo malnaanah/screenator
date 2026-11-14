@@ -1,4 +1,4 @@
-# Screenator for Windows 8.0
+# Screenator for Windows 8.1
 
 A native Windows port of [Screenator 6.0](https://github.com/malnaanah/screenator),
 the screen annotation tool for X11. Draw over any running application with a
@@ -9,7 +9,8 @@ This port keeps Screenator's cairo-based drawing and tool behaviour and
 replaces the X11/GTK platform layer with Win32: a per-pixel layered overlay,
 native menus and dialogs, a tray icon, global hotkeys and a floating icon with
 the settings ring. It now includes the applicable Linux 8.0 behaviour; the
-version 8.0.
+version 8.1 adds page navigation with the wheel and Up/Down arrows when
+continuous page scrolling is disabled.
 
 ## Features
 
@@ -67,7 +68,7 @@ version 8.0.
   layer and are restored when leaving Paper.
 - Paper documents with up to 1024 pages. Each page owns its own annotation layer
   and a plain/ruled/graph/PDF background. Insert before/after, delete, page
-  navigation (Page Up/Page Down, Home/End), Go to Page and page-level undo/redo
+  navigation (arrow keys, Page Up/Page Down, Home/End), Go to Page and page-level undo/redo
   shortcuts are available. The Paper menu no longer shows `Page - / -` or
   offers None, Undo Page Change or Redo Page Change; the toolbar still shows the
   current-page icon, which updates while scrolling and opens **Go to Page** when
@@ -75,9 +76,10 @@ version 8.0.
   current type is PDF and resets the page otherwise, offering to save first.
 - **Settings > Paper > Continuous page scrolling** is enabled by default and
   shows all pages as one scrollable strip. The mouse wheel and Page Up/Page Down
-  scroll it; clicking a page makes it current and drawing lands on the page
-  under the pointer. The strip shows the page edges but no `Page x / y` label
-  or separator line between pages.
+  scroll it; when disabled, the wheel and Up/Down arrows change pages instead.
+  Clicking a page makes it current and drawing lands on the page under the
+  pointer. The strip shows the page edges but no `Page x / y` label or separator
+  line between pages.
 - **Clear Screen** clears the annotation on the page occupying the largest
   visible area. This also follows the visible portion of the page in the
   resizable Paper window.
@@ -166,8 +168,8 @@ version 8.0.
   `Screenator-ruled-YYYYMMDD-HHMMSS.pdf`,
   `Screenator-graph-YYYYMMDD-HHMMSS.pdf` or
   `Screenator-pdf-YYYYMMDD-HHMMSS.pdf` according to the current page type.
-  Saving with no changes since the last save shows a message and does not
-  create another file.
+  Saving creates a new export even if the document has not changed since its
+  previous export.
   Plain/ruled/graph backgrounds are exported as Cairo vector graphics. For
   PDF-backed pages the original PDF page is imported unchanged as a vector form
   layer and the annotations are overlaid as a second vector form; page
@@ -189,13 +191,18 @@ version 8.0.
   screen-edge snap, and **Settings > Configure Toolbar...** for showing, hiding
   and reordering actions. Configure lists every action with its icon and lets
   rows be dragged by their handle; hidden actions keep their row and can be
-  restored later. Page actions appear only in Paper mode; Timer and Toggle
-  Visibility only in Screen mode. Paper Type opens the paper/PDF menu; page
-  insert/delete, Save/Screenshot and Go to Page are included. Line Color,
+  restored later. Page actions and Save appear only in Paper mode; Timer
+  appears only in Screen mode, and Toggle Visibility appears in both. Paper
+  Type opens the paper/PDF menu; page insert/delete, Screenshot and Save are
+  separate actions, alongside Go to Page. Line Color,
   Thickness, Fill Color and Eraser Size show live samples; the eraser sample is
   circular and the thickness sample is a flat black line that spans 70% of the
   toolbar's height (horizontal bar) or width (vertical bar).
   Changing the floating-icon size in Settings resizes the icon immediately.
+  The **Show settings indicator on Floating Icon** option is in the Floating
+  Icon tab and remains configurable while the icon is hidden.
+  **Settings > General > Show PDF saved message** controls the success notice
+  after exporting a Paper document; save failures are always reported.
 - Tray menu, editable hints dialog with an About button, quick tool menu
   (Ctrl+F10), and a tabbed **Settings** dialog (General, Paper, Toolbar,
   Floating Icon), math dialog and About window. Modal dialogs stay above the
@@ -207,8 +214,9 @@ version 8.0.
 - **Settings > General > Edit Shortcuts...** edits the global keys without
   rebuilding: `F6` Arrow, `F7` Text, `F8` Pen, `F9` Floating Icon, `F10`
   Toolbar, `F3` Switch Mode, `F4` Screenshot, `F12` Timer, `Ctrl+Z` Undo,
-  `Ctrl+Shift+Z` Redo, `Ctrl+Q` Leave Paper, `Ctrl+T` Toggle Visibility (Screen mode only) and
-  `Alt+F4` Quit. The menu labels follow the configured keys. Accepted values
+  `Ctrl+Shift+Z` Redo, `Ctrl+Q` Leave Paper, `Ctrl+T` Toggle Visibility,
+  `Delete` Clear Screen and `Ctrl+X` Delete Page, and `Alt+F4` Quit. The menu
+  labels follow the configured keys. Accepted values
   are combinations such as `F8`, `Ctrl+S`, `Alt+F4`, or `None`; Escape stays
   fixed. Invalid or conflicting keys are rejected and the previous binding is
   kept. `F12` is reserved by Windows, so the Timer key is read by a keyboard
@@ -256,14 +264,19 @@ below lists the defaults; menu labels show the currently configured keys.
 | Undo | `Ctrl+Z` |
 | Redo | `Ctrl+Shift+Z` |
 | Leave Paper | `Ctrl+Q` |
-| Toggle Visibility (Screen mode only) | `Ctrl+T` |
+| Toggle Visibility | `Ctrl+T` |
+| Clear Screen (Screen mode with a tool active or Paper mode) | `Delete` |
+| Delete Page (Paper mode) | `Ctrl+X` |
 | Quit | `Alt+F4` |
 
 - `Ctrl+F10` remains the quick tool menu.
 - While painting: `Esc` closes shape handles, a further `Esc` exits to Cursor.
-- In Screen mode, `Ctrl+T` shows or hides the drawings. Toggle Visibility and
-  `Ctrl+T` are unavailable in Paper mode. In Paper mode, `Ctrl+Q` leaves the
-  paper and `Alt+F4` quits.
+- `Ctrl+T` shows or hides drawings in Screen and Paper modes. In Paper mode,
+  visibility applies to annotations on every page. `Delete` clears drawings
+  when a tool is active or clears annotations on the current Paper page;
+  `Ctrl+X` deletes the current Paper page.
+- The toolbar can be locked from **Settings > Toolbar**. Right click or press
+  the middle mouse button over the toolbar to open the application menu.
 - Paper pages: `Ctrl+W` toggles the full-screen and resizable Paper window;
   `Ctrl+S` saves the paper to Documents, `Ctrl+O` opens a PDF,
   `Ctrl+B` inserts a page before the current page, `Ctrl+A` inserts a page
@@ -324,7 +337,7 @@ cd installer
 
 On Linux or macOS install `nsis` and run the same wrapper; it adds
 `-DPOSIX_BUILD` so the POSIX NSIS uses the right path separators. The result is
-`release/Screenator-8.0-win64-setup.exe`. The installer places the app in
+`release/Screenator-8.1-win64-setup.exe`. The installer places the app in
 `%LOCALAPPDATA%\Programs\Screenator`, creates Start menu entries, and includes
 the **PDF Open with list** task, selected by default. That task registers
 Screenator in the right-click **Open with** menu and in

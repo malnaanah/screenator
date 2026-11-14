@@ -1,7 +1,32 @@
-# Screenator for Windows 8.0
+# Screenator for Windows 8.1
+
+- In Paper mode with continuous page scrolling disabled, the mouse wheel and
+  Up/Down arrows change pages.
 
 A portable 64-bit Windows release of the Screenator screen annotation tool,
 based on Screenator 6.0 by Mahmoud Alnaanah.
+
+## Windows 8.1 changes
+
+- Split the toolbar's Screenshot and Save actions. Screenshot is available in
+  both modes; Save appears only in Paper mode. Added eye-state visibility icons,
+  visibility toggling in both modes, and all-page annotation hiding in Paper.
+- Added the screenshot-saved notice setting, toolbar position lock, and
+  direction-based placement (horizontal at top-centre, vertical at right-centre).
+  Moved the floating-icon indicator option to its own settings tab; it can be
+  changed while the icon is hidden.
+- Added Delete as a Screen clear shortcut when a tool is active and as a
+  current-page annotation clear shortcut in Paper. Ctrl+X deletes the Paper
+  page. The application menu shows the Clear Screen shortcut.
+- Made toolbar page deletion available for multi-page PDFs. Right-click opens
+  the toolbar's application menu; middle-click does not.
+- Improved eraser-size response by caching cursor sizes and refreshing the
+  toolbar preview immediately. The 60 px and 120 px previews are distinct.
+- Fixed toolbar direction placement, shortcut-dialog row visibility, and the
+  configuration path label overlap in Settings.
+- Added a General setting to hide the success message after exporting a Paper
+  document as PDF. Save failures remain visible.
+- Save Paper now creates an export even when the document has no new changes.
 
 ## Highlights
 
@@ -36,9 +61,10 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 - Added a persistent tool bar (F10) in the Linux 8.0 order, with drag/snap
   (including dragging by the icons), clamping to the screen edges,
   horizontal/vertical, icon size, active-tool highlighting, native tooltips
-  and the Linux 8.0 icon set. Page actions appear only in Paper mode; Timer
-  and Toggle Visibility appear only in Screen mode. The Save/Screenshot icon
-  follows the mode. Shapes opens only the Shapes menu; Paper Type opens the
+  and the Linux 8.0 icon set. Page actions and Save appear only in Paper mode;
+  Timer appears only in Screen mode and Toggle Visibility appears in both.
+  Screenshot is a separate toolbar action available in both modes. Shapes
+  opens only the Shapes menu; Paper Type opens the
   paper/PDF menu; option buttons open their own menus; Settings opens the
   Settings dialog. Line Color, Thickness, Fill Color and Eraser Size show
   live samples (circles for the eraser) instead of static icons.
@@ -46,14 +72,18 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
   **Settings > Configure Toolbar...** shows, hides and reorders actions, and
   hidden actions keep their row when restored.
 - Added a tabbed native **Settings** dialog with General, Paper, Toolbar and
-  Floating Icon tabs. Floating-icon size is configured there. Paper types,
+  Floating Icon tabs. Floating-icon size and its settings indicator are
+  configured there, including when the icon is hidden. Paper types,
   Open PDF, Save Paper, Show Floating Icon and Show Toolbar were removed from
   the dialog (**F10** still toggles the toolbar). **Edit Shortcuts...** is on
   the General tab, and General also has **Open Configuration Folder**.
   **Settings > Configure Toolbar...** lists every action with its icon.
 - Added editable shortcuts in **Settings > General > Edit Shortcuts...** for
   Arrow, Text, Pen, Floating Icon, Toolbar, Switch Mode, Screenshot, Timer,
-  Undo, Redo, Leave Paper, Toggle Visibility and Quit. Values such as `F8`,
+  Undo, Redo, Leave Paper, Toggle Visibility, Clear Screen, Delete Page and
+  Quit. Delete clears the current paper annotations in Paper mode and clears
+  the Screen in Screen mode when a tool is active; Ctrl+X deletes a Paper page.
+  Values such as `F8`,
   `Ctrl+S`, `Alt+F4` and `None` are accepted; invalid or duplicate keys are
   rejected and the previous binding is kept. Menu labels follow the configured
   keys. Escape and the `Ctrl+F10` quick tool menu remain fixed.
@@ -386,7 +416,7 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 ## Package
 
 ```
-Screenator-8.0-win64/
+Screenator-8.1-win64/
   Screenator.exe
   pdfium.dll
   Screenator Data/
@@ -401,7 +431,7 @@ Screenator-8.0-win64/
 A per-user installer is also produced:
 
 ```
-Screenator-8.0-win64-setup.exe
+Screenator-8.1-win64-setup.exe
 ```
 
 It installs the same files under `%LOCALAPPDATA%\Programs\Screenator`, adds

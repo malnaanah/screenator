@@ -102,6 +102,7 @@ void apply_eraser_width(unsigned w)
 {
   g.eraser_width = w;
   app_update_cursor();
+  toolbar_refresh();
 }
 
 void step_line_color(int dir)

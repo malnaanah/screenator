@@ -37,7 +37,8 @@ static const TbAction tb_actions[] =
   { "shapes", "Shapes", "shapes.png", 0, TB_POPUP_SHAPES },
   { "undo", "Undo", "undo.png", CMD_UNDO, 0 },
   { "redo", "Redo", "redo.png", CMD_REDO, 0 },
-  { "save", "Save / Screenshot", "save.png", CMD_SAVE_OR_SHOT, 0 },
+  { "screenshot", "Screenshot", "screenshot.png", CMD_SCREENSHOT, 0 },
+  { "save", "Save", "save.png", CMD_PAPER_SAVE, 0 },
   { "paper", "Paper Type", "paper.png", 0, TB_POPUP_PAPER_TYPE },
   { "page_insert_before", "Insert Page Before", "add_before.png",
     CMD_PAPER_INSERT_BEFORE, 0 },
@@ -132,9 +133,8 @@ static int tb_ascii_iequal(const char *a, const char *b)
 static const char *tb_canonical_id(const char *id)
 {
   if (tb_ascii_iequal(id, "hand")) return "cursor";
-  if (tb_ascii_iequal(id, "screenshot") ||
-      tb_ascii_iequal(id, "screenshot_save") ||
-      tb_ascii_iequal(id, "save_paper")) return "save";
+  if (tb_ascii_iequal(id, "screenshot_save")) return "screenshot";
+  if (tb_ascii_iequal(id, "save_paper")) return "save";
   if (tb_ascii_iequal(id, "page_prev") || tb_ascii_iequal(id, "page_next") ||
       tb_ascii_iequal(id, "floating_icon") ||
       tb_ascii_iequal(id, "show_icon")) return "";
@@ -282,8 +282,9 @@ static int tb_action_visible(int idx)
       !strcmp(id, "page_insert_after") || !strcmp(id, "page_delete") ||
       !strcmp(id, "page_number") || !strcmp(id, "goto_page"))
     return paper;
-  if (!strcmp(id, "timer") || !strcmp(id, "visibility"))
+  if (!strcmp(id, "timer"))
     return !paper;
+  if (!strcmp(id, "save")) return paper;
   return 1;
 }
 
@@ -295,7 +296,7 @@ static int tb_action_enabled(int idx)
       !strcmp(id, "page_insert_after"))
     return paper && g.paper != PAPER_PDF;
   if (!strcmp(id, "page_delete"))
-    return paper && g.paper != PAPER_PDF && paper_page_count() > 1;
+    return paper && paper_page_count() > 1;
   if (!strcmp(id, "goto_page"))
     return paper && paper_page_count() > 1;
   if (!strcmp(id, "page_number"))
@@ -481,7 +482,9 @@ static int tb_shortcut_id(int cmd)
     case CMD_TIMER: return SK_TIMER;
     case CMD_VISIBILITY: return SK_PAPER_T;
     case CMD_QUIT: return SK_QUIT;
-    case CMD_SAVE_OR_SHOT: return SK_SHOT;
+    case CMD_SAVE_OR_SHOT: case CMD_SCREENSHOT: return SK_SHOT;
+    case CMD_CLEAR: return SK_CLEAR;
+    case CMD_PAPER_DELETE: return SK_DELETE_PAGE;
     default: return -1;
     }
 }
@@ -667,8 +670,14 @@ static void tb_draw_sample(HDC dc, RECT r, const char *id)
     }
   else if (!strcmp(id, "eraser_size"))
     {
-      int s = (int) g.eraser_width / 2;
-      if (s < 8) s = 8;
+      int width = (int) g.eraser_width;
+      int s;
+      if (width < 20) width = 20;
+      if (width > 120) width = 120;
+      /* Map the full supported range into the sample box so 60 and 120 px
+       * remain visually distinct even in a compact toolbar. */
+      s = 4 + ((width - 20) * (box - 4)) / 100;
+      if (s < 4) s = 4;
       if (s > box) s = box;
       HBRUSH b = (HBRUSH) GetStockObject(WHITE_BRUSH);
       HPEN p = CreatePen(PS_SOLID, 1, RGB(110, 110, 110));
@@ -749,8 +758,9 @@ static void tb_paint(HWND h)
       else
         {
           const char *icon_name = a->icon;
-          if (!strcmp(a->id, "save"))
-            icon_name = g.paper == PAPER_NONE ? "screenshot.png" : "save.png";
+          if (!strcmp(a->id, "visibility"))
+            icon_name = g.hide_drawings ? "eye-closed.png"
+                                        : "eye-opened.png";
           HBITMAP icon = tb_icon(icon_name, tb_size);
           if (icon)
             {
@@ -849,7 +859,7 @@ static LRESULT CALLBACK tb_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     case WM_MOUSEMOVE:
       {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-        if (tb_pending && !tb_drag)
+        if (tb_pending && !tb_drag && !g.toolbar_locked)
           {
             POINT p;
             GetCursorPos(&p);
@@ -1442,7 +1452,19 @@ void toolbar_toggle(void)
 
 void toolbar_set_vertical(int vertical)
 {
+  int w, h;
   g.toolbar_vertical = vertical ? 1 : 0;
+  tb_window_size(&w, &h);
+  if (g.toolbar_vertical)
+    {
+      g.toolbar_x = g.vx + g.vw - w;
+      g.toolbar_y = g.vy + (g.vh - h) / 2;
+    }
+  else
+    {
+      g.toolbar_x = g.vx + (g.vw - w) / 2;
+      g.toolbar_y = g.vy;
+    }
   tb_place();
   tb_tooltips_create();
   if (IsWindow(tb_wnd)) InvalidateRect(tb_wnd, NULL, FALSE);

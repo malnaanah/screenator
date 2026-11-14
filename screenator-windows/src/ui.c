@@ -66,6 +66,9 @@ static const wchar_t *SETTINGS_CLASS = L"ScreenatorSettings";
 #define ID_SET_CONTINUOUS 7224
 #define ID_SET_OPEN_CFG 7226
 #define ID_SET_SIZE_VAL 7227
+#define ID_SET_SCREENSHOT_MESSAGE 7234
+#define ID_SET_TOOLBAR_LOCK 7235
+#define ID_SET_PDF_MESSAGE 7236
 #define ID_SET_PAPER_SIZE 7228
 #define ID_SET_PAPER_W 7229
 #define ID_SET_PAPER_H 7230
@@ -879,12 +882,9 @@ static void menu_command(int id)
       break;
     case CMD_FONT: ui_choose_font(); break;
     case CMD_SHOW_INDICATOR:
-      if (g.show_icon)
-        {
-          g.show_indicator = !g.show_indicator;
-          ui_update_icon();
-          config_save();
-        }
+      g.show_indicator = !g.show_indicator;
+      ui_update_icon();
+      config_save();
       break;
     case CMD_ICON_POS: ui_show_icon_position(); break;
     case CMD_RESET: ui_reset_settings(); return;
@@ -952,10 +952,12 @@ static HMENU build_menu(void)
                     "switch_mode.png", g.paper != PAPER_NONE);
   add_shortcut_item(sub, CMD_UNDO, L"Undo", SK_UNDO, "undo.png", 0);
   add_shortcut_item(sub, CMD_REDO, L"Redo", SK_REDO, "redo.png", 0);
-  add_item(sub, CMD_CLEAR, L"Clear Screen", "trash.png", 0);
+  add_shortcut_item(sub, CMD_CLEAR, L"Clear Screen", SK_CLEAR,
+                    "trash.png", 0);
   if (g.paper == PAPER_NONE)
-    add_shortcut_item(sub, CMD_VISIBILITY, L"Toggle Visibility",
-                      SK_PAPER_T, "hide.png", 0);
+  add_shortcut_item(sub, CMD_VISIBILITY, L"Toggle Visibility",
+                    SK_PAPER_T, g.hide_drawings ? "eye-closed.png"
+                                                : "eye-opened.png", 0);
   add_shortcut_item(sub, CMD_SCREENSHOT, L"Screenshot", SK_SHOT,
                     "screenshot.png", 0);
   {
@@ -1729,6 +1731,12 @@ static void settings_sync(HWND h)
   syncing = 1;
   CheckDlgButton(h, ID_SET_SAVE,
                  g.save_on_exit ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(h, ID_SET_SCREENSHOT_MESSAGE,
+                 g.screenshot_saved_message ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(h, ID_SET_PDF_MESSAGE,
+                 g.pdf_saved_message ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(h, ID_SET_TOOLBAR_LOCK,
+                 g.toolbar_locked ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(h, ID_SET_IND,
                  g.show_indicator ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(h, ID_SET_CONTINUOUS,
@@ -1791,7 +1799,7 @@ static void settings_show(HWND h, int id, int show)
 
 static void settings_show_tab(HWND h, int tab)
 {
-  for (int id = ID_SET_SAVE; id <= ID_SET_OPEN_CFG; id++)
+  for (int id = ID_SET_SAVE; id <= ID_SET_PDF_MESSAGE; id++)
     if (id != ID_SET_TAB) settings_show(h, id, 0);
   settings_show(h, CMD_PAPER_NONE, 0);
   settings_show(h, CMD_PAPER_PLAIN, 0);
@@ -1808,7 +1816,8 @@ static void settings_show_tab(HWND h, int tab)
   if (tab == 0)
     {
       settings_show(h, ID_SET_SAVE, 1);
-      settings_show(h, ID_SET_IND, 1);
+      settings_show(h, ID_SET_SCREENSHOT_MESSAGE, 1);
+      settings_show(h, ID_SET_PDF_MESSAGE, 1);
       settings_show(h, ID_SET_FONT, 1);
       settings_show(h, ID_SET_SC, 1);
       settings_show(h, ID_SET_RESET, 1);
@@ -1836,12 +1845,14 @@ static void settings_show_tab(HWND h, int tab)
       settings_show(h, ID_SET_SIZE, 1);
       settings_show(h, ID_SET_SIZE_VAL, 1);
       settings_show(h, ID_SET_CFG, 1);
+      settings_show(h, ID_SET_TOOLBAR_LOCK, 1);
     }
   else
     {
       settings_show(h, ID_SET_LABEL_ICON_SIZE, 1);
       settings_show(h, ID_SET_ICON_SIZE, 1);
       settings_show(h, ID_SET_POS2, 1);
+      settings_show(h, ID_SET_IND, 1);
     }
 }
 
@@ -1916,20 +1927,22 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       }
       settings_ctl(h, 0, L"BUTTON", L"Save annotations on exit",
                    BS_AUTOCHECKBOX, 30, 55, 300, 24, ID_SET_SAVE);
-      settings_ctl(h, 0, L"BUTTON",
-                   L"Show settings indicator on Floating Icon",
-                   BS_AUTOCHECKBOX, 30, 83, 380, 24, ID_SET_IND);
+      settings_ctl(h, 0, L"BUTTON", L"Show screenshot saved message",
+                   BS_AUTOCHECKBOX, 30, 83, 320, 24,
+                   ID_SET_SCREENSHOT_MESSAGE);
+      settings_ctl(h, 0, L"BUTTON", L"Show PDF saved message",
+                   BS_AUTOCHECKBOX, 30, 111, 320, 24, ID_SET_PDF_MESSAGE);
       settings_ctl(h, 0, L"BUTTON", L"Change Font...", BS_PUSHBUTTON,
-                   30, 115, 160, 28, ID_SET_FONT);
+                   30, 151, 160, 28, ID_SET_FONT);
       settings_ctl(h, 0, L"BUTTON", L"Edit Shortcuts...", BS_PUSHBUTTON,
-                   210, 115, 160, 28, ID_SET_SC);
+                   210, 151, 160, 28, ID_SET_SC);
       settings_ctl(h, 0, L"BUTTON", L"Reset Settings", BS_PUSHBUTTON,
-                   30, 155, 160, 28, ID_SET_RESET);
+                   30, 191, 160, 28, ID_SET_RESET);
       settings_ctl(h, 0, L"BUTTON", L"Open Configuration Folder",
-                   BS_PUSHBUTTON, 210, 155, 190, 28, ID_SET_OPEN_CFG);
+                   BS_PUSHBUTTON, 210, 191, 190, 28, ID_SET_OPEN_CFG);
       settings_ctl(h, 0, L"STATIC",
                    L"Settings are stored in %APPDATA%\\Screenator",
-                   SS_LEFT, 30, 200, 380, 22, ID_SET_LABEL_PATH);
+                   SS_LEFT, 30, 230, 380, 22, ID_SET_LABEL_PATH);
 
       settings_ctl(h, 1, L"STATIC", L"Paper size", SS_LEFT,
                    30, 55, 90, 22, ID_SET_PAPER_SIZE_LABEL);
@@ -1973,6 +1986,8 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                    278, 90, 70, 22, ID_SET_SIZE_VAL);
       settings_ctl(h, 2, L"BUTTON", L"Configure Toolbar...", BS_PUSHBUTTON,
                    30, 125, 180, 28, ID_SET_CFG);
+      settings_ctl(h, 2, L"BUTTON", L"Lock toolbar position",
+                   BS_AUTOCHECKBOX, 30, 165, 260, 24, ID_SET_TOOLBAR_LOCK);
 
       settings_ctl(h, 3, L"STATIC", L"Floating Icon Size", SS_LEFT,
                    30, 55, 120, 22, ID_SET_LABEL_ICON_SIZE);
@@ -1990,6 +2005,9 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       }
       settings_ctl(h, 3, L"BUTTON", L"Floating Icon Position...",
                    BS_PUSHBUTTON, 30, 90, 210, 28, ID_SET_POS2);
+      settings_ctl(h, 3, L"BUTTON",
+                   L"Show settings indicator on Floating Icon",
+                   BS_AUTOCHECKBOX, 30, 135, 380, 24, ID_SET_IND);
 
       settings_ctl(h, 0, L"BUTTON", L"Close", BS_DEFPUSHBUTTON,
                    350, 330, 105, 30, IDOK);
@@ -2024,6 +2042,21 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       switch (LOWORD(wp))
         {
         case ID_SET_SAVE: ui_execute_command(CMD_SAVE_ON_EXIT); break;
+        case ID_SET_SCREENSHOT_MESSAGE:
+          g.screenshot_saved_message =
+            IsDlgButtonChecked(h, ID_SET_SCREENSHOT_MESSAGE) == BST_CHECKED;
+          config_save();
+          break;
+        case ID_SET_PDF_MESSAGE:
+          g.pdf_saved_message =
+            IsDlgButtonChecked(h, ID_SET_PDF_MESSAGE) == BST_CHECKED;
+          config_save();
+          break;
+        case ID_SET_TOOLBAR_LOCK:
+          g.toolbar_locked =
+            IsDlgButtonChecked(h, ID_SET_TOOLBAR_LOCK) == BST_CHECKED;
+          config_save();
+          break;
         case ID_SET_IND: ui_execute_command(CMD_SHOW_INDICATOR); break;
         case ID_SET_FONT: ui_execute_command(CMD_FONT); break;
         case ID_SET_POS:
@@ -2182,7 +2215,7 @@ static LRESULT CALLBACK shortcuts_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             wchar_t *wlabel = w_utf8(g_shortcut_labels[i]);
             st = CreateWindowW(L"STATIC", wlabel ? wlabel : L"",
                                WS_CHILD | WS_VISIBLE | SS_RIGHT,
-                               16, 56 + i * 30, 180, 22, h, NULL, g.hinst,
+                               16, 56 + i * 26, 180, 22, h, NULL, g.hinst,
                                NULL);
             ui_set_font(st);
             free(wlabel);
@@ -2190,7 +2223,7 @@ static LRESULT CALLBACK shortcuts_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             HWND ed = CreateWindowExW(
               WS_EX_CLIENTEDGE, L"EDIT", L"",
               WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_TABSTOP,
-              204, 52 + i * 30, 320, 24, h,
+              204, 52 + i * 26, 320, 24, h,
               (HMENU) (INT_PTR) (ID_SC_EDIT + i), g.hinst, NULL);
             ui_set_font(ed);
 
@@ -3018,6 +3051,7 @@ static char *hints_rtf(void)
 
       sb_addf(&b, "\\cf7\\b\\fs22 Drawing Mode Shortcuts\\b0\\fs18\\par\n");
       sb_addf(&b, "\\cf7\\bullet\\cf0  F4 saves a screenshot to Pictures, hiding the floating icon and toolbar during capture and restoring them afterward.\\par\n");
+      sb_addf(&b, "\\cf7\\bullet\\cf0  Ctrl+T toggles drawing visibility in Screen and Paper modes; Delete clears the screen when a tool is active. In Paper mode, Delete clears the current page's annotations.\\par\n");
       sb_addf(&b, "\\cf7\\bullet\\cf0  Timer finishes the current edit and selects Cursor while waiting, then activates Pen when the timer expires.\\par\n");
       sb_addf(&b, "\\cf7\\bullet\\cf0  \\b Ctrl+Z\\b0  undo, "
                   "\\b Ctrl+Shift+Z\\b0  redo.\\par\n");
@@ -3030,10 +3064,12 @@ static char *hints_rtf(void)
       sb_addf(&b, "\\cf4\\b\\i NOTE:\\i0\\b0  Dialogs stay open until you "
                   "close them; clicking outside a dialog no longer dismisses "
                   "it in paper mode.\\b0\\par\n");
+      sb_addf(&b, "\\cf4\\bullet\\cf0  \\b Delete\\b0  clears annotations on the current page; \\b Ctrl+X\\b0  deletes it. Visibility applies to annotations on all pages.\\par\n");
+      sb_addf(&b, "\\cf4\\bullet\\cf0  Settings > General > Show PDF saved message controls the success notice after export; save failures are always shown.\\par\n");
       sb_addf(&b, "\\cf4\\bullet\\cf0  \\b Ctrl+Z\\b0  undo, "
                   "\\b Ctrl+Shift+Z\\b0  redo.\\par\n");
-      sb_addf(&b, "\\cf4\\bullet\\cf0  Toggle Visibility and Ctrl+T are "
-                  "available in Screen mode only.\\par\n");
+      sb_addf(&b, "\\cf4\\bullet\\cf0  Toggle Visibility and Ctrl+T hide or "
+                  "show annotations on every Paper page.\\par\n");
       sb_addf(&b, "\\cf4\\bullet\\cf0  \\b Ctrl+Q\\b0  exits the screen "
                   "paper.\\par\n");
       sb_addf(&b, "\\cf4\\bullet\\cf0  \\b Ctrl+W\\b0  toggles full-screen "
@@ -3523,7 +3559,7 @@ static LRESULT CALLBACK about_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         if (g.hicon_normal)
           SendMessageW(icon, STM_SETICON, (WPARAM) g.hicon_normal, 0);
 
-        HWND t = CreateWindowW(L"STATIC", L"Screenator 8.0",
+        HWND t = CreateWindowW(L"STATIC", L"Screenator 8.1",
                                WS_CHILD | WS_VISIBLE, 96, 20, 300, 28, h,
                                NULL, g.hinst, NULL);
         HFONT big = CreateFontW(-22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,

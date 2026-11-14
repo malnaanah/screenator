@@ -27,6 +27,8 @@ static const wchar_t *ICON_CLASS = L"ScreenatorIcon";
 static const wchar_t *MSG_CLASS = L"ScreenatorMessage";
 static cairo_surface_t *asset_icon_normal;
 static cairo_surface_t *asset_icon_active;
+static HCURSOR eraser_cursor_cache[4];
+static const int eraser_cursor_sizes[4] = { 20, 40, 60, 120 };
 static int old_vx, old_vy, old_vw, old_vh;
 static WNDPROC edit_old_proc;
 static HHOOK g_wheel_hook;
@@ -79,6 +81,13 @@ static int pen_input_recent(void);
 static int pen_now_first_side(void);
 static int paper_control_at_point(POINT p);
 static void unregister_managed_hotkeys(void);
+
+static int eraser_cursor_is_cached(HCURSOR cursor)
+{
+  for (int i = 0; i < 4; i++)
+    if (cursor && eraser_cursor_cache[i] == cursor) return 1;
+  return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* paths                                                              */
@@ -1186,6 +1195,13 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
               stylus_step(dir, 1);
               return 1;
             }
+          if (g.paper != PAPER_NONE && !paper_continuous_active())
+            {
+              if (dir > 0)
+                { if (paper_prev_page()) config_save(); }
+              else if (paper_next_page()) config_save();
+              return 1;
+            }
           if (g.paper != PAPER_NONE && g.tool == TOOL_BUCKET)
             {
               if (paper_continuous_active())
@@ -1261,7 +1277,8 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
 
 static int paper_shortcut_matches(UINT vk, UINT mods)
 {
-  if (vk == VK_PRIOR || vk == VK_NEXT || vk == VK_HOME || vk == VK_END)
+  if (vk == VK_PRIOR || vk == VK_NEXT || vk == VK_HOME || vk == VK_END ||
+      vk == VK_UP || vk == VK_DOWN)
     return (mods & (MOD_ALT | MOD_WIN)) == 0;
   if (mods == MOD_CONTROL)
     return vk == 'Q' || vk == 'W' || vk == 'S' ||
@@ -1308,6 +1325,16 @@ static int paper_shortcut_dispatch(UINT vk, UINT mods)
       else { paper_prev_page(); config_save(); }
     }
   else if (vk == VK_NEXT)
+    {
+      if (paper_continuous_active()) paper_scroll_step(1);
+      else { paper_next_page(); config_save(); }
+    }
+  else if (vk == VK_UP)
+    {
+      if (paper_continuous_active()) paper_scroll_step(-1);
+      else { paper_prev_page(); config_save(); }
+    }
+  else if (vk == VK_DOWN)
     {
       if (paper_continuous_active()) paper_scroll_step(1);
       else { paper_next_page(); config_save(); }
@@ -1456,8 +1483,27 @@ void app_update_cursor(void)
     }
   if (!g.cur_erase || g.cur_erase_size != (int) g.eraser_width)
     {
-      if (g.cur_erase) DestroyCursor(g.cur_erase);
-      g.cur_erase = build_eraser_cursor((int) g.eraser_width);
+      int cached = -1;
+      for (int i = 0; i < 4; i++)
+        if (g.eraser_width == (unsigned) eraser_cursor_sizes[i])
+          { cached = i; break; }
+      if (cached >= 0)
+        {
+          if (!eraser_cursor_cache[cached])
+            eraser_cursor_cache[cached] =
+              build_eraser_cursor(eraser_cursor_sizes[cached]);
+          if (g.cur_erase && !eraser_cursor_is_cached(g.cur_erase) &&
+              g.cur_erase != LoadCursorW(NULL, IDC_CROSS))
+            DestroyCursor(g.cur_erase);
+          g.cur_erase = eraser_cursor_cache[cached];
+        }
+      else
+        {
+          if (g.cur_erase && !eraser_cursor_is_cached(g.cur_erase) &&
+              g.cur_erase != LoadCursorW(NULL, IDC_CROSS))
+            DestroyCursor(g.cur_erase);
+          g.cur_erase = build_eraser_cursor((int) g.eraser_width);
+        }
       g.cur_erase_size = (int) g.eraser_width;
     }
   SetCursor(tool_cursor());
@@ -1629,7 +1675,7 @@ void app_update_tray_icon(void)
   if (!g.tray_added) return;
   g.nid.uFlags = NIF_ICON | NIF_TIP;
   g.nid.hIcon = (g.tool != TOOL_NONE) ? g.hicon_active : g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.0");
+  wcscpy(g.nid.szTip, L"Screenator 8.1");
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -1965,8 +2011,11 @@ void app_take_screenshot(void)
   if (icon_was_visible) { ShowWindow(g.iconwin, SW_SHOWNA); app_raise_icon(); }
   ui_prepare_dialog();
   if (ok)
-    MessageBoxW(g.overlay, path, L"Screenshot saved",
-                MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+    {
+      if (g.screenshot_saved_message)
+        MessageBoxW(g.overlay, path, L"Screenshot saved",
+                    MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+    }
   else
     MessageBoxW(g.overlay, L"Could not save the screenshot.",
                 L"Screenshot failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
@@ -2007,9 +2056,9 @@ void app_select_paper_type(Paper p)
 
 void ui_toggle_visibility(void)
 {
-  if (g.paper != PAPER_NONE) return;
   g.hide_drawings = !g.hide_drawings;
   app_render_all();
+  toolbar_refresh();
   ui_refresh_tray();
 }
 
@@ -3923,6 +3972,13 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
             stylus_step(dir, 1);
             return 0;
           }
+        if (g.paper != PAPER_NONE && !paper_continuous_active())
+          {
+            if (dir > 0)
+              { if (paper_prev_page()) config_save(); }
+            else if (paper_next_page()) config_save();
+            return 0;
+          }
         if (g.tool == TOOL_BUCKET)
           {
             step_fill_color(dir);
@@ -4115,6 +4171,13 @@ static LRESULT CALLBACK icon_proc(HWND hwnd, UINT msg, WPARAM wp,
         if (editable_handles_active())
           {
             stylus_step(dir, 1);
+            return 0;
+          }
+        if (g.paper != PAPER_NONE && !paper_continuous_active())
+          {
+            if (dir > 0)
+              { if (paper_prev_page()) config_save(); }
+            else if (paper_next_page()) config_save();
             return 0;
           }
         if (g.tool == TOOL_BUCKET)
@@ -4467,7 +4530,17 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
           }
         else if (id == HK_PAPER_T)
           {
-            if (g.paper == PAPER_NONE) ui_toggle_visibility();
+            ui_toggle_visibility();
+          }
+        else if (id == HK_CLEAR)
+          {
+            if (g.paper != PAPER_NONE || g.tool != TOOL_NONE)
+              tools_clear();
+          }
+        else if (id == HK_DELETE_PAGE)
+          {
+            if (g.paper != PAPER_NONE)
+              ui_execute_command(CMD_PAPER_DELETE);
           }
         else if (id == HK_QUIT)
           {
@@ -4711,7 +4784,7 @@ static void add_tray(void)
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
   g.nid.hIcon = g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.0");
+  wcscpy(g.nid.szTip, L"Screenator 8.1");
   if (Shell_NotifyIconW(NIM_ADD, &g.nid))
     g.tray_added = 1;
 }
@@ -4732,6 +4805,8 @@ static int shortcut_hotkey_id(ShortcutId id)
     case SK_REDO: return HK_REDO;
     case SK_PAPER_Q: return HK_PAPER_Q;
     case SK_PAPER_T: return HK_PAPER_T;
+    case SK_CLEAR: return HK_CLEAR;
+    case SK_DELETE_PAGE: return HK_DELETE_PAGE;
     case SK_QUIT: return HK_QUIT;
     default: return 0;
     }
@@ -4743,7 +4818,7 @@ static void unregister_managed_hotkeys(void)
     {
       HK_PEN, HK_TEXT, HK_ARROW, HK_ICON, HK_QUICK, HK_ESC, HK_UNDO,
       HK_REDO, HK_PAPER_Q, HK_PAPER_T, HK_QUIT, HK_SWITCH, HK_SHOT,
-      HK_TIMER, HK_TOOLBAR
+      HK_TIMER, HK_TOOLBAR, HK_CLEAR, HK_DELETE_PAGE
     };
   for (int i = 0; i < (int) (sizeof(ids) / sizeof(ids[0])); i++)
     UnregisterHotKey(g.msgwin, ids[i]);
@@ -4775,7 +4850,7 @@ static int register_runtime_shortcuts(int check, char *error, int error_size)
   static const ShortcutId always[] =
     {
       SK_PEN, SK_TEXT, SK_ARROW, SK_ICON, SK_TOOLBAR, SK_SWITCH,
-      SK_SHOT
+      SK_SHOT, SK_PAPER_T
     };
   for (int i = 0; i < (int) (sizeof(always) / sizeof(always[0])); i++)
     if (!register_shortcut(always[i], error, error_size) && check)
@@ -4795,8 +4870,14 @@ static int register_runtime_shortcuts(int check, char *error, int error_size)
         return 0;
       register_shortcut(SK_QUIT, NULL, 0);
     }
-  else if (!register_shortcut(SK_PAPER_T, error, error_size) && check)
-    return 0;
+  if (g.paper == PAPER_NONE && g.tool != TOOL_NONE &&
+      !register_shortcut(SK_CLEAR, error, error_size) && check) return 0;
+  if (g.paper != PAPER_NONE)
+    {
+      if (!register_shortcut(SK_CLEAR, error, error_size) && check) return 0;
+      if (!register_shortcut(SK_DELETE_PAGE, error, error_size) && check)
+        return 0;
+    }
   return 1;
 }
 
@@ -5860,7 +5941,7 @@ static int run_selftest(void)
   /* Text through pango. */
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.0");
+  fs.text = _strdup("Screenator 8.1");
   fs.font = _strdup("Arial Bold 34");
   fs.font_size = 34;
   fs.color = color_from_hex("#202020", NULL);
@@ -6046,7 +6127,7 @@ static void demo_draw(void)
   draw_line_shape(cr, &ln, 6, color_from_hex("#1040C0", NULL));
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.0 for Windows");
+  fs.text = _strdup("Screenator 8.1 for Windows");
   fs.font = _strdup("Arial Bold 40");
   fs.font_size = 40;
   fs.color = color_from_hex("#B00020", NULL);
@@ -6229,7 +6310,13 @@ int WINAPI WinMain(HINSTANCE hinst, HINSTANCE prev, LPSTR cmdline, int show)
   if (asset_icon_normal) cairo_surface_destroy(asset_icon_normal);
   if (asset_icon_active && asset_icon_active != asset_icon_normal)
     cairo_surface_destroy(asset_icon_active);
-  if (g.cur_erase) DestroyCursor(g.cur_erase);
+  if (g.cur_erase && !eraser_cursor_is_cached(g.cur_erase) &&
+      g.cur_erase != LoadCursorW(NULL, IDC_CROSS))
+    DestroyCursor(g.cur_erase);
+  for (int i = 0; i < 4; i++)
+    if (eraser_cursor_cache[i] &&
+        eraser_cursor_cache[i] != LoadCursorW(NULL, IDC_CROSS))
+      DestroyCursor(eraser_cursor_cache[i]);
   if (g.editor_font) DeleteObject(g.editor_font);
   if (g.richedit) FreeLibrary(g.richedit);
   paper_shutdown();

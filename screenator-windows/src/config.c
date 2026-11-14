@@ -12,20 +12,20 @@ const char *g_shortcut_keys[SK_COUNT] =
 {
   "arrow", "text", "pen", "floating_icon", "toolbar", "switch_mode",
   "screenshot", "timer", "undo", "redo", "leave_paper",
-  "toggle_visibility", "quit"
+  "toggle_visibility", "clear_screen", "delete_page", "quit"
 };
 
 const char *g_shortcut_defaults[SK_COUNT] =
 {
   "F6", "F7", "F8", "F9", "F10", "F3", "F4", "F12",
-  "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Alt+F4"
+  "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Delete", "Ctrl+X", "Alt+F4"
 };
 
 const char *g_shortcut_labels[SK_COUNT] =
 {
   "Arrow", "Text", "Pen", "Floating Icon", "Toolbar", "Switch Mode",
   "Screenshot", "Timer", "Undo", "Redo", "Leave Paper",
-  "Toggle Visibility", "Quit"
+  "Toggle Visibility", "Clear Screen", "Delete Page", "Quit"
 };
 
 static wchar_t *wide_from_utf8(const char *s)
@@ -340,6 +340,9 @@ void config_defaults(void)
   g.show_icon = 1;
   g.show_indicator = 1;
   g.show_toolbar = 1;
+  g.toolbar_locked = 0;
+  g.screenshot_saved_message = 1;
+  g.pdf_saved_message = 1;
   g.toolbar_vertical = 0;
   g.toolbar_icon_size = 32;
   g.paper_size_kind = PAPER_SIZE_SCREEN;
@@ -481,6 +484,9 @@ void config_load_from(const wchar_t *path)
   if (g.paper_custom_h_mm > 2000) g.paper_custom_h_mm = 2000;
   g.toolbar_x = (int) get_int(path, L"toolbar_x", 40);
   g.toolbar_y = (int) get_int(path, L"toolbar_y", 40);
+  g.toolbar_locked = (int) get_int(path, L"toolbar_locked", 0);
+  g.screenshot_saved_message = (int) get_int(path, L"screenshot_saved_message", 1);
+  g.pdf_saved_message = (int) get_int(path, L"pdf_saved_message", 1);
   {
     wchar_t tbuf[TOOLBAR_ITEMS_MAX];
     wchar_t tdef[TOOLBAR_ITEMS_MAX];
@@ -509,7 +515,6 @@ void config_load_from(const wchar_t *path)
       }
   }
   if (strstr(g.toolbar_items, "page_prev") ||
-      strstr(g.toolbar_items, "screenshot") ||
       strstr(g.toolbar_items, "save_paper") ||
       strstr(g.toolbar_items, "floating_icon"))
     {
@@ -518,13 +523,19 @@ void config_load_from(const wchar_t *path)
       g.toolbar_items[sizeof(g.toolbar_items) - 1] = 0;
     }
   if (strstr(g.toolbar_order, "page_prev") ||
-      strstr(g.toolbar_order, "screenshot") ||
       strstr(g.toolbar_order, "save_paper") ||
       strstr(g.toolbar_order, "floating_icon"))
     {
       strncpy(g.toolbar_order, TOOLBAR_DEFAULT_ITEMS,
               sizeof(g.toolbar_order) - 1);
       g.toolbar_order[sizeof(g.toolbar_order) - 1] = 0;
+    }
+  if (strcmp(g.toolbar_items, "none") != 0 &&
+      !strstr(g.toolbar_items, "screenshot"))
+    {
+      size_t n = strlen(g.toolbar_items);
+      if (n + sizeof(",screenshot") < sizeof(g.toolbar_items))
+        strcat(g.toolbar_items, ",screenshot");
     }
   g.save_on_exit = (int) get_int(path, L"save_annotations", 1);
   g.paper_continuous_scroll =
@@ -593,6 +604,12 @@ void config_save(void)
     WritePrivateProfileStringW(L"screenator", L"toolbar_x", num, g.config_path);
     _snwprintf(num, 32, L"%d", g.toolbar_y);
     WritePrivateProfileStringW(L"screenator", L"toolbar_y", num, g.config_path);
+    _snwprintf(num, 32, L"%d", g.toolbar_locked);
+    WritePrivateProfileStringW(L"screenator", L"toolbar_locked", num, g.config_path);
+    _snwprintf(num, 32, L"%d", g.screenshot_saved_message);
+    WritePrivateProfileStringW(L"screenator", L"screenshot_saved_message", num, g.config_path);
+    _snwprintf(num, 32, L"%d", g.pdf_saved_message);
+    WritePrivateProfileStringW(L"screenator", L"pdf_saved_message", num, g.config_path);
 
     wchar_t *items = wide_from_utf8(g.toolbar_items[0] ? g.toolbar_items
                                                        : "none");

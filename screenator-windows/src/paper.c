@@ -3136,9 +3136,12 @@ static void paper_save_message(const wchar_t *path, int ok,
   wchar_t text[2048];
   if (ok)
     {
-      _snwprintf(text, 2048, L"Paper saved to:\n%s", path);
-      MessageBoxW(g.overlay, text, L"Paper saved",
-                  MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+      if (g.pdf_saved_message)
+        {
+          _snwprintf(text, 2048, L"Paper saved to:\n%s", path);
+          MessageBoxW(g.overlay, text, L"Paper saved",
+                      MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+        }
     }
   else
     {
@@ -3313,13 +3316,6 @@ void paper_save_dialog(void)
     {
       MessageBoxW(g.overlay,
                   L"No paper page is active. Select a paper type first.",
-                  L"Paper save", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
-      return;
-    }
-
-  if (!paper_changes_pending)
-    {
-      MessageBoxW(g.overlay, L"No changes have been made to save.",
                   L"Paper save", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
       return;
     }

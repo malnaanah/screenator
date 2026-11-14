@@ -35,8 +35,8 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "8.0"
-#define APP_TITLE    "Screenator 8.0"
+#define APP_VERSION  "8.1"
+#define APP_TITLE    "Screenator 8.1"
 #define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
@@ -47,7 +47,7 @@
 /* Toolbar items in their default order.  The same ids are used by the
  * Settings > Toolbar > Configure dialog and by the toolbar builder. */
 #define TOOLBAR_DEFAULT_ITEMS \
-  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,save," \
+  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,screenshot,save," \
   "paper,page_insert_before,page_delete,page_insert_after,page_number," \
   "goto_page,clear,visibility,eraser_size,line_color,thickness,fill_color," \
   "opacity,marker_opacity,settings,hints,quit"
@@ -57,7 +57,7 @@ typedef enum
 {
   SK_ARROW = 0, SK_TEXT, SK_PEN, SK_ICON, SK_TOOLBAR, SK_SWITCH,
   SK_SHOT, SK_TIMER, SK_UNDO, SK_REDO, SK_PAPER_Q, SK_PAPER_T,
-  SK_QUIT, SK_COUNT
+  SK_CLEAR, SK_DELETE_PAGE, SK_QUIT, SK_COUNT
 } ShortcutId;
 
 /* Popup menus opened at a toolbar button. */
@@ -93,6 +93,8 @@ typedef enum
 #define HK_SHOT      112
 #define HK_TIMER     113
 #define HK_TOOLBAR   114
+#define HK_CLEAR     115
+#define HK_DELETE_PAGE 116
 
 /* Menu command ids. */
 enum
@@ -296,6 +298,9 @@ typedef struct
   int toolbar_vertical;
   int toolbar_icon_size;
   int toolbar_x, toolbar_y;
+  int toolbar_locked;
+  int screenshot_saved_message;
+  int pdf_saved_message;
   char toolbar_items[TOOLBAR_ITEMS_MAX];
   char toolbar_order[TOOLBAR_ITEMS_MAX];
   char shortcuts[SK_COUNT][SHORTCUT_TEXT_MAX];
