@@ -49,7 +49,7 @@ static const TbAction tb_actions[] =
     CMD_PAPER_GOTO, 0 },
   { "goto_page", "Go to Page", "goto-page.png", CMD_PAPER_GOTO, 0 },
   { "clear", "Clear Screen", "trash.png", CMD_CLEAR, 0 },
-  { "visibility", "Toggle Visibility", "hide.png", CMD_VISIBILITY, 0 },
+  { "visibility", "Toggle Visibility", "eye-opened.png", CMD_VISIBILITY, 0 },
   { "eraser_size", "Eraser Size", "eraser.png", 0, TB_POPUP_ERASER_SIZE },
   { "line_color", "Line Color", "pen.png", 0, TB_POPUP_LINE_COLOR },
   { "thickness", "Thickness", "free-line.png", 0, TB_POPUP_THICKNESS },
