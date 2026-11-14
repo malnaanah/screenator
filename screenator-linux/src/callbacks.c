@@ -609,6 +609,8 @@ static GtkWidget *paper_top_bar_build_opacity_menu (ScreenatorData *data);
 static GtkWidget *paper_top_bar_build_marker_opacity_menu (
   ScreenatorData *data);
 static void paper_toolbar_set_visible (GtkWidget *button, gboolean show);
+static void paper_toolbar_set_available (GtkWidget *button,
+					 gboolean available);
 static void paper_window_transform_values (ScreenatorData *data,
 					   gdouble *scale, gint *origin_x,
 					   gint *origin_y);
@@ -618,6 +620,8 @@ static void paper_window_to_root (ScreenatorData *data, gint *x, gint *y);
 static gboolean paper_window_event_inside (ScreenatorData *data,
 					   gdouble x, gdouble y);
 static const gchar *toolbar_item_id (const gchar *id);
+static gboolean toolbar_item_list_has (const gchar *items,
+				       const gchar *wanted);
 static GdkPixbuf *paper_color_swatch (const GdkRGBA *color, gboolean none,
 				      gint size);
 static GdkPixbuf *paper_thickness_sample (guint width, gint size,
@@ -667,7 +671,8 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "shapes",        "Shapes",              "shapes.png" },
   { "undo",          "Undo",                "undo.png" },
   { "redo",          "Redo",                "redo.png" },
-  { "save",          "Save / Screenshot",   "save.png" },
+  { "screenshot",    "Screenshot",          "screenshot.png" },
+  { "save",          "Save Paper",          "save.png" },
   { "paper",         "Paper Type",          "paper.png" },
   { "insert_before", "Insert Page Before",  "add_before.png" },
   { "delete_page",   "Delete Page",         "delete-page.png" },
@@ -675,7 +680,7 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "page_number",   "Current Page",        NULL },
   { "goto_page",     "Go to Page",          "goto-page.png" },
   { "clear",         "Clear Screen",        "trash.png" },
-  { "visibility",    "Toggle Visibility",   "hide.png" },
+  { "visibility",    "Toggle Visibility",   "eye-opened.png" },
   { "eraser_size",   "Eraser Size",         NULL },
   { "line_color",    "Line Color",          NULL },
   { "thickness",     "Thickness",           NULL },
@@ -4868,18 +4873,23 @@ screenator_save_screenshot (ScreenatorData *data)
   {
     gboolean saved =
       cairo_surface_write_to_png (surface, path) == CAIRO_STATUS_SUCCESS;
-    GtkWidget *dialog = gtk_message_dialog_new (
-      NULL, GTK_DIALOG_MODAL,
-      saved ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR,
-      GTK_BUTTONS_OK,
-      saved ? "Screenshot saved to:\n%s" : "Could not save the screenshot to:\n%s",
-      path);
 
-    gtk_window_set_title (GTK_WINDOW (dialog),
-			  saved ? "Screenshot saved" : "Screenshot failed");
-    show_dialog_above_drawings (data, dialog);
-    gtk_dialog_run (GTK_DIALOG (dialog));
-    gtk_widget_destroy (dialog);
+    if (!saved || data->show_screenshot_saved_message)
+      {
+	GtkWidget *dialog = gtk_message_dialog_new (
+	  NULL, GTK_DIALOG_MODAL,
+	  saved ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR,
+	  GTK_BUTTONS_OK,
+	  saved ? "Screenshot saved to:\n%s"
+	  : "Could not save the screenshot to:\n%s",
+	  path);
+
+	gtk_window_set_title (GTK_WINDOW (dialog),
+			      saved ? "Screenshot saved" : "Screenshot failed");
+	show_dialog_above_drawings (data, dialog);
+	gtk_dialog_run (GTK_DIALOG (dialog));
+	gtk_widget_destroy (dialog);
+      }
   }
 
   cairo_surface_destroy (surface);
@@ -4908,6 +4918,7 @@ screenator_activate_cursor_state (ScreenatorData *data)
   data->paper_hand_tool = FALSE;
   data->forced_context = NULL;
   data->pen_tool = 0;
+  screenator_refresh_visibility_shortcut (data);
 
   /* Drop cached per-device tool contexts as well, otherwise re-grabbing the
    * pointer could show the previous tool's cursor while Cursor is active. */
@@ -6892,8 +6903,8 @@ void set_tray_icon (ScreenatorData *data)
 static GdkPixbuf *load_menu_icon_at_size (const gchar *name, gint size)
 {
   const gchar *dir = icon_data_dir ();
-  gchar *path = dir ? g_build_filename (dir, "screenator", name, NULL)
-                    : g_build_filename ("/usr/share/screenator", name, NULL);
+  gchar *path = dir ? g_build_filename (dir, "screenator", "icons", name, NULL)
+                    : g_build_filename ("/usr/share/screenator/icons", name, NULL);
   GdkPixbuf *pixbuf = gdk_pixbuf_new_from_file_at_scale (path, size, size,
                                                          FALSE, NULL);
   g_free (path);
@@ -12916,6 +12927,7 @@ typedef struct
   gboolean        reset_clicked;
 
   GtkWidget      *save_check;
+  GtkWidget      *screenshot_message_check;
   GtkWidget      *indicator_check;
   GtkWidget      *icon_size_combo;
   GtkWidget      *icon_position_radio[4];
@@ -12924,6 +12936,7 @@ typedef struct
   GtkWidget      *continuous_check;
   GtkWidget      *toolbar_size_spin;
   GtkWidget      *toolbar_direction_combo;
+  GtkWidget      *toolbar_lock_check;
   GtkWidget      *toolbar_items_view;
   GtkListStore   *toolbar_items_store;
   GtkWidget      *screen_radio;
@@ -13207,6 +13220,17 @@ build_toolbar_settings_page (SettingsDialog *sd)
     gtk_box_pack_start (GTK_BOX (box), row, FALSE, FALSE, 0);
   }
 
+  sd->toolbar_lock_check = gtk_check_button_new_with_label (
+    "Lock toolbar position");
+  gtk_toggle_button_set_active (
+    GTK_TOGGLE_BUTTON (sd->toolbar_lock_check),
+    data->paper_toolbar_position_locked);
+  gtk_widget_set_tooltip_text (sd->toolbar_lock_check,
+    "Prevent dragging the toolbar. Its position remains aligned with the "
+    "screen edges when the screen size changes.");
+  gtk_box_pack_start (GTK_BOX (box), sd->toolbar_lock_check,
+                      FALSE, FALSE, 0);
+
   note = gtk_label_new ("Each row shows its tool bar icon. Checked items "
 			"appear on the tool bar; drag the ☰ handle of a row to "
 			"change its position. Hidden items keep their place in "
@@ -13286,6 +13310,13 @@ build_toolbar_settings_page (SettingsDialog *sd)
 	  }
     }
   g_strfreev (visible_tokens);
+
+  /* Upgrade the old combined Save / Screenshot toolbar preference. */
+  if (toolbar_item_list_has (data->paper_toolbar_items, "save") &&
+      !toolbar_item_list_has (data->paper_toolbar_items, "screenshot"))
+    for (j = 0; j < G_N_ELEMENTS (toolbar_item_info); j++)
+      if (g_strcmp0 (toolbar_item_info[j].id, "screenshot") == 0)
+	visible[j] = TRUE;
 
   order = toolbar_full_order (data);
   tokens = g_strsplit (order, ",", -1);
@@ -13385,16 +13416,23 @@ build_general_settings_page (SettingsDialog *sd)
 				data->save_annotations_on_exit);
   gtk_grid_attach (GTK_GRID (grid), sd->save_check, 0, 0, 2, 1);
 
+  sd->screenshot_message_check = gtk_check_button_new_with_label (
+    "Show Screenshot saved message");
+  gtk_toggle_button_set_active (
+    GTK_TOGGLE_BUTTON (sd->screenshot_message_check),
+    data->show_screenshot_saved_message);
+  gtk_grid_attach (GTK_GRID (grid), sd->screenshot_message_check,
+                   0, 1, 2, 1);
+
   sd->indicator_check = gtk_check_button_new_with_label (
     "Show settings indicator on Floating Icon");
   gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->indicator_check),
 				data->show_settings_indicator);
-  gtk_widget_set_sensitive (sd->indicator_check, data->show_floating_icon);
-  gtk_grid_attach (GTK_GRID (grid), sd->indicator_check, 0, 1, 2, 1);
+  gtk_grid_attach (GTK_GRID (grid), sd->indicator_check, 0, 2, 2, 1);
 
   label = gtk_label_new ("Timer delay");
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_grid_attach (GTK_GRID (grid), label, 0, 2, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 3, 1, 1);
 
   combo = gtk_combo_box_text_new ();
   for (i = 0; i < G_N_ELEMENTS (timer_delays); i++)
@@ -13414,18 +13452,18 @@ build_general_settings_page (SettingsDialog *sd)
     }
   gtk_combo_box_set_active (GTK_COMBO_BOX (combo), timer_active);
   sd->timer_delay_combo = combo;
-  gtk_grid_attach (GTK_GRID (grid), combo, 1, 2, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), combo, 1, 3, 1, 1);
 
   label = gtk_label_new ("Text font");
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_grid_attach (GTK_GRID (grid), label, 0, 3, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 4, 1, 1);
 
   row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   button = gtk_button_new_with_label ("Change Font...");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (settings_change_font), sd);
   gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
-  gtk_grid_attach (GTK_GRID (grid), row, 1, 3, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), row, 1, 4, 1, 1);
 
 
   gtk_box_pack_start (GTK_BOX (box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
@@ -13558,7 +13596,7 @@ build_shortcut_settings_page (SettingsDialog *sd)
 {
   ScreenatorData *data = sd->data;
   GtkWidget *box, *scroll, *grid, *note;
-  guint i;
+  guint i, row_index = 0;
 
   box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
   gtk_container_set_border_width (GTK_CONTAINER (box), 12);
@@ -13593,9 +13631,10 @@ build_shortcut_settings_page (SettingsDialog *sd)
 			  ? data->shortcuts[i].text
 			  : screenator_shortcut_defaults[i]);
       gtk_entry_set_width_chars (GTK_ENTRY (entry), 20);
-      gtk_grid_attach (GTK_GRID (grid), label, 0, i, 1, 1);
-      gtk_grid_attach (GTK_GRID (grid), entry, 1, i, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), label, 0, row_index, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), entry, 1, row_index, 1, 1);
       sd->shortcut_entries[i] = entry;
+      row_index++;
     }
 
   gtk_container_add (GTK_CONTAINER (scroll), grid);
@@ -13759,6 +13798,8 @@ show_settings_dialog (ScreenatorData *data)
     {
       gboolean new_save =
 	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->save_check));
+      gboolean new_screenshot_message = gtk_toggle_button_get_active (
+	GTK_TOGGLE_BUTTON (sd->screenshot_message_check));
       gboolean new_indicator =
 	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->indicator_check));
       gint icon_index = gtk_combo_box_get_active (
@@ -13780,6 +13821,8 @@ show_settings_dialog (ScreenatorData *data)
 	gtk_combo_box_get_active (GTK_COMBO_BOX (
 				    sd->toolbar_direction_combo));
       gboolean new_toolbar_vertical = toolbar_direction != 1;
+      gboolean new_toolbar_position_locked = gtk_toggle_button_get_active (
+	GTK_TOGGLE_BUTTON (sd->toolbar_lock_check));
       gboolean new_continuous =
 	gtk_toggle_button_get_active (
 	  GTK_TOGGLE_BUTTON (sd->continuous_check));
@@ -13798,6 +13841,8 @@ show_settings_dialog (ScreenatorData *data)
 	  if (!new_save)
 	    remove_saved_annotations ();
 	}
+
+      data->show_screenshot_saved_message = new_screenshot_message;
 
       if (new_indicator != data->show_settings_indicator)
 	{
@@ -13830,10 +13875,20 @@ show_settings_dialog (ScreenatorData *data)
       }
 
       data->tool_delay_seconds = new_timer_delay;
+      data->paper_toolbar_position_locked =
+	new_toolbar_position_locked;
 
       if (new_toolbar_size != data->paper_toolbar_icon_size ||
 	  new_toolbar_vertical != data->paper_toolbar_vertical)
 	{
+	  if (new_toolbar_vertical != data->paper_toolbar_vertical)
+	    {
+	      /* A direction change moves the toolbar to its matching screen edge:
+	       * horizontal bars sit top-centre, vertical bars right-centre. */
+	      data->paper_toolbar_x_ratio = new_toolbar_vertical ? 1.0 : 0.5;
+	      data->paper_toolbar_y_ratio = new_toolbar_vertical ? 0.5 : 0.0;
+	      data->paper_toolbar_position_set = TRUE;
+	    }
 	  data->paper_toolbar_icon_size =
 	    CLAMP (new_toolbar_size, 16, 64);
 	  data->paper_toolbar_vertical = new_toolbar_vertical;
@@ -13875,12 +13930,16 @@ show_settings_dialog (ScreenatorData *data)
 	guint i;
 
 	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
-	  new_texts[i] = g_strdup (
-	    gtk_entry_get_text (GTK_ENTRY (sd->shortcut_entries[i])));
+	  new_texts[i] = g_strdup (sd->shortcut_entries[i]
+	    ? gtk_entry_get_text (GTK_ENTRY (sd->shortcut_entries[i]))
+	    : (data->shortcuts[i].text
+	       ? data->shortcuts[i].text
+	       : screenator_shortcut_defaults[i]));
 	screenator_apply_shortcuts (data, new_texts);
 	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
 	  g_free (new_texts[i]);
       }
+      paper_top_bar_update_active_tool (data);
 
       paper_set_continuous_scrolling (data, new_continuous);
 
@@ -15201,25 +15260,25 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     action = gtk_separator_menu_item_new ();
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
 
-    action = gtk_image_menu_item_new_with_label ("Clear Screen");
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_CLEAR_SCREEN,
+				 "Clear Screen");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
                                      load_menu_icon ("trash.png")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate", G_CALLBACK (on_clear), data);
 
-    if (data->paper == SCREENATOR_PAPER_NONE)
-      {
-	action = shortcut_menu_item (data,
-				     SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
-				     "Toggle Visibility");
-	gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
-	                               gtk_image_new_from_pixbuf (
-	                                 load_menu_icon ("hide.png")));
-	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
-	g_signal_connect (action, "activate",
-			  G_CALLBACK (on_toggle_vis), data);
-      }
+    action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
+				 "Toggle Visibility");
+    gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
+				   gtk_image_new_from_pixbuf (
+				     load_menu_icon (
+				       (data->paper == SCREENATOR_PAPER_NONE
+					? data->hidden : data->hide_drawings)
+				       ? "eye-closed.png" : "eye-opened.png")));
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
+    g_signal_connect (action, "activate",
+		      G_CALLBACK (on_toggle_vis), data);
 
     action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SCREENSHOT, "Screenshot");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
@@ -15533,7 +15592,8 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
     gtk_widget_show (widget);
 
-    widget = gtk_image_menu_item_new_with_label ("Delete Page");
+    widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_DELETE_PAGE,
+				 "Delete Page");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
                                      load_menu_icon ("delete-page.png")));
@@ -16356,6 +16416,7 @@ typedef struct
   GtkWidget      *arrow_button;
   GtkWidget      *timer_button;
   GtkWidget      *visibility_button;
+  GtkWidget      *clear_button;
   GtkWidget      *shapes_button;
   GtkWidget      *add_before_button;
   GtkWidget      *delete_page_button;
@@ -16368,7 +16429,7 @@ typedef struct
   GtkWidget      *thickness_image;
   GtkWidget      *eraser_image;
   GtkWidget      *save_button;
-  GtkWidget      *save_image;
+  GtkWidget      *screenshot_button;
 
   GtkWidget      *tooltip_window;
   GtkWidget      *tooltip_label;
@@ -17108,10 +17169,14 @@ paper_top_bar_save_clicked (GtkButton *button, gpointer user_data)
   ScreenatorData *data = user_data;
 
   (void) button;
-  if (data->paper == SCREENATOR_PAPER_NONE)
-    screenator_save_screenshot (data);
-  else
-    screenator_paper_save (data);
+  screenator_paper_save (data);
+}
+
+static void
+paper_top_bar_screenshot_clicked (GtkButton *button, gpointer user_data)
+{
+  (void) button;
+  screenator_save_screenshot ((ScreenatorData *) user_data);
 }
 
 static void
@@ -17902,17 +17967,13 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
     ScreenatorPaperDocument *doc = paper_active_document (data);
     guint page_count = (doc && doc->pages) ? doc->pages->len : 0;
 
-    if (bar->add_before_button)
-      gtk_widget_set_sensitive (bar->add_before_button, can_insert);
-    if (bar->delete_page_button)
-      gtk_widget_set_sensitive (bar->delete_page_button,
-				can_insert && page_count > 1);
-    if (bar->add_after_button)
-      gtk_widget_set_sensitive (bar->add_after_button, can_insert);
-    if (bar->goto_page_button)
-      gtk_widget_set_sensitive (bar->goto_page_button,
-				data->paper != SCREENATOR_PAPER_NONE &&
-				page_count > 1);
+    paper_toolbar_set_available (bar->add_before_button, can_insert);
+    paper_toolbar_set_available (bar->delete_page_button,
+				 can_insert && page_count > 1);
+    paper_toolbar_set_available (bar->add_after_button, can_insert);
+    paper_toolbar_set_available (bar->goto_page_button,
+				 data->paper != SCREENATOR_PAPER_NONE &&
+				 page_count > 1);
     if (bar->page_number_button && bar->page_number_label)
       {
 	gchar *text;
@@ -17932,31 +17993,17 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
 
 	gtk_label_set_text (GTK_LABEL (bar->page_number_label), text);
 	paper_toolbar_set_tooltip_text (bar->page_number_button, tip);
-	gtk_widget_set_sensitive (bar->page_number_button,
-				  data->paper != SCREENATOR_PAPER_NONE &&
-				  page_count > 1);
+	paper_toolbar_set_available (bar->page_number_button,
+				     data->paper != SCREENATOR_PAPER_NONE &&
+				     page_count > 1);
 	g_free (text);
 	g_free (tip);
       }
   }
 
-  if (bar->save_button && bar->save_image)
-    {
-      gboolean screen = data->paper == SCREENATOR_PAPER_NONE;
-      GdkPixbuf *icon = load_menu_icon_at_size (
-	screen ? "screenshot.png" : "save.png",
-	paper_top_bar_icon_size (data));
-
-      if (icon)
-	{
-	  gtk_image_set_from_pixbuf (GTK_IMAGE (bar->save_image), icon);
-	  g_object_unref (icon);
-	}
-
-      paper_toolbar_set_tooltip_text (
-	bar->save_button,
-	screen ? "Screenshot (F4)" : "Save current paper (Ctrl+S)");
-    }
+  paper_toolbar_set_visible (bar->screenshot_button, TRUE);
+  paper_toolbar_set_visible (bar->save_button,
+			     data->paper != SCREENATOR_PAPER_NONE);
 
   paper_toolbar_set_active (bar->cursor_button, cursor);
   paper_toolbar_set_active (bar->pen_button, pen);
@@ -17970,11 +18017,37 @@ paper_top_bar_update_active_tool (ScreenatorData *data)
     paper_toolbar_set_visible (bar->timer_button,
 			       data->paper == SCREENATOR_PAPER_NONE);
 
-  /* Toggle Visibility is useful in Screen Annotation mode; in Paper Drawing
-   * the tool bar always hides it. */
+  /* Toggle Visibility is available in both Screen and Paper modes. */
   if (bar->visibility_button)
-    paper_toolbar_set_visible (bar->visibility_button,
-			       data->paper == SCREENATOR_PAPER_NONE);
+    {
+      gchar *tip = shortcut_label (data,
+				   SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
+				   "Toggle Visibility");
+
+      paper_toolbar_set_visible (bar->visibility_button, TRUE);
+      paper_toolbar_set_tooltip_text (bar->visibility_button, tip);
+      g_free (tip);
+    }
+
+  if (bar->delete_page_button)
+    {
+      gchar *tip = shortcut_label (data, SCREENATOR_SHORTCUT_DELETE_PAGE,
+				   "Delete Page");
+
+      paper_toolbar_set_tooltip_text (bar->delete_page_button, tip);
+      g_free (tip);
+    }
+
+  if (bar->clear_button)
+    {
+      gchar *tip = shortcut_label (
+	data, SCREENATOR_SHORTCUT_CLEAR_SCREEN,
+	"Clear Screen");
+
+      paper_toolbar_set_tooltip_text (bar->clear_button, tip);
+      g_free (tip);
+    }
+  screenator_refresh_visibility_icon (data);
 
   if (track_geometry)
     {
@@ -18053,20 +18126,60 @@ paper_top_bar_position (PaperTopBar *bar)
   gdk_screen_get_monitor_workarea (screen, monitor, &area);
   gtk_widget_get_preferred_size (bar->window, NULL, &req);
 
-  if (data->paper_toolbar_vertical)
+  if (!data->paper_toolbar_position_set)
     {
-      /* Vertical bars sit on the right edge, centred on the screen. */
-      x = area.x + MAX (0, area.width - req.width - PAPER_TOOLBAR_MARGIN);
-      y = area.y + MAX (0, (area.height - req.height) / 2);
-    }
-  else
-    {
-      /* Horizontal bars sit on the top edge, centred on the screen. */
-      x = area.x + MAX (0, (area.width - req.width) / 2);
-      y = area.y + PAPER_TOOLBAR_MARGIN;
+      if (data->paper_toolbar_vertical)
+	{
+	  data->paper_toolbar_x_ratio =
+	    (gdouble) MAX (0, area.width - req.width - PAPER_TOOLBAR_MARGIN) /
+	    MAX (1, area.width - req.width);
+	  data->paper_toolbar_y_ratio = 0.5;
+	}
+      else
+	{
+	  data->paper_toolbar_x_ratio = 0.5;
+	  data->paper_toolbar_y_ratio =
+	    (gdouble) PAPER_TOOLBAR_MARGIN / MAX (1, area.height - req.height);
+	}
+      data->paper_toolbar_position_set = TRUE;
     }
 
+  /* Keep the toolbar at the same relative point in the work area as the
+   * screen size changes, including while its position is locked. */
+  x = area.x + (gint) ((area.width - req.width) *
+		       data->paper_toolbar_x_ratio + 0.5);
+  y = area.y + (gint) ((area.height - req.height) *
+		       data->paper_toolbar_y_ratio + 0.5);
+  x = CLAMP (x, area.x, area.x + MAX (0, area.width - req.width));
+  y = CLAMP (y, area.y, area.y + MAX (0, area.height - req.height));
+
   gtk_window_move (GTK_WINDOW (bar->window), x, y);
+}
+
+static void
+paper_top_bar_store_position (PaperTopBar *bar)
+{
+  ScreenatorData *data = bar->data;
+  GdkScreen *screen = gtk_widget_get_screen (bar->window);
+  GdkRectangle area;
+  GtkRequisition req;
+  gint monitor, x, y;
+
+  if (!screen)
+    return;
+
+  monitor = gdk_screen_get_primary_monitor (screen);
+  if (monitor < 0)
+    monitor = 0;
+
+  gdk_screen_get_monitor_workarea (screen, monitor, &area);
+  gtk_window_get_position (GTK_WINDOW (bar->window), &x, &y);
+  gtk_widget_get_preferred_size (bar->window, NULL, &req);
+  data->paper_toolbar_x_ratio = CLAMP (
+    (gdouble) (x - area.x) / MAX (1, area.width - req.width), 0.0, 1.0);
+  data->paper_toolbar_y_ratio = CLAMP (
+    (gdouble) (y - area.y) / MAX (1, area.height - req.height), 0.0, 1.0);
+  data->paper_toolbar_position_set = TRUE;
 }
 
 static void
@@ -18099,7 +18212,16 @@ paper_toolbar_drag_press (GtkWidget *widget, GdkEventButton *event,
 
   (void) widget;
 
-  if (event->button != 1 || bar->drag_pending)
+  if (event->button == 3)
+    {
+      GtkWidget *menu = build_icon_menu (bar->data);
+
+      paper_top_bar_popup_menu (bar->data, widget, menu);
+      return TRUE;
+    }
+
+  if (event->button != 1 || bar->drag_pending ||
+      bar->data->paper_toolbar_position_locked)
     return FALSE;
 
   paper_toolbar_tooltip_hide (bar->data);
@@ -18124,12 +18246,19 @@ paper_toolbar_drag_finish (PaperTopBar *bar)
   GdkDisplay *display = window ? gdk_window_get_display (window)
 			       : gdk_display_get_default ();
   GdkSeat *seat = display ? gdk_display_get_default_seat (display) : NULL;
+  gboolean moved = bar->dragging;
 
   if (bar->drag_seat_grabbed && seat)
     gdk_seat_ungrab (seat);
   bar->drag_seat_grabbed = FALSE;
   bar->drag_pending = FALSE;
   bar->dragging = FALSE;
+
+  if (moved)
+    {
+      paper_top_bar_store_position (bar);
+      write_keyfile (data);
+    }
 
   if (bar->drag_widget)
     {
@@ -18278,6 +18407,24 @@ toolbar_item_id (const gchar *id)
   return g_strcmp0 (id, "hand") == 0 ? "cursor" : id;
 }
 
+static gboolean
+toolbar_item_list_has (const gchar *items, const gchar *wanted)
+{
+  gchar **tokens = g_strsplit (items ? items : "", ",", -1);
+  guint i;
+  gboolean found = FALSE;
+
+  for (i = 0; tokens[i]; i++)
+    if (g_strcmp0 (toolbar_item_id (g_strstrip (tokens[i])), wanted) == 0)
+      {
+	found = TRUE;
+	break;
+      }
+
+  g_strfreev (tokens);
+  return found;
+}
+
 /* Apply the configured visibility and order to the buttons that were
  * created in their default order.  Hidden buttons stay in the box but are not
  * allocated. */
@@ -18344,6 +18491,22 @@ paper_toolbar_apply_items (ScreenatorData *data, PaperTopBar *bar)
       gtk_box_reorder_child (GTK_BOX (bar->box), button, position++);
     }
 
+  /* Older saved toolbars had one Save / Screenshot entry.  Keep Screenshot
+   * enabled alongside Save when upgrading those configurations. */
+  if (toolbar_item_list_has (data->paper_toolbar_items, "save") &&
+      !toolbar_item_list_has (data->paper_toolbar_items, "screenshot"))
+    {
+      GtkWidget *button = g_hash_table_lookup (widgets, "screenshot");
+
+      if (button)
+	{
+	  g_object_set_data (G_OBJECT (button), "paper-toolbar-enabled",
+			     GINT_TO_POINTER (TRUE));
+	  gtk_widget_show (button);
+	  gtk_box_reorder_child (GTK_BOX (bar->box), button, position++);
+	}
+    }
+
   g_strfreev (visible);
   g_hash_table_destroy (widgets);
 }
@@ -18360,6 +18523,46 @@ paper_toolbar_set_visible (GtkWidget *button, gboolean show)
     show = FALSE;
 
   gtk_widget_set_visible (button, show);
+}
+
+static void
+paper_toolbar_set_available (GtkWidget *button, gboolean available)
+{
+  if (!button)
+    return;
+
+  /* Keep unavailable page controls in the event path so right-click still
+   * opens the toolbar menu.  Their callbacks safely ignore unavailable
+   * actions, while opacity keeps the disabled state visible. */
+  gtk_widget_set_sensitive (button, TRUE);
+  gtk_widget_set_opacity (button, available ? 1.0 : 0.45);
+}
+
+void
+screenator_refresh_visibility_icon (ScreenatorData *data)
+{
+  PaperTopBar *bar = data->paper_top_bar_data;
+  GtkWidget *image;
+  GdkPixbuf *pixbuf;
+  gboolean visible;
+
+  if (!bar || !bar->visibility_button)
+    return;
+
+  image = gtk_bin_get_child (GTK_BIN (bar->visibility_button));
+  if (!image || !GTK_IS_IMAGE (image))
+    return;
+
+  visible = data->paper == SCREENATOR_PAPER_NONE
+    ? !data->hidden : !data->hide_drawings;
+  pixbuf = load_menu_icon_at_size (visible ? "eye-opened.png"
+					       : "eye-closed.png",
+				  paper_top_bar_icon_size (data));
+  if (pixbuf)
+    {
+      gtk_image_set_from_pixbuf (GTK_IMAGE (image), pixbuf);
+      g_object_unref (pixbuf);
+    }
 }
 
 static void
@@ -18499,13 +18702,21 @@ paper_top_bar_create (ScreenatorData *data)
   g_signal_connect (button, "clicked", G_CALLBACK (on_redo), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  /* Save the current paper in Paper mode; screenshot in Screen mode. */
+  /* Screenshot is available in both modes; Save is Paper mode only. */
+  button = paper_top_bar_icon_button (data, "screenshot.png",
+				      "Screenshot (F4)");
+  g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
+		     (gpointer) "screenshot");
+  bar->screenshot_button = button;
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_screenshot_clicked), data);
+  gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
   button = paper_top_bar_icon_button (data, "save.png",
 				      "Save current paper (Ctrl+S)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "save");
   bar->save_button = button;
-  bar->save_image = gtk_bin_get_child (GTK_BIN (button));
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_save_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
@@ -18528,11 +18739,16 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_add_before_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "delete-page.png",
-				      "Delete Page");
+  {
+    gchar *tip = shortcut_label (data, SCREENATOR_SHORTCUT_DELETE_PAGE,
+				 "Delete Page");
+
+    button = paper_top_bar_icon_button (data, "delete-page.png", tip);
+    g_free (tip);
+  }
+  bar->delete_page_button = button;
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "delete_page");
-  bar->delete_page_button = button;
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_delete_page_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
@@ -18564,15 +18780,23 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Clear Screen and Toggle Visibility, after Shapes. */
-  button = paper_top_bar_icon_button (data, "trash.png",
-    "Clear Screen (Paper: clear the page with the largest visible area)");
+  {
+    gchar *tip = shortcut_label (data, SCREENATOR_SHORTCUT_CLEAR_SCREEN,
+				 "Clear Screen");
+
+    button = paper_top_bar_icon_button (data, "trash.png", tip);
+    g_free (tip);
+  }
+  bar->clear_button = button;
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "clear");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_clear_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "hide.png", "Toggle Visibility");
+  button = paper_top_bar_icon_button (
+    data, data->hidden ? "eye-closed.png" : "eye-opened.png",
+    "Toggle Visibility");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "visibility");
   bar->visibility_button = button;
@@ -18709,7 +18933,6 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_widget_set_has_tooltip (window, TRUE);
   g_signal_connect (window, "query-tooltip",
 		    G_CALLBACK (paper_toolbar_query_tooltip), bar);
-
   /* Dragging any icon (or the gaps between them) moves the bar.  A short
    * click still reaches the button, because the drag starts only after the
    * pointer has moved past the threshold. */

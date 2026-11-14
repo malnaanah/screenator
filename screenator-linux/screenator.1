@@ -83,9 +83,10 @@ starts as magenta and is remembered.
 .br
 The "Paper" submenu holds the paper tools. "Actions" sits below Shapes and
 holds Switch Mode (F3), Undo, Redo, Clear Screen, Screenshot, Show toolbar
-(F10), Show Floating Icon (F9) and Show Hints. Toggle Visibility and Ctrl+T
-are available only in Screen mode; the menu item and toolbar icon are absent
-in Paper mode. Ctrl+O opens a PDF in Paper mode. Switch
+(F10), Show Floating Icon (F9), Show Hints and Toggle Visibility. Toggle
+Visibility and its toolbar icon are available in both modes. Ctrl+T toggles
+visibility in Screen mode while a tool is active and across all pages in Paper
+mode; change it in Settings > Shortcuts. Ctrl+O opens a PDF in Paper mode. Switch
 Mode turns Paper mode on or off and is also the first item in the
 toolbar. Plain, Ruled and Graph are white
 pages (with blue writing lines for Ruled and a grey square grid for Graph), and
@@ -140,8 +141,11 @@ vector. Undo and redo keep drawings and text vector as well. Eraser strokes
 over empty space leave the vector layer untouched; when ink is erased, the
 remaining drawings stay vector and text stays text. On exit Screenator
 offers once to save every changed paper; switching
-paper types does not show a save prompt. Ctrl+B and Ctrl+A insert a page before or after the current page in
-Plain, Ruled and Graph. With
+paper types does not show a save prompt. Ctrl+B and Ctrl+A insert a page before
+or after the current page in Plain, Ruled and Graph. Ctrl+X deletes the current
+page. Delete clears drawings on the current screen or paper page; in Screen
+mode a tool must be active. These shortcuts can be changed in Settings >
+Shortcuts. With
 Continuous scrolling on (the default), the selected paper is shown as one
 continuous vertical document with a grey gap between its pages, and Up/Down
 move smoothly through all of them. Page Up/Page Down move to the previous or
@@ -165,13 +169,13 @@ it vertical along the right edge instead. Settings > Toolbar chooses the
 visible icons and their order. The bar has Switch Mode first, then
 Cursor, Pen, Text, Eraser, Arrow,
 Timer, Shapes, Undo, Redo, Save, Paper Type, Insert Page Before, Delete Page,
-Insert Page After, Current Page, Go to Page, Clear Screen, Toggle Visibility
-(Screen mode only),
+Insert Page After, Current Page, Go to Page, Clear Screen, Toggle Visibility,
 Eraser Size, Line Color,
 Thickness,
 Fill Color, Opacity, Marker Opacity, Settings, Show Hints and Quit last. The Timer icon
-appears only in Screen mode. Toggle Visibility and its icon are absent from
-the menu and tool bar in Paper mode. There is a 10 px
+appears only in Screen mode. Toggle Visibility is available in both modes.
+Ctrl+T works in Paper mode across all pages and is customizable in Settings >
+Shortcuts. There is a 10 px
 Paper Type selects a paper type; the
 insert-page buttons insert a page in an active Plain, Ruled or Graph paper and
 are hidden in Screen mode. Save saves the current changed paper to Documents,
@@ -188,7 +192,9 @@ Settings button near its end. The bar stays open when a tool or a menu
 entry is chosen, its icons show tooltips, its direction and icon size
 (16 to 64 px) are set in Settings > General, its visible icons and order are
 set in Settings > Toolbar, its shortcuts are set in Settings > Shortcuts, and
-its open/closed state is remembered.
+its open/closed state is remembered. **Lock toolbar position** in Settings >
+Toolbar prevents dragging it and is off by default; the toolbar keeps its
+relative position when the screen size changes.
 Settings > Paper also sets continuous scrolling and the
 paper size: Screen, A4 portrait, A4 landscape, or Custom width and height in
 millimetres. A4 and Custom pages always take the current screen or Paper

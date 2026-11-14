@@ -429,6 +429,36 @@ grab_undo_shortcut (ScreenatorData *data, gboolean grab)
 		  data->shortcuts[SCREENATOR_SHORTCUT_REDO].modifier, grab);
 }
 
+void
+screenator_refresh_visibility_shortcut (ScreenatorData *data)
+{
+  gboolean active;
+
+  if (!data || data->paper != SCREENATOR_PAPER_NONE)
+    return;
+
+  active = data->forced_context != NULL || screenator_any_grabbed (data);
+  grab_paper_key (data,
+	  data->shortcuts[SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY].keycode,
+	  data->shortcuts[SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY].modifier,
+	  active);
+}
+
+void
+screenator_refresh_clear_shortcut (ScreenatorData *data)
+{
+  gboolean active;
+
+  if (!data || data->paper != SCREENATOR_PAPER_NONE)
+    return;
+
+  active = data->forced_context != NULL || screenator_any_grabbed (data);
+  grab_paper_key (data,
+	  data->shortcuts[SCREENATOR_SHORTCUT_CLEAR_SCREEN].keycode,
+	  data->shortcuts[SCREENATOR_SHORTCUT_CLEAR_SCREEN].modifier,
+	  active);
+}
+
 
 /* Parse one shortcut such as "Ctrl+Shift+Z" into a key value and modifier
  * mask.  The last "+"-separated part is the key. */
@@ -910,7 +940,8 @@ void
 screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
 {
   gboolean paper = data->paper != SCREENATOR_PAPER_NONE;
-  gboolean painting = screenator_any_grabbed (data);
+  gboolean painting = screenator_any_grabbed (data) ||
+    data->forced_context != NULL;
   guint i;
 
   for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
@@ -936,6 +967,9 @@ screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
 	grab = painting;
       else if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER)
 	grab = paper;
+      else if (screenator_shortcut_scopes[i] ==
+	       SCREENATOR_SHORTCUT_PAINTING_OR_PAPER)
+	grab = painting || paper;
 
       if (!window_mode_shortcut_may_grab (data, i))
 	grab = FALSE;
@@ -945,8 +979,8 @@ screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
     }
 }
 
-/* Grab the Paper Drawing shortcuts so they work even after Ctrl+T has hidden
- * the drawings.  Ctrl+Z stays with the key snooper (and the painting grab),
+/* Grab the Paper Drawing shortcuts so they work while the drawing window is
+ * active.  Ctrl+Z stays with the key snooper (and the painting grab),
  * so it is not grabbed twice.  F4 saves a screenshot in Screen Annotation
  * mode and Alt+F4 quits in Paper Drawing, so the F4 grabs are kept in both
  * modes; the other Paper Drawing keys are only grabbed while it is active.
@@ -958,7 +992,7 @@ screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
 void
 screenator_paper_shortcuts_focus (ScreenatorData *data, gboolean focused)
 {
-  gboolean painting;
+  gboolean painting, paper;
   guint i;
 
   if (!data)
@@ -972,7 +1006,8 @@ screenator_paper_shortcuts_focus (ScreenatorData *data, gboolean focused)
       return;
     }
 
-  painting = screenator_any_grabbed (data);
+  painting = screenator_any_grabbed (data) || data->forced_context != NULL;
+  paper = data->paper != SCREENATOR_PAPER_NONE;
 
   for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
     {
@@ -986,7 +1021,9 @@ screenator_paper_shortcuts_focus (ScreenatorData *data, gboolean focused)
 	(screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_ALWAYS ||
 	 screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER ||
 	 (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAINTING &&
-	  painting));
+	  painting) ||
+	 (screenator_shortcut_scopes[i] ==
+	  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER && (paper || painting)));
 
       grab_paper_key (data, data->shortcuts[i].keycode, modifier, grab);
     }
@@ -1137,6 +1174,11 @@ update_paper_shortcuts (ScreenatorData *data, gboolean grab)
 	on = TRUE;
       else if (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAPER)
 	on = grab;
+      else if (screenator_shortcut_scopes[i] ==
+	       SCREENATOR_SHORTCUT_PAINTING_OR_PAPER)
+	on = grab ||
+	  (data->paper == SCREENATOR_PAPER_NONE &&
+	   (data->forced_context != NULL || screenator_any_grabbed (data)));
 
       if (!window_mode_shortcut_may_grab (data, i))
 	on = FALSE;
@@ -1154,7 +1196,8 @@ void
 screenator_suspend_shortcuts (ScreenatorData *data, gboolean suspend)
 {
   gboolean paper = data->paper != SCREENATOR_PAPER_NONE;
-  gboolean painting = screenator_any_grabbed (data);
+  gboolean painting = screenator_any_grabbed (data) ||
+    data->forced_context != NULL;
   guint i;
 
   for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
@@ -1171,6 +1214,9 @@ screenator_suspend_shortcuts (ScreenatorData *data, gboolean suspend)
 	  else if (screenator_shortcut_scopes[i] ==
 		   SCREENATOR_SHORTCUT_PAPER)
 	    grab = paper;
+	  else if (screenator_shortcut_scopes[i] ==
+		   SCREENATOR_SHORTCUT_PAINTING_OR_PAPER)
+	    grab = painting || paper;
 
 	  if (!window_mode_shortcut_may_grab (data, i))
 	    grab = FALSE;
@@ -1253,6 +1299,8 @@ void release_grab (ScreenatorData *data,
       indicate_active(data, FALSE);
       grab_undo_shortcut (data, FALSE);
       grab_escape_shortcut (data, FALSE);
+      screenator_refresh_visibility_shortcut (data);
+      screenator_refresh_clear_shortcut (data);
 
       /* Keep the selected tool cursor on the overlay window even when no
        * device is grabbed; use the normal pointer only when no tool is
@@ -1315,6 +1363,9 @@ void release_grab (ScreenatorData *data,
 				       : NULL);
 	    }
 	}
+
+      screenator_refresh_visibility_shortcut (data);
+      screenator_refresh_clear_shortcut (data);
     }
 
   /* Paper Drawing keeps the annotation window visible. */
@@ -1419,6 +1470,8 @@ void acquire_grab (ScreenatorData *data,
       indicate_active(data, TRUE);
       grab_undo_shortcut (data, TRUE);
       grab_escape_shortcut (data, TRUE);
+      screenator_refresh_visibility_shortcut (data);
+      screenator_refresh_clear_shortcut (data);
       screenator_raw_input_disable (data);
 
       return;
@@ -1463,6 +1516,8 @@ void acquire_grab (ScreenatorData *data,
       indicate_active(data, TRUE);
       grab_undo_shortcut (data, TRUE);
       grab_escape_shortcut (data, TRUE);
+      screenator_refresh_visibility_shortcut (data);
+      screenator_refresh_clear_shortcut (data);
 
     }
 
@@ -1564,6 +1619,30 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	}
 
       if (!data->text_editor_active &&
+	  screenator_shortcut_matches (
+	    data, SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY, event))
+	{
+	  toggle_drawings_visibility (data);
+	  return TRUE;
+	}
+
+      if (!data->text_editor_active &&
+	  screenator_shortcut_matches (
+	    data, SCREENATOR_SHORTCUT_CLEAR_SCREEN, event))
+	{
+	  clear_screen (data);
+	  return TRUE;
+	}
+
+      if (!data->text_editor_active &&
+	  screenator_shortcut_matches (
+	    data, SCREENATOR_SHORTCUT_DELETE_PAGE, event))
+	{
+	  screenator_paper_delete_page (data);
+	  return TRUE;
+	}
+
+      if (!data->text_editor_active &&
 	  (event->state & GDK_CONTROL_MASK) != 0 &&
 	  (event->state & (GDK_SHIFT_MASK | GDK_MOD1_MASK)) == 0 &&
 	  shortcut_event_matches_key (event, GDK_KEY_o))
@@ -1661,14 +1740,26 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	}
     }
 
+  /* Ctrl+T works in Screen mode while an annotation tool is active. */
   if (data->paper == SCREENATOR_PAPER_NONE && !data->quick_menu &&
-      screenator_shortcut_matches (data,
-				   SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
-				   event))
+      (screenator_any_grabbed (data) || data->forced_context != NULL) &&
+      screenator_shortcut_matches (
+	data, SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY, event))
     {
       if (data->text_editor_active)
 	return FALSE;
       toggle_drawings_visibility (data);
+      return TRUE;
+    }
+
+  if (data->paper == SCREENATOR_PAPER_NONE && !data->quick_menu &&
+      (screenator_any_grabbed (data) || data->forced_context != NULL) &&
+      screenator_shortcut_matches (
+	data, SCREENATOR_SHORTCUT_CLEAR_SCREEN, event))
+    {
+      if (data->text_editor_active)
+	return FALSE;
+      clear_screen (data);
       return TRUE;
     }
 

@@ -19,7 +19,7 @@ kept.
   Cursor, Pen, Text, Eraser, Arrow, Timer, Shapes (Marker, Line, Spline, Polygon,
   Triangle, Ellipse, Rounded Rectangle, Paint Bucket, Math Function, Parallel
   Lines, Random Signal), Actions (Switch Mode, Undo, Redo, Clear Screen,
-  Toggle Visibility (Screen mode only), Screenshot, Show toolbar, Show Floating Icon, Show
+  Toggle Visibility (Screen and Paper modes, Ctrl+T), Screenshot, Show toolbar, Show Floating Icon, Show
   Hints), Line Thickness, Line Color, Shapes Fill Color, Paper, Eraser Size,
   Opacity, Marker Opacity, Settings..., About and Quit. Quit uses `quit.png` and is also the
   last button in the toolbar. The icon turns into its active (red)
@@ -31,10 +31,13 @@ kept.
   settings indicator, timer delay, reset settings, open configuration folder),
   a **Paper** tab
   (continuous scrolling and paper size), a **Toolbar** tab (direction, icon
-  size, and each icon's visibility and order, changed by dragging), a
+  size, position locking, and each icon's visibility and order, changed by
+  dragging), a
   **Floating Icon** tab (icon size and position) and a
   **Shortcuts** tab (every editable shortcut). The tool bar
   and floating icon are visible by default.
+  Screen Annotation mode also starts with the drawing window visible, even
+  when the canvas is empty.
 - Opening a PDF file with Screenator, either with **Open With** or with
   `screenator file.pdf`, starts it directly in **Paper** mode with that PDF.
   If Screenator is already running, the file is forwarded to the running
@@ -44,6 +47,9 @@ kept.
   Left. Size choices are 16x16, 32x32, 48x48, 64x64, 128x128 and 256x256; the
   default is 48x48. The settings ring doubles in width at 128x128 and triples
   at 256x256.
+- **Settings > General > Show settings indicator on Floating Icon** remains
+  available while the floating icon is hidden. Changing it does not show the
+  floating icon.
 - The **Opacity** menu offers 10% to 100% in 10% steps. A separate **Marker
   Opacity** menu offers 10% to 90%.
 - Marker draws a translucent highlighter stroke with a fixed 32 px width,
@@ -227,7 +233,9 @@ kept.
   across restarts, and each PDF file remembers the page it was last closed on,
   both when reopened from Screenator and when opened from the desktop. Paper
   saves write a PDF and show a progress overlay until the file is complete.
-  Saving a screenshot shows a confirmation with the saved path. While
+  **Settings > General > Show Screenshot saved message** controls the
+  successful-save confirmation (on by default); screenshot errors still show
+  an alert. While
   **Paper** mode is active, the
   page is shown in a normal managed window, not a fullscreen overlay: other
   applications and dialogs can cover it, and Alt+Tab switches away normally.
@@ -254,12 +262,16 @@ kept.
   original PDF pages and paper backgrounds stay vector. Undo and redo keep
   drawings and text vector as well. Eraser strokes over empty space leave the
   vector layer untouched; when ink is erased, the remaining drawings stay
-  vector and text stays text. In **Screen** mode
-  that button becomes **Screenshot**. When
+  vector and text stays text. The separate **Screenshot** toolbar button
+  remains available in both Screen and Paper modes. **Save** is shown only
+  in Paper mode. When
   Screenator quits, it offers once to save every changed paper; no save
   prompt appears while switching paper types.
   **Ctrl+B** and **Ctrl+A** insert a page before or after the current page in
-  Plain, Ruled and Graph. With **Continuous scrolling** on (the default), the
+  Plain, Ruled and Graph. **Ctrl+X** deletes the current page, and **Delete**
+  clears drawings on the current screen or paper page (in Screen mode, a tool
+  must be active). These shortcuts can be changed in
+  **Settings > Shortcuts**. With **Continuous scrolling** on (the default), the
   selected paper is shown as one continuous vertical document with a grey gap
   between its pages, and **Up**/**Down** move smoothly through all of them.
   **Page Up**/**Page Down** move to the previous or next page and
@@ -294,8 +306,11 @@ kept.
   selects Plain, Ruled, Graph or
   PDF, and the insert-page buttons insert a page in an active Plain, Ruled or
   Graph paper; both are hidden in **Screen** mode. The **Timer** icon appears
-  only in **Screen** mode. Toggle Visibility and Ctrl+T are available only in
-  **Screen** mode; the menu item and toolbar icon are absent in **Paper** mode.
+  only in **Screen** mode. Toggle Visibility is available from the menu and
+  toolbar in both modes. Its eye icon shows whether drawings are currently
+  visible. **Ctrl+T** toggles visibility in Screen mode while a tool is active
+  and in Paper mode across all pages. Its shortcut can be changed in
+  **Settings > Shortcuts**.
   **Ctrl+O** opens a PDF in **Paper** mode. **Save** saves the paper as
   a PDF, or takes a screenshot in **Screen** mode. **Cursor** exits the
   current tool and is available in both modes. In **Paper** mode, when no tool
@@ -307,8 +322,10 @@ kept.
   tool. The bar stays open when a tool or a menu entry is chosen, the selected
   tool is highlighted, its icons show tooltips, its direction and icon size
   (16 to 64 px) are set in **Settings > General**, its visible icons and
-  order in **Settings > Toolbar**, and its shortcuts in **Settings >
-  Shortcuts**. Its open/closed state is
+  order in **Settings > Toolbar**, where **Lock toolbar position** prevents
+  dragging it while keeping its relative position when the screen size
+  changes, and its shortcuts in **Settings > Shortcuts**. Position locking is
+  off by default. Its open/closed state is
   remembered. **Settings > Paper** also sets continuous scrolling and the
   paper size: Screen, A4 portrait, A4 landscape, or Custom width and height in
   millimetres. A4 and Custom pages always take the current screen or Paper
@@ -408,9 +425,9 @@ Then run:
 
 The script builds the project and produces both packages in `../build/`:
 
-- `screenator_8.0_amd64.deb`
-- `screenator-8.0-1.x86_64.rpm`
-- `Screenator-8.0-x86_64.AppImage`
+- `screenator_8.1_amd64.deb`
+- `screenator-8.1-1.x86_64.rpm`
+- `Screenator-8.1-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

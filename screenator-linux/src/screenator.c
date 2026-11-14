@@ -37,9 +37,9 @@
 #include "screenator.h"
 #include "build-config.h"
 
-#include "../data/paint_cursor.xpm"
-#include "../data/text_cursor.xpm"
-#include "../data/bucket_cursor.xpm"
+#include "../assets/paint_cursor.xpm"
+#include "../assets/text_cursor.xpm"
+#include "../assets/bucket_cursor.xpm"
 
 static cairo_t *paper_vector_context (ScreenatorData *data,
 				      ScreenatorPaperDocument *doc,
@@ -938,6 +938,7 @@ void hide_window (ScreenatorData *data)
           devdata->was_grabbed = devdata->is_grabbed;
         }
       data->hidden = 1;
+      screenator_refresh_visibility_icon (data);
       release_grab (data, NULL); /* release all */
       gtk_widget_hide (data->win);
 
@@ -1003,6 +1004,7 @@ void show_window (ScreenatorData *data)
     {
       gtk_widget_show (data->win);
       data->hidden = 0;
+      screenator_refresh_visibility_icon (data);
 
       /* restore grab state of each device */
       GHashTableIter it;
@@ -1039,9 +1041,8 @@ void toggle_visibility (ScreenatorData *data)
     hide_window (data);
 }
 
-/* The menu entry and Ctrl+T toggle the drawings.  In Paper Drawing the
- * paper has to stay visible and active, so only the annotations are hidden;
- * without a paper the whole annotation window is hidden as before. */
+/* Toggle Visibility hides annotations in Screen mode and hides annotation
+ * drawing on every page while Paper mode keeps its paper visible. */
 void toggle_drawings_visibility (ScreenatorData *data)
 {
   if (data->paper != SCREENATOR_PAPER_NONE)
@@ -1049,6 +1050,7 @@ void toggle_drawings_visibility (ScreenatorData *data)
       GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
 
       data->hide_drawings = !data->hide_drawings;
+      screenator_refresh_visibility_icon (data);
 
       if (window)
 	{
@@ -5633,11 +5635,8 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   if (data->painted)
     update_window_shape (data);
 
-  hide_window (data);
-
-  /* Restored annotations are shown right away. */
-  if (data->paper != SCREENATOR_PAPER_NONE || data->painted)
-    show_window (data);
+  /* Start with Toggle Visibility on, even when no annotations were restored. */
+  show_window (data);
 
   data->timeout_id = g_timeout_add (20, reshape, data);
  

@@ -39,7 +39,7 @@
 /* Toolbar items in their default order.  The same ids are used by the
  * Settings > Toolbar page and by the tool bar builder. */
 #define PAPER_TOOLBAR_DEFAULT_ITEMS \
-  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,save," \
+  "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,screenshot,save," \
   "paper,insert_before,delete_page,insert_after,page_number,goto_page,clear," \
   "visibility,eraser_size," \
   "line_color,thickness,fill_color,opacity,marker_opacity,settings,hints,quit"
@@ -238,6 +238,8 @@ typedef enum
   SCREENATOR_SHORTCUT_SAVE,
   SCREENATOR_SHORTCUT_INSERT_BEFORE,
   SCREENATOR_SHORTCUT_INSERT_AFTER,
+  SCREENATOR_SHORTCUT_CLEAR_SCREEN,
+  SCREENATOR_SHORTCUT_DELETE_PAGE,
   SCREENATOR_SHORTCUT_TOGGLE_VISIBILITY,
   SCREENATOR_SHORTCUT_EXIT_PAPER,
   SCREENATOR_SHORTCUT_QUIT,
@@ -249,7 +251,8 @@ typedef enum
 {
   SCREENATOR_SHORTCUT_ALWAYS = 0,
   SCREENATOR_SHORTCUT_PAINTING,
-  SCREENATOR_SHORTCUT_PAPER
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER
 } ScreenatorShortcutScope;
 
 typedef struct
@@ -617,6 +620,9 @@ typedef struct
    * next start. */
   gboolean     save_annotations_on_exit;
 
+  /* Show a confirmation after a screenshot is saved successfully. */
+  gboolean     show_screenshot_saved_message;
+
   /* Dialog shown above the drawings, and the state that is restored when the
    * last dialog closes (see show_dialog_above_drawings()). */
   GtkWidget   *top_dialog;
@@ -837,6 +843,10 @@ typedef struct
   guint        paper_toolbar_icon_size;
   gboolean     paper_toolbar_open;
   gboolean     paper_toolbar_vertical;  /* else horizontal */
+  gboolean     paper_toolbar_position_locked;
+  gdouble      paper_toolbar_x_ratio;
+  gdouble      paper_toolbar_y_ratio;
+  gboolean     paper_toolbar_position_set;
   gchar       *paper_toolbar_items;     /* visible ids, comma separated */
   gchar       *paper_toolbar_order;     /* all ids in settings-list order */
 
@@ -903,6 +913,7 @@ typedef struct
 
 void toggle_visibility (ScreenatorData *data);
 void toggle_drawings_visibility (ScreenatorData *data);
+void screenator_refresh_visibility_icon (ScreenatorData *data);
 void hide_window (ScreenatorData *data);
 void show_window (ScreenatorData *data);
 
@@ -934,6 +945,8 @@ void screenator_paper_mark_ink (ScreenatorData *data,
 			       const GdkRectangle *bounds);
 void screenator_paper_shortcuts_focus (ScreenatorData *data,
 				       gboolean focused);
+void screenator_refresh_visibility_shortcut (ScreenatorData *data);
+void screenator_refresh_clear_shortcut (ScreenatorData *data);
 void screenator_use_paper_window (ScreenatorData *data, gboolean use);
 void screenator_window_mode_enter (ScreenatorData *data);
 void screenator_window_mode_leave (ScreenatorData *data);

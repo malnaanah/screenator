@@ -183,6 +183,8 @@ const gchar * const screenator_shortcut_defaults[SCREENATOR_SHORTCUT_COUNT] =
   "Ctrl+S",      /* save */
   "Ctrl+B",      /* insert before */
   "Ctrl+A",      /* insert after */
+  "Delete",      /* clear screen */
+  "Ctrl+X",      /* delete page */
   "Ctrl+T",      /* toggle visibility */
   "Ctrl+Q",      /* exit paper */
   "Alt+F4",      /* quit */
@@ -204,6 +206,8 @@ const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
   "Save paper as PDF",
   "Insert page before",
   "Insert page after",
+  "Clear Screen",
+  "Delete Page",
   "Toggle drawings visibility",
   "Exit Paper mode",
   "Quit",
@@ -226,7 +230,9 @@ const ScreenatorShortcutScope screenator_shortcut_scopes[
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
-  SCREENATOR_SHORTCUT_PAINTING,
+  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAINTING
@@ -844,6 +850,10 @@ void read_keyfile(ScreenatorData *data)
     data->paper_toolbar_icon_size = 32;
     data->paper_toolbar_open = TRUE;
     data->paper_toolbar_vertical = FALSE;
+    data->paper_toolbar_position_locked = FALSE;
+    data->paper_toolbar_x_ratio = 0.5;
+    data->paper_toolbar_y_ratio = 0.0;
+    data->paper_toolbar_position_set = FALSE;
     g_free (data->paper_toolbar_items);
     data->paper_toolbar_items = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
     g_free (data->paper_toolbar_order);
@@ -871,6 +881,7 @@ void read_keyfile(ScreenatorData *data)
     data->show_settings_indicator = TRUE;
     data->show_floating_icon = TRUE;
     data->save_annotations_on_exit = TRUE;
+    data->show_screenshot_saved_message = TRUE;
 
     /*
       read actual settings
@@ -1156,6 +1167,25 @@ void read_keyfile(ScreenatorData *data)
 	    g_key_file_get_boolean (key_file, "Drawing",
 				    "PaperToolbarVertical", NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing",
+			    "PaperToolbarPositionLocked", NULL))
+	data->paper_toolbar_position_locked =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "PaperToolbarPositionLocked", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarXRatio",
+			    NULL) &&
+	 g_key_file_has_key (key_file, "Drawing", "PaperToolbarYRatio", NULL))
+	{
+	  data->paper_toolbar_x_ratio = CLAMP (
+	    g_key_file_get_double (key_file, "Drawing",
+			   "PaperToolbarXRatio", NULL), 0.0, 1.0);
+	  data->paper_toolbar_y_ratio = CLAMP (
+	    g_key_file_get_double (key_file, "Drawing",
+			   "PaperToolbarYRatio", NULL), 0.0, 1.0);
+	  data->paper_toolbar_position_set = TRUE;
+	}
+
     if (g_key_file_has_key (key_file, "Drawing", "PaperToolbarItems", NULL))
 	{
 	  gchar *items = g_key_file_get_string (key_file, "Drawing",
@@ -1283,12 +1313,19 @@ void read_keyfile(ScreenatorData *data)
 	    g_key_file_get_boolean (key_file, "Drawing",
 				    "SaveAnnotationsOnExit", NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing",
+			    "ShowScreenshotSavedMessage", NULL))
+	data->show_screenshot_saved_message =
+	    g_key_file_get_boolean (key_file, "Drawing",
+				    "ShowScreenshotSavedMessage", NULL);
+
     {
       static const gchar * const shortcut_keys[SCREENATOR_SHORTCUT_COUNT] =
 	{
 	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
 	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
-	  "InsertBefore", "InsertAfter", "ToggleVisibility", "ExitPaper",
+	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
+	  "ToggleVisibility", "ExitPaper",
 	  "Quit", "Escape"
 	};
       guint i;
@@ -1438,6 +1475,13 @@ void write_keyfile(ScreenatorData *data)
 			    data->paper_toolbar_open);
     g_key_file_set_boolean (key_file, "Drawing", "PaperToolbarVertical",
 			    data->paper_toolbar_vertical);
+    g_key_file_set_boolean (key_file, "Drawing",
+			    "PaperToolbarPositionLocked",
+			    data->paper_toolbar_position_locked);
+    g_key_file_set_double (key_file, "Drawing", "PaperToolbarXRatio",
+			   data->paper_toolbar_x_ratio);
+    g_key_file_set_double (key_file, "Drawing", "PaperToolbarYRatio",
+			   data->paper_toolbar_y_ratio);
     g_key_file_set_string (key_file, "Drawing", "PaperToolbarItems",
 			   data->paper_toolbar_items
 			   ? data->paper_toolbar_items
@@ -1455,7 +1499,8 @@ void write_keyfile(ScreenatorData *data)
 	{
 	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
 	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
-	  "InsertBefore", "InsertAfter", "ToggleVisibility", "ExitPaper",
+	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
+	  "ToggleVisibility", "ExitPaper",
 	  "Quit", "Escape"
 	};
       guint i;
@@ -1491,6 +1536,9 @@ void write_keyfile(ScreenatorData *data)
 			    data->show_floating_icon);
     g_key_file_set_boolean (key_file, "Drawing", "SaveAnnotationsOnExit",
 			    data->save_annotations_on_exit);
+    g_key_file_set_boolean (key_file, "Drawing",
+			    "ShowScreenshotSavedMessage",
+			    data->show_screenshot_saved_message);
     g_free (color);
     g_free (fill);
     g_free (custom_line);
