@@ -94,7 +94,7 @@ Name "${APPNAME} ${APPVERSION}"
 !ifndef SETUPNAME
   !define SETUPNAME "Screenator-8.1-win64-setup"
 !endif
-OutFile "..${SEP}release${SEP}${SETUPNAME}.exe"
+OutFile "..${SEP}..${SEP}build-windows${SEP}release${SEP}${SETUPNAME}.exe"
 InstallDir "$LOCALAPPDATA\Programs\Screenator"
 InstallDirRegKey HKCU "Software\Screenator" "InstallDir"
 RequestExecutionLevel user
@@ -138,9 +138,9 @@ Section "${APPNAME} (required)" SEC_APP
   SectionIn RO
   SetOutPath "$INSTDIR"
   SetOverwrite on
-  File "..${SEP}dist${SEP}${APPEXE}"
-  File "..${SEP}dist${SEP}pdfium.dll"
-  File /r "..${SEP}dist${SEP}Screenator Data"
+  File "..${SEP}..${SEP}build-windows${SEP}dist${SEP}${APPEXE}"
+  File "..${SEP}..${SEP}build-windows${SEP}dist${SEP}pdfium.dll"
+  File /r "..${SEP}..${SEP}build-windows${SEP}dist${SEP}Screenator Data"
   WriteUninstaller "$INSTDIR\uninst.exe"
 
   CreateDirectory "$SMPROGRAMS\${APPNAME}"

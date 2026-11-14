@@ -305,21 +305,36 @@ pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cairo \
     mingw-w64-x86_64-pango mingw-w64-x86_64-pkgconf make
 ```
 
-Then run `build.bat` (or `./build.sh` from an MSYS2 shell). The result is a
-portable package in `dist/`:
+Then run `build.bat` (or `./build.sh` from an MSYS2 shell). Windows build
+outputs are kept beside the source tree in `../build-windows/`. The build
+script puts the executable and compiled resources in `build/` and assembles
+the portable package in `dist/`:
 
 ```
-dist/
-  Screenator.exe
-  pdfium.dll              PDF engine (BSD, required for PDF support)
-  Screenator Data/
-    assets/               icons, cursors and the application icon
-    README.md
-    RELEASE_NOTES.md
-    COPYING
-    AUTHORS
-    PDFIUM_LICENSE.txt
+../build-windows/
+  build/
+    Screenator.exe
+    screenator.res
+  dist/
+    Screenator.exe
+    pdfium.dll            PDF engine (BSD, required for PDF support)
+    Screenator Data/
+      assets/             icons, cursors and the application icon
+      README.md
+      RELEASE_NOTES.md
+      COPYING
+      AUTHORS
+      PDFIUM_LICENSE.txt
+  release/
+    Screenator-8.1-win64/       portable package folder
+    Screenator-8.1-win64.zip
+    Screenator-8.1-win64-setup.exe
 ```
+
+Run `package.ps1` from PowerShell to copy `dist/` into the versioned portable
+folder and create its ZIP archive. Build the installer with
+`installer/build-installer.sh`; both release packages are written to
+`../build-windows/release/`.
 
 The executable is statically linked against the mingw-w64 runtime. PDF support
 uses the BSD-licensed `pdfium.dll`, which must stay next to `Screenator.exe`.
@@ -337,7 +352,8 @@ cd installer
 
 On Linux or macOS install `nsis` and run the same wrapper; it adds
 `-DPOSIX_BUILD` so the POSIX NSIS uses the right path separators. The result is
-`release/Screenator-8.1-win64-setup.exe`. The installer places the app in
+`../build-windows/release/Screenator-8.1-win64-setup.exe`. The installer places
+the app in
 `%LOCALAPPDATA%\Programs\Screenator`, creates Start menu entries, and includes
 the **PDF Open with list** task, selected by default. That task registers
 Screenator in the right-click **Open with** menu and in

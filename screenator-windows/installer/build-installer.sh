@@ -7,6 +7,8 @@
 #   ./build-installer.sh /DSETUPNAME=Screenator-custom-setup
 set -e
 cd "$(dirname "$0")"
+WINDOWS_DIR="$(cd .. && pwd)"
+mkdir -p "$WINDOWS_DIR/../build-windows/release"
 
 if command -v makensis >/dev/null 2>&1; then
   MK=makensis

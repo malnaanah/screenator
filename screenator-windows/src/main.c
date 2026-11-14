@@ -9,7 +9,7 @@
 #include <hidusage.h>
 #include <hidsdi.h>
 #include <hidpi.h>
-#include "bucket_cursor.xpm"
+#include "../assets/bucket_cursor.xpm"
 App g;
 #define WM_TRAY          (WM_APP + 1)
 #define WM_START_HINTS   (WM_APP + 2)

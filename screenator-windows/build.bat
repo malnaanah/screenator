@@ -8,5 +8,6 @@ if not exist C:\msys64\usr\bin\bash.exe (
 )
 C:\msys64\usr\bin\bash.exe -lc "cd '%HERE:\=/%' && ./build.sh"
 if errorlevel 1 exit /b 1
+for %%I in ("%HERE%..\build-windows") do set OUTPUT_DIR=%%~fI
 echo.
-echo Output: %HERE%dist\Screenator.exe
+echo Output: %OUTPUT_DIR%\dist\Screenator.exe
