@@ -1054,6 +1054,7 @@ void draw_rounded_rect (ScreenatorData *data, cairo_t *cr,
 /* Editable frame shapes. */
 void frame_shape_clear (ScreenatorFrameShape *shape);
 gdouble frame_font_pixel_size (const gchar *font);
+PangoFontDescription *screenator_font_description_new (const gchar *font);
 void frame_shape_measure_text (ScreenatorFrameShape *shape);
 void draw_frame_shape (ScreenatorData *data, cairo_t *cr,
 		       const ScreenatorFrameShape *shape);

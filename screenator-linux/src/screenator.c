@@ -2868,14 +2868,52 @@ frame_font_pixel_size (const gchar *font)
   return MAX (size, 1.0);
 }
 
+/* Keep Arial Bold available as the final family for glyphs missing from the
+ * selected font.  Pango applies the description's weight to every family in
+ * its family list. */
+PangoFontDescription *
+screenator_font_description_new (const gchar *font)
+{
+  PangoFontDescription *desc =
+    pango_font_description_from_string (font ? font : KEY_DFLT_FONT);
+  const gchar *family = pango_font_description_get_family (desc);
+  gboolean has_arial = FALSE;
+
+  if (family && *family)
+    {
+      gchar **families = g_strsplit (family, ",", -1);
+      guint i;
+
+      for (i = 0; families[i]; i++)
+	{
+	  gchar *name = g_strstrip (families[i]);
+	  if (g_ascii_strcasecmp (name, "Arial") == 0)
+	    {
+	      has_arial = TRUE;
+	      break;
+	    }
+	}
+
+      if (!has_arial)
+	{
+	  gchar *family_list = g_strdup_printf ("%s, Arial", family);
+	  pango_font_description_set_family (desc, family_list);
+	  g_free (family_list);
+	}
+
+      g_strfreev (families);
+    }
+
+  return desc;
+}
+
 /* Build the Pango layout of a text frame at its current font size. */
 static PangoLayout *
 frame_text_layout (cairo_t *cr, const ScreenatorFrameShape *shape)
 {
   PangoLayout *layout = pango_cairo_create_layout (cr);
   PangoFontDescription *desc =
-    pango_font_description_from_string (shape->font ? shape->font
-						   : KEY_DFLT_FONT);
+    screenator_font_description_new (shape->font);
 
   if (shape->font_size > 0.0)
     pango_font_description_set_absolute_size (desc,

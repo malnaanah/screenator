@@ -2430,8 +2430,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
    * direction, size_text_editor() fixes the width for the whole session. */
   gtk_entry_set_width_chars (GTK_ENTRY (entry), 1);
 
-  font = pango_font_description_from_string (data->font ? data->font
-							: KEY_DFLT_FONT);
+  font = screenator_font_description_new (data->font);
   gtk_widget_override_font (entry, font);
   pango_font_description_free (font);
 

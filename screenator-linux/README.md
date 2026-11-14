@@ -186,7 +186,10 @@ kept.
 - The Text tool shows an I-beam cursor and writes directly at the click
   position: a small inline editor appears where you click, using the pen
   colour and the chosen font; the text is centred vertically on the click
-  point. Press `Enter` to place the text or `Esc` to cancel. In Screen mode, a
+  point. Pango uses Arial as a fallback for glyphs missing from the chosen
+  font, in the selected weight (so bold text falls back to Arial Bold), when
+  Arial is installed. Press `Enter` to place the text or
+  `Esc` to cancel. In Screen mode, a
   left click or a stylus tip while the editor is open accepts the current text,
   commits its handles and starts a new one at the click position; in Paper mode
   a click does not place it. No click reaches the application below, and
