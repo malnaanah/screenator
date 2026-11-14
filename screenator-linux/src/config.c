@@ -882,6 +882,7 @@ void read_keyfile(ScreenatorData *data)
     data->show_floating_icon = TRUE;
     data->save_annotations_on_exit = TRUE;
     data->show_screenshot_saved_message = TRUE;
+    data->show_pdf_saved_message = TRUE;
 
     /*
       read actual settings
@@ -1319,6 +1320,11 @@ void read_keyfile(ScreenatorData *data)
 	    g_key_file_get_boolean (key_file, "Drawing",
 				    "ShowScreenshotSavedMessage", NULL);
 
+    if (g_key_file_has_key (key_file, "Drawing", "ShowPDFSavedMessage", NULL))
+	data->show_pdf_saved_message =
+	    g_key_file_get_boolean (key_file, "Drawing", "ShowPDFSavedMessage",
+				    NULL);
+
     {
       static const gchar * const shortcut_keys[SCREENATOR_SHORTCUT_COUNT] =
 	{
@@ -1539,6 +1545,8 @@ void write_keyfile(ScreenatorData *data)
     g_key_file_set_boolean (key_file, "Drawing",
 			    "ShowScreenshotSavedMessage",
 			    data->show_screenshot_saved_message);
+    g_key_file_set_boolean (key_file, "Drawing", "ShowPDFSavedMessage",
+			    data->show_pdf_saved_message);
     g_free (color);
     g_free (fill);
     g_free (custom_line);

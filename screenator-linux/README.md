@@ -27,15 +27,17 @@ kept.
   clickable while a tool is selected; hovering them shows the normal pointer
   and suspends drawing.
   **Settings**
-  opens a tabbed dialog with a **General** tab (save annotations, font,
-  settings indicator, timer delay, reset settings, open configuration folder),
+  opens a tabbed dialog with a **General** tab (save annotations, screenshot and
+  PDF save messages, font, timer delay, reset settings, open configuration folder),
   a **Paper** tab
   (continuous scrolling and paper size), a **Toolbar** tab (direction, icon
   size, position locking, and each icon's visibility and order, changed by
   dragging), a
-  **Floating Icon** tab (icon size and position) and a
+  **Floating Icon** tab (icon size, position and settings indicator) and a
   **Shortcuts** tab (every editable shortcut). The tool bar
-  and floating icon are visible by default.
+  and floating icon are visible by default. Settings apply as they are changed;
+  shortcut and custom paper-size fields apply when Enter is pressed or the field
+  loses focus.
   Screen Annotation mode also starts with the drawing window visible, even
   when the canvas is empty.
 - Opening a PDF file with Screenator, either with **Open With** or with
@@ -47,7 +49,7 @@ kept.
   Left. Size choices are 16x16, 32x32, 48x48, 64x64, 128x128 and 256x256; the
   default is 48x48. The settings ring doubles in width at 128x128 and triples
   at 256x256.
-- **Settings > General > Show settings indicator on Floating Icon** remains
+- **Settings > Floating Icon > Show settings indicator on Floating Icon** remains
   available while the floating icon is hidden. Changing it does not show the
   floating icon.
 - The **Opacity** menu offers 10% to 100% in 10% steps. A separate **Marker
@@ -253,12 +255,14 @@ kept.
   (fullscreen, Ctrl+D and Window mode), the drawing tool and cursor are
   limited to the Paper window, and Ctrl/Alt shortcuts are received only while
   that window is focused. **Ctrl+S**, or the **Save** toolbar button
-  directly before **Paper Type**, saves only the current paper if it has
+  directly before **Paper Type**, saves the current paper even if it has not
   changed. The file is written automatically to the **Documents** folder as
   `Screenator-plain-YYYYMMDD-HHMMSS.pdf`, `Screenator-ruled-...`,
   `Screenator-graph-...`, or `Screenator-file-...` for opened PDF files. If
-  that name already exists, a numeric suffix is added. A message shows the
-  saved path. Drawings are written as vector paths, text as text, and the
+  that name already exists, a numeric suffix is added.
+  **Settings > General > Show PDF saved message** controls whether a successful
+  PDF save shows its path (on by default); save errors still show an alert.
+  Drawings are written as vector paths, text as text, and the
   original PDF pages and paper backgrounds stay vector. Undo and redo keep
   drawings and text vector as well. Eraser strokes over empty space leave the
   vector layer untouched; when ink is erased, the remaining drawings stay

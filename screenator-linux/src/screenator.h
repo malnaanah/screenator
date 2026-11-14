@@ -622,6 +622,7 @@ typedef struct
 
   /* Show a confirmation after a screenshot is saved successfully. */
   gboolean     show_screenshot_saved_message;
+  gboolean     show_pdf_saved_message;
 
   /* Dialog shown above the drawings, and the state that is restored when the
    * last dialog closes (see show_dialog_above_drawings()). */

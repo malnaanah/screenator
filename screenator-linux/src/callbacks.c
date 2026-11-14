@@ -5164,8 +5164,10 @@ gboolean on_buttonpress (GtkWidget *win,
       return TRUE;
     }
 
-  /* Middle click does not affect the selected Pen tool. */
-  if (ev->button == 2 && !event_source_is_stylus ((GdkEvent *) ev) &&
+  /* In Screen mode, middle click does not affect the selected Pen tool.
+   * Paper mode reserves it for panning, regardless of the selected tool. */
+  if (data->paper == SCREENATOR_PAPER_NONE && ev->button == 2 &&
+      !event_source_is_stylus ((GdkEvent *) ev) &&
       devdata && (devdata->cur_context == data->default_pen ||
 		  data->forced_context == data->default_pen))
     return TRUE;
@@ -10857,8 +10859,7 @@ paper_save_slug (ScreenatorPaperType type)
 }
 
 /* Save one paper document to the Documents folder as
- * Screenator-<type>-YYYYMMDD-HHMMSS.pdf.  A document is only written when it
- * has been changed since its last save. */
+ * Screenator-<type>-YYYYMMDD-HHMMSS.pdf. */
 static gboolean
 paper_autosave_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
 			 gchar **saved_path)
@@ -10883,9 +10884,6 @@ paper_autosave_document (ScreenatorData *data, ScreenatorPaperDocument *doc,
       paper_commit_pending (data);
       paper_store_active_page (data);
     }
-
-  if (!doc->modified)
-    return FALSE;
 
   directory = paper_documents_directory ();
   if (g_mkdir_with_parents (directory, 0755) != 0)
@@ -10953,16 +10951,18 @@ static void
 paper_show_saved_paths (ScreenatorData *data, GList *paths)
 {
   GtkWidget *dialog;
-  GString *text = g_string_new (NULL);
+  GString *text;
   GList *l;
 
-  if (!paths)
+  if (!paths || !data->show_pdf_saved_message)
     return;
 
+  text = g_string_new (NULL);
+
   if (g_list_length (paths) == 1)
-    g_string_append (text, "Saved to:\n");
+    g_string_append (text, "Saved PDF to:\n");
   else
-    g_string_append (text, "The changed papers were saved to:\n");
+    g_string_append (text, "The PDFs were saved to:\n");
 
   for (l = paths; l; l = l->next)
     {
@@ -10973,7 +10973,7 @@ paper_show_saved_paths (ScreenatorData *data, GList *paths)
   dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_MODAL,
 				   GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
 				   "%s", text->str);
-  gtk_window_set_title (GTK_WINDOW (dialog), "Paper saved");
+  gtk_window_set_title (GTK_WINDOW (dialog), "PDF saved");
   show_dialog_above_drawings (data, dialog);
   gtk_dialog_run (GTK_DIALOG (dialog));
   gtk_widget_destroy (dialog);
@@ -12628,20 +12628,6 @@ screenator_paper_scroll (ScreenatorData *data, gint direction)
 }
 
 
-static void
-paper_show_no_changes (ScreenatorData *data)
-{
-  GtkWidget *dialog;
-
-  dialog = gtk_message_dialog_new (NULL, GTK_DIALOG_MODAL,
-				   GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
-				   "This paper has no changes to save.");
-  gtk_window_set_title (GTK_WINDOW (dialog), "Paper saved");
-  show_dialog_above_drawings (data, dialog);
-  gtk_dialog_run (GTK_DIALOG (dialog));
-  gtk_widget_destroy (dialog);
-}
-
 /* Save only the paper that is shown now. */
 gboolean
 screenator_paper_save (ScreenatorData *data)
@@ -12656,21 +12642,12 @@ screenator_paper_save (ScreenatorData *data)
   gchar *path = NULL;
 
   if (!doc)
-    {
-      paper_show_no_changes (data);
-      return FALSE;
-    }
+    return FALSE;
 
   if (data->paper == doc->type)
     {
       paper_commit_pending (data);
       paper_store_active_page (data);
-    }
-
-  if (!doc->modified)
-    {
-      paper_show_no_changes (data);
-      return TRUE;
     }
 
   if (!paper_autosave_document (data, doc, &path))
@@ -12928,6 +12905,7 @@ typedef struct
 
   GtkWidget      *save_check;
   GtkWidget      *screenshot_message_check;
+  GtkWidget      *pdf_message_check;
   GtkWidget      *indicator_check;
   GtkWidget      *icon_size_combo;
   GtkWidget      *icon_position_radio[4];
@@ -12948,7 +12926,63 @@ typedef struct
   GtkWidget      *shortcut_entries[SCREENATOR_SHORTCUT_COUNT];
 
   PaperSettingsWidgets paper_widgets;
+  guint            apply_idle_id;
+  gboolean         shortcuts_pending;
 } SettingsDialog;
+
+static void settings_apply_current (SettingsDialog *sd);
+
+static gboolean
+settings_apply_idle (gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+
+  sd->apply_idle_id = 0;
+  settings_apply_current (sd);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+settings_is_shortcut_entry (SettingsDialog *sd, GtkWidget *widget)
+{
+  guint i;
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    if (sd->shortcut_entries[i] == widget)
+      return TRUE;
+
+  return FALSE;
+}
+
+static void
+settings_schedule_apply (SettingsDialog *sd)
+{
+  if (!sd->apply_idle_id)
+    sd->apply_idle_id = g_idle_add (settings_apply_idle, sd);
+}
+
+static void
+settings_control_changed (GtkWidget *widget, gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+
+  if (settings_is_shortcut_entry (sd, widget))
+    sd->shortcuts_pending = TRUE;
+  settings_schedule_apply (sd);
+}
+
+static gboolean
+settings_control_focus_out (GtkWidget *widget, GdkEventFocus *event,
+                            gpointer user_data)
+{
+  SettingsDialog *sd = user_data;
+
+  (void) event;
+  if (settings_is_shortcut_entry (sd, widget))
+    sd->shortcuts_pending = TRUE;
+  settings_schedule_apply (sd);
+  return FALSE;
+}
 
 static void
 settings_change_font (GtkButton *button, gpointer user_data)
@@ -12965,6 +12999,11 @@ settings_reset (GtkButton *button, gpointer user_data)
   SettingsDialog *sd = user_data;
 
   (void) button;
+  if (sd->apply_idle_id)
+    {
+      g_source_remove (sd->apply_idle_id);
+      sd->apply_idle_id = 0;
+    }
   sd->reset_clicked = TRUE;
   on_icon_reset_settings (NULL, sd->data);
   gtk_dialog_response (GTK_DIALOG (sd->dialog), GTK_RESPONSE_APPLY);
@@ -13424,11 +13463,11 @@ build_general_settings_page (SettingsDialog *sd)
   gtk_grid_attach (GTK_GRID (grid), sd->screenshot_message_check,
                    0, 1, 2, 1);
 
-  sd->indicator_check = gtk_check_button_new_with_label (
-    "Show settings indicator on Floating Icon");
-  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->indicator_check),
-				data->show_settings_indicator);
-  gtk_grid_attach (GTK_GRID (grid), sd->indicator_check, 0, 2, 2, 1);
+  sd->pdf_message_check = gtk_check_button_new_with_label (
+    "Show PDF saved message");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->pdf_message_check),
+				data->show_pdf_saved_message);
+  gtk_grid_attach (GTK_GRID (grid), sd->pdf_message_check, 0, 2, 2, 1);
 
   label = gtk_label_new ("Timer delay");
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
@@ -13602,8 +13641,8 @@ build_shortcut_settings_page (SettingsDialog *sd)
   gtk_container_set_border_width (GTK_CONTAINER (box), 12);
 
   note = gtk_label_new ("Type a shortcut such as F8, Ctrl+S or Alt+F4. "
-			"Type None to disable one. Changes take effect when "
-			"the dialog is closed.");
+			"Type None to disable one. Changes apply when you "
+			"press Enter or leave the field.");
   gtk_label_set_xalign (GTK_LABEL (note), 0.0);
   gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
   gtk_label_set_max_width_chars (GTK_LABEL (note), 52);
@@ -13680,6 +13719,12 @@ build_icon_settings_page (SettingsDialog *sd)
   sd->icon_size_combo = combo;
   gtk_grid_attach (GTK_GRID (grid), combo, 1, 0, 1, 1);
 
+  sd->indicator_check = gtk_check_button_new_with_label (
+    "Show settings indicator on Floating Icon");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->indicator_check),
+				data->show_settings_indicator);
+  gtk_grid_attach (GTK_GRID (grid), sd->indicator_check, 0, 1, 2, 1);
+
   frame = gtk_frame_new ("Floating icon position");
   gtk_box_pack_start (GTK_BOX (box), frame, FALSE, FALSE, 0);
 
@@ -13725,113 +13770,51 @@ settings_dialog_populate (SettingsDialog *sd, GtkWidget *notebook)
 			    gtk_label_new ("Shortcuts"));
 }
 
-/* One tabbed dialog for every setting. */
 static void
-show_settings_dialog (ScreenatorData *data)
+settings_apply_current (SettingsDialog *sd)
 {
-  SettingsDialog *sd;
-  GtkWidget *dialog, *content, *notebook;
+  ScreenatorData *data = sd->data;
   static const guint icon_sizes[] = { 16, 32, 48, 64, 128, 256 };
   static const guint timer_delays[] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
-  gint response;
 
-  if (data->top_dialog)
-    return;
-
-  sd = g_new0 (SettingsDialog, 1);
-  sd->data = data;
-
-  dialog = gtk_dialog_new_with_buttons ("Settings", NULL,
-					GTK_DIALOG_MODAL |
-					GTK_DIALOG_DESTROY_WITH_PARENT,
-					"Close", GTK_RESPONSE_CLOSE,
-					NULL);
-  sd->dialog = dialog;
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
-  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
-  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
-  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
-
-  /* Keep the hints window at one stable size.  Without the maximum size the
-   * dialog grows with its text and is then moved again by the map handlers. */
-  {
-    GdkGeometry geometry;
-
-    memset (&geometry, 0, sizeof geometry);
-    geometry.min_width = 700;
-    geometry.max_width = 700;
-    geometry.min_height = 500;
-    geometry.max_height = 500;
-    gtk_window_set_geometry_hints (GTK_WINDOW (dialog), NULL, &geometry,
-				   GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
-  }
-
-  show_dialog_above_drawings (data, dialog);
-
-  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
-  notebook = gtk_notebook_new ();
-  gtk_container_set_border_width (GTK_CONTAINER (notebook), 8);
-  gtk_container_add (GTK_CONTAINER (content), notebook);
-
-  settings_dialog_populate (sd, notebook);
-
-  gtk_widget_show_all (dialog);
-  while (TRUE)
-    {
-      response = gtk_dialog_run (GTK_DIALOG (dialog));
-      if (response != GTK_RESPONSE_APPLY)
-	break;
-
-      /* The reset helper replaces every setting with its default. Rebuild
-	 * the controls from those values and keep the Settings dialog open. */
-      gtk_container_remove (GTK_CONTAINER (content), notebook);
-      gtk_widget_destroy (notebook);
-      notebook = gtk_notebook_new ();
-      gtk_container_set_border_width (GTK_CONTAINER (notebook), 8);
-      gtk_container_add (GTK_CONTAINER (content), notebook);
-      settings_dialog_populate (sd, notebook);
-      sd->reset_clicked = FALSE;
-      gtk_widget_show_all (dialog);
-    }
-
-  if (!sd->reset_clicked)
-    {
-      gboolean new_save =
-	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->save_check));
-      gboolean new_screenshot_message = gtk_toggle_button_get_active (
-	GTK_TOGGLE_BUTTON (sd->screenshot_message_check));
-      gboolean new_indicator =
-	gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->indicator_check));
-      gint icon_index = gtk_combo_box_get_active (
-	GTK_COMBO_BOX (sd->icon_size_combo));
-      guint new_icon_size =
-	(icon_index >= 0 &&
-	 icon_index < (gint) G_N_ELEMENTS (icon_sizes))
-	? icon_sizes[icon_index] : data->icon_size;
-      gint timer_index = gtk_combo_box_get_active (
-	GTK_COMBO_BOX (sd->timer_delay_combo));
-      guint new_timer_delay =
-	(timer_index >= 0 &&
-	 timer_index < (gint) G_N_ELEMENTS (timer_delays))
-	? timer_delays[timer_index] : data->tool_delay_seconds;
-      guint new_toolbar_size =
-	(guint) gtk_spin_button_get_value_as_int (
-	  GTK_SPIN_BUTTON (sd->toolbar_size_spin));
-      gint toolbar_direction =
-	gtk_combo_box_get_active (GTK_COMBO_BOX (
-				    sd->toolbar_direction_combo));
-      gboolean new_toolbar_vertical = toolbar_direction != 1;
-      gboolean new_toolbar_position_locked = gtk_toggle_button_get_active (
-	GTK_TOGGLE_BUTTON (sd->toolbar_lock_check));
-      gboolean new_continuous =
-	gtk_toggle_button_get_active (
-	  GTK_TOGGLE_BUTTON (sd->continuous_check));
-      ScreenatorPaperSize new_size = SCREENATOR_PAPER_SIZE_SCREEN;
-      gdouble new_width = gtk_spin_button_get_value (
-	GTK_SPIN_BUTTON (sd->width_spin));
-      gdouble new_height = gtk_spin_button_get_value (
-	GTK_SPIN_BUTTON (sd->height_spin));
-      gboolean size_changed;
+  gboolean new_save =
+    gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->save_check));
+  gboolean new_screenshot_message = gtk_toggle_button_get_active (
+    GTK_TOGGLE_BUTTON (sd->screenshot_message_check));
+  gboolean new_pdf_message = gtk_toggle_button_get_active (
+    GTK_TOGGLE_BUTTON (sd->pdf_message_check));
+  gboolean new_indicator =
+    gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (sd->indicator_check));
+  gint icon_index = gtk_combo_box_get_active (
+    GTK_COMBO_BOX (sd->icon_size_combo));
+  guint new_icon_size =
+    (icon_index >= 0 &&
+     icon_index < (gint) G_N_ELEMENTS (icon_sizes))
+    ? icon_sizes[icon_index] : data->icon_size;
+  gint timer_index = gtk_combo_box_get_active (
+    GTK_COMBO_BOX (sd->timer_delay_combo));
+  guint new_timer_delay =
+    (timer_index >= 0 &&
+     timer_index < (gint) G_N_ELEMENTS (timer_delays))
+    ? timer_delays[timer_index] : data->tool_delay_seconds;
+  guint new_toolbar_size =
+    (guint) gtk_spin_button_get_value_as_int (
+      GTK_SPIN_BUTTON (sd->toolbar_size_spin));
+  gint toolbar_direction =
+    gtk_combo_box_get_active (GTK_COMBO_BOX (
+				sd->toolbar_direction_combo));
+  gboolean new_toolbar_vertical = toolbar_direction != 1;
+  gboolean new_toolbar_position_locked = gtk_toggle_button_get_active (
+    GTK_TOGGLE_BUTTON (sd->toolbar_lock_check));
+  gboolean new_continuous =
+    gtk_toggle_button_get_active (
+      GTK_TOGGLE_BUTTON (sd->continuous_check));
+  ScreenatorPaperSize new_size = SCREENATOR_PAPER_SIZE_SCREEN;
+  gdouble new_width = gtk_spin_button_get_value (
+    GTK_SPIN_BUTTON (sd->width_spin));
+  gdouble new_height = gtk_spin_button_get_value (
+    GTK_SPIN_BUTTON (sd->height_spin));
+  gboolean size_changed;
 
       if (new_save != data->save_annotations_on_exit)
 	{
@@ -13843,6 +13826,7 @@ show_settings_dialog (ScreenatorData *data)
 	}
 
       data->show_screenshot_saved_message = new_screenshot_message;
+      data->show_pdf_saved_message = new_pdf_message;
 
       if (new_indicator != data->show_settings_indicator)
 	{
@@ -13925,20 +13909,22 @@ show_settings_dialog (ScreenatorData *data)
 	  paper_top_bar_rebuild (data);
       }
 
-      {
-	gchar *new_texts[SCREENATOR_SHORTCUT_COUNT];
-	guint i;
+      if (sd->shortcuts_pending)
+	{
+	  gchar *new_texts[SCREENATOR_SHORTCUT_COUNT];
+	  guint i;
 
-	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
-	  new_texts[i] = g_strdup (sd->shortcut_entries[i]
-	    ? gtk_entry_get_text (GTK_ENTRY (sd->shortcut_entries[i]))
-	    : (data->shortcuts[i].text
-	       ? data->shortcuts[i].text
-	       : screenator_shortcut_defaults[i]));
-	screenator_apply_shortcuts (data, new_texts);
-	for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
-	  g_free (new_texts[i]);
-      }
+	  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	    new_texts[i] = g_strdup (sd->shortcut_entries[i]
+	      ? gtk_entry_get_text (GTK_ENTRY (sd->shortcut_entries[i]))
+	      : (data->shortcuts[i].text
+		 ? data->shortcuts[i].text
+		 : screenator_shortcut_defaults[i]));
+	  screenator_apply_shortcuts (data, new_texts);
+	  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+	    g_free (new_texts[i]);
+	  sd->shortcuts_pending = FALSE;
+	}
       paper_top_bar_update_active_tool (data);
 
       paper_set_continuous_scrolling (data, new_continuous);
@@ -13967,7 +13953,182 @@ show_settings_dialog (ScreenatorData *data)
 
       write_keyfile (data);
       schedule_tray_menu_refresh (data);
+
+}
+
+static void
+settings_toolbar_rows_changed (GtkTreeModel *model, GtkTreePath *path,
+			       GtkTreeIter *iter, gpointer user_data)
+{
+  (void) model;
+  (void) path;
+  (void) iter;
+  settings_schedule_apply (user_data);
+}
+
+static void
+settings_toolbar_rows_reordered (GtkTreeModel *model, GtkTreePath *path,
+				 GtkTreeIter *iter, gint *new_order,
+				 gpointer user_data)
+{
+  (void) model;
+  (void) path;
+  (void) iter;
+  (void) new_order;
+  settings_schedule_apply (user_data);
+}
+
+static void
+settings_dialog_connect_live (SettingsDialog *sd)
+{
+  GtkWidget *toggles[] = {
+    sd->save_check,
+    sd->screenshot_message_check,
+    sd->pdf_message_check,
+    sd->continuous_check,
+    sd->toolbar_lock_check,
+    sd->indicator_check,
+    sd->screen_radio,
+    sd->a4_portrait_radio,
+    sd->a4_landscape_radio,
+    sd->custom_radio,
+    sd->icon_position_radio[0],
+    sd->icon_position_radio[1],
+    sd->icon_position_radio[2],
+    sd->icon_position_radio[3]
+  };
+  GtkWidget *combos[] = {
+    sd->timer_delay_combo,
+    sd->icon_size_combo,
+    sd->toolbar_direction_combo
+  };
+  guint i;
+
+  for (i = 0; i < G_N_ELEMENTS (toggles); i++)
+    if (toggles[i])
+      g_signal_connect (toggles[i], "toggled",
+			G_CALLBACK (settings_control_changed), sd);
+
+  for (i = 0; i < G_N_ELEMENTS (combos); i++)
+    if (combos[i])
+      g_signal_connect (combos[i], "changed",
+			G_CALLBACK (settings_control_changed), sd);
+
+  if (sd->toolbar_size_spin)
+    g_signal_connect (sd->toolbar_size_spin, "value-changed",
+		      G_CALLBACK (settings_control_changed), sd);
+
+  if (sd->width_spin)
+    {
+      g_signal_connect (sd->width_spin, "activate",
+			G_CALLBACK (settings_control_changed), sd);
+      g_signal_connect (sd->width_spin, "focus-out-event",
+			G_CALLBACK (settings_control_focus_out), sd);
     }
+
+  if (sd->height_spin)
+    {
+      g_signal_connect (sd->height_spin, "activate",
+			G_CALLBACK (settings_control_changed), sd);
+      g_signal_connect (sd->height_spin, "focus-out-event",
+			G_CALLBACK (settings_control_focus_out), sd);
+    }
+
+  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
+    if (sd->shortcut_entries[i])
+      {
+	g_signal_connect (sd->shortcut_entries[i], "activate",
+			  G_CALLBACK (settings_control_changed), sd);
+	g_signal_connect (sd->shortcut_entries[i], "focus-out-event",
+			  G_CALLBACK (settings_control_focus_out), sd);
+      }
+
+  if (sd->toolbar_items_store)
+    {
+      g_signal_connect (sd->toolbar_items_store, "row-changed",
+			G_CALLBACK (settings_toolbar_rows_changed), sd);
+      g_signal_connect (sd->toolbar_items_store, "rows-reordered",
+			G_CALLBACK (settings_toolbar_rows_reordered), sd);
+    }
+}
+
+/* One tabbed dialog for every setting. */
+static void
+show_settings_dialog (ScreenatorData *data)
+{
+  SettingsDialog *sd;
+  GtkWidget *dialog, *content, *notebook;
+  gint response;
+
+  if (data->top_dialog)
+    return;
+
+  sd = g_new0 (SettingsDialog, 1);
+  sd->data = data;
+
+  dialog = gtk_dialog_new_with_buttons ("Settings", NULL,
+					GTK_DIALOG_MODAL |
+					GTK_DIALOG_DESTROY_WITH_PARENT,
+					"Close", GTK_RESPONSE_CLOSE,
+					NULL);
+  sd->dialog = dialog;
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
+  gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
+  gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
+
+  /* Keep the hints window at one stable size.  Without the maximum size the
+   * dialog grows with its text and is then moved again by the map handlers. */
+  {
+    GdkGeometry geometry;
+
+    memset (&geometry, 0, sizeof geometry);
+    geometry.min_width = 700;
+    geometry.max_width = 700;
+    geometry.min_height = 500;
+    geometry.max_height = 500;
+    gtk_window_set_geometry_hints (GTK_WINDOW (dialog), NULL, &geometry,
+				   GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+  }
+
+  show_dialog_above_drawings (data, dialog);
+
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  notebook = gtk_notebook_new ();
+  gtk_container_set_border_width (GTK_CONTAINER (notebook), 8);
+  gtk_container_add (GTK_CONTAINER (content), notebook);
+
+  settings_dialog_populate (sd, notebook);
+  settings_dialog_connect_live (sd);
+
+  gtk_widget_show_all (dialog);
+  while (TRUE)
+    {
+      response = gtk_dialog_run (GTK_DIALOG (dialog));
+      if (response != GTK_RESPONSE_APPLY)
+	break;
+
+      /* The reset helper replaces every setting with its default. Rebuild
+	 * the controls from those values and keep the Settings dialog open. */
+      gtk_container_remove (GTK_CONTAINER (content), notebook);
+      gtk_widget_destroy (notebook);
+      notebook = gtk_notebook_new ();
+      gtk_container_set_border_width (GTK_CONTAINER (notebook), 8);
+      gtk_container_add (GTK_CONTAINER (content), notebook);
+      settings_dialog_populate (sd, notebook);
+      settings_dialog_connect_live (sd);
+      sd->reset_clicked = FALSE;
+      gtk_widget_show_all (dialog);
+    }
+
+  if (sd->apply_idle_id)
+    {
+      g_source_remove (sd->apply_idle_id);
+      sd->apply_idle_id = 0;
+    }
+  sd->shortcuts_pending = TRUE;
+  if (!sd->reset_clicked)
+    settings_apply_current (sd);
 
   gtk_widget_destroy (dialog);
   g_free (sd);

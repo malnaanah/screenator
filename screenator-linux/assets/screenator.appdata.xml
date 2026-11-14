@@ -47,7 +47,7 @@
   <releases>
     <release version="8.1" date="2026-11-14">
       <description>
-        <p>Screenator 8.1 improves visibility controls across Screen and Paper modes, adds configurable clear and delete shortcuts, separates screenshot and PDF save actions, adds toolbar position controls, and refines floating-icon settings and paper navigation.</p>
+        <p>Screenator 8.1 improves visibility controls across Screen and Paper modes, adds configurable clear and delete shortcuts, separates screenshot and PDF save actions, adds toolbar position controls, and refines floating-icon settings and paper navigation. Paper PDF saving works without edits and its success message can be turned off. Settings now apply as they are changed, and the settings indicator option is on the Floating Icon tab.</p>
       </description>
     </release>
     <release version="8.0" date="2026-11-09">
