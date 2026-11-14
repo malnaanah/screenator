@@ -13,7 +13,7 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
-BUILD="$ROOT/../build"
+BUILD="$ROOT/../build-linux"
 DEB="$BUILD/screenator_8.1_amd64.deb"
 RPM="$BUILD/screenator-8.1-1.x86_64.rpm"
 APPIMAGE="$BUILD/Screenator-8.1-x86_64.AppImage"

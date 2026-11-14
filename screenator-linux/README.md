@@ -427,7 +427,7 @@ Then run:
 ./build.sh
 ```
 
-The script builds the project and produces both packages in `../build/`:
+The script builds the project and produces all three packages in `../build-linux/`:
 
 - `screenator_8.1_amd64.deb`
 - `screenator-8.1-1.x86_64.rpm`

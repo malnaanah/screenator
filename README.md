@@ -31,7 +31,7 @@ cd screenator-linux
 ./build.sh
 ```
 
-The script creates the DEB, RPM and AppImage packages in `build/` at the
+The script creates the DEB, RPM and AppImage packages in `build-linux/` at the
 repository root:
 
 - `screenator_8.1_amd64.deb`
