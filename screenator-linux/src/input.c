@@ -1626,8 +1626,7 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	  return TRUE;
 	}
 
-      if (!data->text_editor_active &&
-	  screenator_shortcut_matches (
+      if (screenator_shortcut_matches (
 	    data, SCREENATOR_SHORTCUT_CLEAR_SCREEN, event))
 	{
 	  clear_screen (data);
@@ -1757,8 +1756,6 @@ gint snoop_key_press(GtkWidget   *grab_widget,
       screenator_shortcut_matches (
 	data, SCREENATOR_SHORTCUT_CLEAR_SCREEN, event))
     {
-      if (data->text_editor_active)
-	return FALSE;
       clear_screen (data);
       return TRUE;
     }

@@ -189,10 +189,9 @@ kept.
   point. Pango uses Arial as a fallback for glyphs missing from the chosen
   font, in the selected weight (so bold text falls back to Arial Bold), when
   Arial is installed. Press `Enter` to place the text or
-  `Esc` to cancel. In Screen mode, a
-  left click or a stylus tip while the editor is open accepts the current text,
-  commits its handles and starts a new one at the click position; in Paper mode
-  a click does not place it. No click reaches the application below, and
+  `Esc` to cancel. A left click or a stylus tip while the editor is open accepts
+  the current text, commits its handles and starts a new one at the click
+  position in either mode. No click reaches the application below, and
   `Enter` or `Esc` enables the mouse again. The text
   and its blinking caret are drawn above the annotations and the paper page,
   so they stay visible even over a drawing. The middle mouse button does not
@@ -221,6 +220,8 @@ kept.
   Mode (F3), Undo, Redo, Clear Screen, Screenshot, Show
   toolbar (F10), Show Floating Icon (F9) and Show Hints. **Switch Mode**
   turns **Paper** mode on or off and is also the first item in the toolbar.
+  **Clear Screen** first commits text being edited and editable shapes, then
+  clears the drawing; Undo restores the drawing as it looked before the clear.
   Plain, Ruled and Graph
   are white pages (with blue writing lines for Ruled and a grey square grid for
   Graph), and selecting **PDF File** opens the desktop's own file chooser (KDE,
@@ -365,7 +366,7 @@ kept.
   floating icon and settings indicator visibility, the selected paper type,
   and the opened PDF file and page. `Reset app settings and drawings` deletes
   the configuration file and saved drawings, clears every paper page, and
-  restores red, 6 px, 100% opacity, no shape fill, Arial Bold 24, a 60 px
+  restores red, 6 px, 100% opacity, no shape fill, Segoe Print Bold 24, a 60 px
   eraser, a 48x48 icon, a 2 s Timer Delay, a visible 32 px horizontal tool bar
   with all icons, and **Paper** mode off. Beside it, `Open Configuration
   Folder` opens `~/.config/Screenator`, and the folder path is shown below the
@@ -427,8 +428,14 @@ sudo apt install build-essential cmake libgtk-3-dev \
 Then run:
 
 ```
+./download-build-deps.sh
 ./build.sh
 ```
+
+The helper caches the development packages, RPM packaging packages, AppImage
+tools and runtime, and skips files already downloaded. Both scripts use
+`/tmp/opencode/screenator-build-stage` by default. Set the same
+`SCREENATOR_BUILD_STAGE` value for both commands to use a shared cache path.
 
 The script builds the project and produces all three packages in `../build-linux/`:
 

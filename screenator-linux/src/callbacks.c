@@ -2369,9 +2369,8 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   gchar *css;
 
   /* Keep painting mode and its pointer grab alive while the editor is open.
-   * The editor only takes the keyboard focus; mouse buttons are disabled
-   * until Enter or Escape closes it, so a click can neither commit the text
-   * nor fall through to the application below. */
+   * The editor takes keyboard focus; button events are handled by the drawing
+   * window, where a left click can commit this text and open another editor. */
   data->text_device = device;
   data->text_x = x;
   data->text_y = y;
@@ -5189,9 +5188,9 @@ gboolean on_buttonpress (GtkWidget *win,
 	    return TRUE;
 	  }
 
-      /* A left click in Screen mode accepts the current text and starts a new
-       * editor at the click position. */
-      else if (ev->button == 1 && data->paper == SCREENATOR_PAPER_NONE)
+      /* A left click accepts the current text and starts a new editor at the
+       * click position in either mode. */
+      else if (ev->button == 1)
 	  {
 	    gint x = (gint) ev->x;
 	    gint y = (gint) ev->y;
@@ -6140,8 +6139,8 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
-  /* The text editor disables the mouse; ignore every button until the typed
-   * text is accepted with Enter. */
+  /* Consume releases while the text editor is open; button presses handle
+   * accepting the current text and opening another editor. */
   if (data->text_editor)
     {
       data->text_pressed = FALSE;
@@ -8059,6 +8058,13 @@ paper_commit_pending (ScreenatorData *data)
   frame_finish_all (data);
   line_finish_all (data);
   spline_cancel_all (data);
+}
+
+/* Finish active edits before clearing the Screen-mode drawing. */
+void
+screenator_finish_pending (ScreenatorData *data)
+{
+  paper_commit_pending (data);
 }
 
 static void

@@ -307,9 +307,9 @@ centred vertically on the click point. The text and its blinking caret are
 drawn above the drawings and the paper page, so they stay visible over them.
 The middle mouse button does not erase in Screen mode and pans in Paper mode;
 it accepts typed text first. Press
-Enter to place the text or Escape to cancel it. In Screen mode,
-a left click or stylus tip while the editor is open accepts the current text,
-commits its handles and starts a new one at the click position. A placed text
+Enter to place the text or Escape to cancel it. A left click or stylus tip
+while the editor is open accepts the current text, commits its handles and
+starts a new one at the click position in either mode. A placed text
 stays editable: drag it to
 move it, drag a corner handle to change the font size, and drag its round
 handle to rotate it.
@@ -346,7 +346,7 @@ The Opacity menu offers 10% to 100% in 10% steps; the separate Marker Opacity
 menu offers 10% to 90%.
 "Reset app settings and drawings" deletes the configuration file and saved
 drawings, clears every paper page, and returns to red, 6 px, 100% opacity, no
-shape fill, Arial Bold 24, a 60 px eraser, a 48x48 icon, a visible 32 px
+shape fill, Segoe Print Bold 24, a 60 px eraser, a 48x48 icon, a visible 32 px
 horizontal tool bar with all icons and a 2 s Timer Delay. Beside it, "Open
 Configuration Folder" opens ~/.config/Screenator, and the folder path is shown
 below the buttons.
@@ -359,6 +359,8 @@ annotations on exit" on (the default), the drawings are saved to
 .I ~/.config/Screenator/screenator-annotations.png
 when Screenator quits and restored on the next start; changed papers are
 offered for saving on exit. "Clear Screen" removes the saved drawing.
+Before clearing in Screen mode, Screenator commits text being edited and
+editable shapes, so Undo restores the drawing as it looked before the clear.
 .br
 A single, colourful Hints dialog appears when Screenator starts. It is a
 700x500 scrollable column that summarises the common mouse and stylus controls

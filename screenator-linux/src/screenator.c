@@ -1410,6 +1410,10 @@ void clear_screen (ScreenatorData *data)
       return;
     }
 
+  /* Finish text and editable shapes before the undo snapshot so Clear Screen
+   * removes pending edits along with the rest of the drawing. */
+  screenator_finish_pending (data);
+
   /* Clearing is undoable: save the drawings before they are erased.  An
    * already empty canvas does not need an undo step. */
   if (surface_has_annotations (data->backbuffer))

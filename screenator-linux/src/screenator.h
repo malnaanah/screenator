@@ -1072,6 +1072,7 @@ void text_editor_finish (ScreenatorData *data);
 gboolean math_expression_is_valid (const gchar *expression, gchar **error);
 gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);
+void screenator_finish_pending (ScreenatorData *data);
 void remove_saved_annotations (void);
 void set_floating_icon_visible (ScreenatorData *data, gboolean show);
 void update_paper_shortcuts (ScreenatorData *data, gboolean grab);

@@ -322,7 +322,7 @@ echo "==> Built: $RPM"
 # 5. Build the AppImage
 # ---------------------------------------------------------------------------
 echo "==> Preparing AppImage tooling ..."
-TOOLS="/tmp/opencode/screenator-appimage-tools"
+TOOLS="$STAGE/appimage-tools"
 APPROOT="/tmp/opencode/screenator-appimage"
 APPDIR="$APPROOT/Screenator.AppDir"
 mkdir -p "$TOOLS"
@@ -340,9 +340,12 @@ fetch "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/mast
       "$TOOLS/linuxdeploy-plugin-gtk.sh"
 fetch "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
       "$TOOLS/appimagetool-x86_64.AppImage"
+fetch "https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64" \
+      "$TOOLS/runtime-x86_64"
 chmod +x "$TOOLS"/linuxdeploy-x86_64.AppImage \
          "$TOOLS"/linuxdeploy-plugin-gtk.sh \
-         "$TOOLS"/appimagetool-x86_64.AppImage
+         "$TOOLS"/appimagetool-x86_64.AppImage \
+         "$TOOLS"/runtime-x86_64
 
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR"/usr/bin \
@@ -428,7 +431,8 @@ echo "==> Building the AppImage ..."
 rm -f "$APPIMAGE"
 # The appdata id intentionally follows the "screenator" desktop/app id, which
 # appstreamcli flags as not reverse-DNS, so skip its metadata check.
-"$TOOLS/appimagetool-x86_64.AppImage" -n "$APPDIR" "$APPIMAGE"
+"$TOOLS/appimagetool-x86_64.AppImage" -n \
+  --runtime-file "$TOOLS/runtime-x86_64" "$APPDIR" "$APPIMAGE"
 chmod +x "$APPIMAGE"
 echo "==> Built: $APPIMAGE"
 
