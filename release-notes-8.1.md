@@ -5,7 +5,7 @@ and visibility controls, improved toolbar behavior, and refined Paper-mode
 shortcuts and navigation. Linux and Windows use separate native
 implementations.
 
-Updated: 2026-11-14
+Updated: 2026-11-15
 
 ## Linux
 
@@ -25,6 +25,11 @@ Updated: 2026-11-14
   icons; middle-click does not.
 - Paper-mode page actions and visibility controls have clearer availability
   and tooltips, and PDF export and paper navigation have been improved.
+- Segoe Print Bold is the default text font. While typing, a left click or
+  stylus tip commits the current text and opens a new text editor at that spot
+  in Screen and Paper modes.
+- In Screen mode, Clear Screen commits text and editable shapes before
+  clearing, so Undo can restore the drawing as it appeared before the clear.
 
 ## Windows
 
@@ -36,6 +41,7 @@ Updated: 2026-11-14
 - Added Delete and Ctrl+X page actions, made toolbar page deletion available
   for multi-page PDFs, and changed the toolbar application menu to open with
   right-click only.
+- Segoe Print Bold is the default text font.
 - See the [Windows guide](screenator-windows/README.md) and
   [Windows release notes](screenator-windows/RELEASE_NOTES.md) for details.
 
