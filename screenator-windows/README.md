@@ -241,7 +241,7 @@ continuous page scrolling is disabled.
 | Line width | 6 px |
 | Opacity | 100% |
 | Shape fill | None (first fill is green) |
-| Font | Arial Bold 24 pt |
+| Font | Segoe Print Bold 24 pt |
 | Eraser | 60 px |
 | Floating icon | 48x48, top right |
 | Toolbar | visible, horizontal, 32 px icons, all 29 actions |

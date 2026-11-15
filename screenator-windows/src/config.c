@@ -334,7 +334,7 @@ void config_defaults(void)
   g.fill_enabled = 0;
   g.marker_opacity = 0.4;
   g.marker_saved_valid = 0;
-  strcpy(g.font, "Arial Bold 24");
+  strcpy(g.font, "Segoe Print Bold 24");
   g.icon_size = 48;
   g.icon_position = ICON_TR;
   g.show_icon = 1;
@@ -453,10 +453,10 @@ void config_load_from(const wchar_t *path)
   g.marker_opacity = get_double(path, L"marker_opacity", 0.4);
   if (g.marker_opacity < 0.1 || g.marker_opacity > 1.0) g.marker_opacity = 0.4;
 
-  get_string(path, L"font", wbuf, MAX_PATH, L"Arial Bold 24");
+  get_string(path, L"font", wbuf, MAX_PATH, L"Segoe Print Bold 24");
   { char *s = utf8_from_wide(wbuf);
     if (s) { strncpy(g.font, s, sizeof(g.font) - 1); g.font[sizeof(g.font)-1] = 0; free(s); } }
-  if (!g.font[0]) strcpy(g.font, "Arial Bold 24");
+  if (!g.font[0]) strcpy(g.font, "Segoe Print Bold 24");
 
   g.icon_size = get_int(path, L"icon_size", 48);
   if (g.icon_size != 16 && g.icon_size != 24 && g.icon_size != 32 &&

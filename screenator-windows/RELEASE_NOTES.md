@@ -8,6 +8,7 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 
 ## Windows 8.1 changes
 
+- New installations and reset settings use Segoe Print Bold 24 pt by default.
 - Text uses Arial Bold for glyphs missing from the chosen font, with normal
   system fallback as a last resort.
 - Split the toolbar's Screenshot and Save actions. Screenshot is available in
@@ -392,7 +393,7 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 - Stylus support for the first and second side buttons. Set the pen driver's
   **button 1 (nearest the tip) to Middle Click** and **button 2 to Right
   Click** for the expected short-press and long-press actions.
-- Defaults: 48x48 floating icon, 60 px eraser, Arial Bold 24 pt font.
+- Defaults: 48x48 floating icon, 60 px eraser, Segoe Print Bold 24 pt font.
 - Hints window is 700x500.
 - Delayed tool activation no longer dismisses an open context menu. The menu
   is captured once, immediately before the pending tool activates, so the
