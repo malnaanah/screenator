@@ -90,6 +90,81 @@ char *font_make(const char *family, int bold, int italic, double px)
   return s;
 }
 
+static void layout_add_font_range(PangoAttrList **attrs,
+                                 const PangoFontDescription *font,
+                                 int start, int end)
+{
+  PangoAttribute *attr;
+  if (!*attrs) *attrs = pango_attr_list_new();
+  attr = pango_attr_font_desc_new(font);
+  attr->start_index = (guint) start;
+  attr->end_index = (guint) end;
+  pango_attr_list_insert(*attrs, attr);
+}
+
+/* Keep the chosen font for glyphs it contains, and use Arial Bold for missing
+ * glyphs.  Pango's normal system fallback remains enabled as a last resort if
+ * Arial does not contain a character either. */
+static void layout_apply_missing_glyph_font(
+  PangoLayout *layout, const PangoFontDescription *primary, const char *text)
+{
+  PangoContext *context;
+  PangoFont *font;
+  PangoCoverage *coverage;
+  PangoFontDescription *fallback;
+  PangoAttrList *attrs = NULL;
+  PangoLanguage *language;
+  const char *p;
+  int range_start = -1;
+
+  if (!layout || !primary || !text || !text[0]) return;
+  context = pango_layout_get_context(layout);
+  language = pango_context_get_language(context);
+  font = pango_context_load_font(context, primary);
+  if (!font) return;
+  coverage = pango_font_get_coverage(font, language);
+  if (!coverage)
+    {
+      g_object_unref(font);
+      return;
+    }
+
+  fallback = pango_font_description_copy(primary);
+  pango_font_description_set_family(fallback, "Arial");
+  pango_font_description_set_weight(fallback, PANGO_WEIGHT_BOLD);
+
+  for (p = text; *p; )
+    {
+      gunichar ch = g_utf8_get_char_validated(p, -1);
+      int valid = ch != (gunichar) -1 && ch != (gunichar) -2;
+      const char *next = valid ? g_utf8_next_char(p) : p + 1;
+      int missing = valid &&
+                    pango_coverage_get(coverage, ch) == PANGO_COVERAGE_NONE;
+      if (missing)
+        {
+          if (range_start < 0) range_start = (int) (p - text);
+        }
+      else if (range_start >= 0)
+        {
+          layout_add_font_range(&attrs, fallback, range_start,
+                                (int) (p - text));
+          range_start = -1;
+        }
+      p = next;
+    }
+  if (range_start >= 0)
+    layout_add_font_range(&attrs, fallback, range_start, (int) (p - text));
+
+  if (attrs)
+    {
+      pango_layout_set_attributes(layout, attrs);
+      pango_attr_list_unref(attrs);
+    }
+  pango_font_description_free(fallback);
+  g_object_unref(coverage);
+  g_object_unref(font);
+}
+
 void measure_frame_text(FrameShape *shape)
 {
   if (!shape || !shape->text || !shape->text[0])
@@ -110,6 +185,7 @@ void measure_frame_text(FrameShape *shape)
                                            shape->font_size * PANGO_SCALE);
   pango_layout_set_font_description(layout, fd);
   pango_layout_set_text(layout, shape->text, -1);
+  layout_apply_missing_glyph_font(layout, fd, shape->text);
   pango_layout_set_auto_dir(layout, TRUE);
   pango_layout_get_pixel_extents(layout, &ink, &logical);
 
@@ -989,6 +1065,7 @@ void draw_frame_shape(cairo_t *cr, const FrameShape *shape)
                                                    shape->font_size * PANGO_SCALE);
           pango_layout_set_font_description(layout, fd);
           pango_layout_set_text(layout, shape->text, -1);
+          layout_apply_missing_glyph_font(layout, fd, shape->text);
           pango_layout_set_auto_dir(layout, TRUE);
           set_source_color(cr, shape->color);
           cairo_move_to(cr, -w / 2 - shape->text_off_x,
@@ -1348,6 +1425,7 @@ void draw_text_editor(cairo_t *cr)
                                            PANGO_SCALE);
   pango_layout_set_font_description(layout, fd);
   pango_layout_set_text(layout, utf8, -1);
+  layout_apply_missing_glyph_font(layout, fd, utf8);
   pango_layout_set_auto_dir(layout, TRUE);
 
   PangoRectangle ink, logical;

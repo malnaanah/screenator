@@ -58,7 +58,8 @@ continuous page scrolling is disabled.
   documents, switching to the page each change belongs to when needed.
 - Line colours, custom colours, shape fill colours, nine line widths, opacity
   (10% to 100% in steps of 10%, applied to strokes and fills), eraser sizes,
-  marker opacity and a configurable font.
+  marker opacity and a configurable font. Missing glyphs use Arial Bold when
+  available, then the system's normal font fallback.
 - Math plots break at real poles such as `1/x` and `tan(x)` instead of drawing
   a false vertical line, and `delta()` is drawn as an arrow at each zero of its
   argument.

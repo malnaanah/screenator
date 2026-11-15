@@ -8,6 +8,8 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 
 ## Windows 8.1 changes
 
+- Text uses Arial Bold for glyphs missing from the chosen font, with normal
+  system fallback as a last resort.
 - Split the toolbar's Screenshot and Save actions. Screenshot is available in
   both modes; Save appears only in Paper mode. Added eye-state visibility icons,
   visibility toggling in both modes, and all-page annotation hiding in Paper.
