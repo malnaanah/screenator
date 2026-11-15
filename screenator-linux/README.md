@@ -72,8 +72,11 @@ kept.
   the frozen background.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
-- While painting mode is active, the mouse wheel steps the line colours,
-  including the custom colour, or the shape fill colours over the Paint Bucket.
+- In Screen mode, while painting is active, the mouse wheel steps the line
+  colours, including the custom colour, or the shape fill colours over the
+  Paint Bucket. In Paper mode it scrolls pages, including with Paint Bucket
+  selected; with another tool selected, it changes the colour of active text
+  or shape handles instead.
   With Paint Bucket selected, a middle click changes the fill colour; with
   Eraser selected, it changes the eraser size. Middle clicks do not erase.
   Right click accepts typed text first, then commits
@@ -171,8 +174,9 @@ kept.
   Clicking the signal without dragging generates a new signal with a new seed.
   The frame can be moved, resized and rotated with the usual handles.
 - Paint Bucket fills the closed area under the click with the current Shapes
-  Fill Color. In Screen and Paper modes, the mouse wheel or stylus Button 1
-  cycles the fill color, regardless of the wheel or stylus setting.
+  Fill Color. In Screen mode, the mouse wheel cycles the fill color. In Paper
+  mode, the mouse wheel scrolls pages. Stylus Button 1 cycles the fill color,
+  regardless of the wheel or stylus setting.
   In Paper mode, short-click stylus Button 1 or middle mouse to change color;
   hold and drag to pan after a brief 200 ms delay and a small movement, including while hovering.
   The area must be enclosed by drawn strokes and must not reach the

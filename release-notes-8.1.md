@@ -25,6 +25,7 @@ Updated: 2026-11-15
   icons; middle-click does not.
 - Paper-mode page actions and visibility controls have clearer availability
   and tooltips, and PDF export and paper navigation have been improved.
+- In Paper mode, the mouse wheel scrolls pages with Paint Bucket selected.
 - Segoe Print Bold is the default text font. While typing, a left click or
   stylus tip commits the current text and opens a new text editor at that spot
   in Screen and Paper modes.

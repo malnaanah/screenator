@@ -7640,10 +7640,10 @@ paper_cycle_setting (ScreenatorData *data, gboolean down)
     apply_scroll_step (data, down, TRUE);
 }
 
-/* The mouse wheel changes the line colour while a tool is active; over the
- * Paint Bucket it changes the shape fill colour instead.  The change is the
- * same as picking the colour from the menu: it is applied to the pen, saved
- * with the other settings and shown in the settings indicator and menus. */
+/* In Screen mode, the mouse wheel changes the line colour while a tool is
+ * active; over the Paint Bucket it changes the shape fill colour instead.
+ * In Paper mode the wheel scrolls pages, including with Paint Bucket active.
+ * Colour changes are applied as in the menus and saved with the settings. */
 gboolean
 on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
 {
@@ -7693,13 +7693,14 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     return TRUE;
   last_step_time = now;
 
-  if (data->forced_context &&
-      data->forced_context->type == SCREENATOR_SHAPE &&
-      data->shape_type == SCREENATOR_SHAPE_BUCKET)
+  if (data->text_editor_active)
+    apply_scroll_step (data, down, TRUE);
+  else if (data->paper != SCREENATOR_PAPER_NONE && bucket_tool_active (data))
+    screenator_paper_scroll (data, down ? 1 : -1);
+  else if (data->paper == SCREENATOR_PAPER_NONE && bucket_tool_active (data))
     cycle_shape_fill_color (data, down);
-  else if (data->text_editor_active ||
-      (data->paper == SCREENATOR_PAPER_NONE &&
-       editable_handles_active (data)))
+  else if (data->paper == SCREENATOR_PAPER_NONE &&
+           editable_handles_active (data))
     apply_scroll_step (data, down, TRUE);
   else if (data->paper == SCREENATOR_PAPER_NONE && eraser_tool_active (data))
     cycle_eraser_size (data, down);
@@ -15380,7 +15381,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), shape_item);
 	if (shapes[i].callback == G_CALLBACK (on_icon_bucket))
 	  gtk_widget_set_tooltip_text (shape_item,
-	    "Wheel: change fill color. Button 1 / middle mouse: click to change fill color; in Paper mode, hold and drag to pan after a brief 200 ms delay, including while hovering.");
+	    "Screen mode: wheel changes fill color. Paper mode: wheel scrolls pages. Button 1 / middle mouse: click to change fill color; in Paper mode, hold and drag to pan after a brief 200 ms delay, including while hovering.");
 	g_signal_connect (shape_item, "activate", shapes[i].callback, data);
 	gtk_widget_show (shape_item);
       }
