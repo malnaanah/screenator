@@ -30,6 +30,7 @@
 #include <math.h>
 #include <gdk/gdk.h>
 #include <glib/gstdio.h>
+#include <gio/gdesktopappinfo.h>
 #include <cairo-pdf.h>
 #ifdef HAVE_POPPLER_GLIB
 #include <poppler.h>
@@ -109,7 +110,8 @@ static void set_paper_pan_cursor (ScreenatorData *data);
 static void restore_paper_cursor (ScreenatorData *data);
 static void paper_update_hover_cursor (ScreenatorData *data);
 static void paper_refresh_active_cursor (ScreenatorData *data);
-static void paper_reactivate_selected_tool (ScreenatorData *data);
+static void reactivate_selected_tool (ScreenatorData *data);
+static gboolean dialog_restore_after_close (gpointer user_data);
 static void screenator_activate_cursor_state (ScreenatorData *data);
 static void paper_refresh_controls_hover (ScreenatorData *data);
 static void paper_controls_attach_hover (ScreenatorData *data,
@@ -118,6 +120,8 @@ static void paper_finish_temporary_eraser (ScreenatorData *data);
 static void screenator_timer_cancel (ScreenatorData *data);
 static void paper_top_bar_rebuild (ScreenatorData *data);
 static void paper_apply_size_settings (ScreenatorData *data);
+static GdkPixbuf *companion_app_icon_pixbuf (ScreenatorData *data,
+					      guint slot, gint size);
 
 /* ------------------------------------------------------------------
  * Dialogs and message boxes
@@ -234,6 +238,27 @@ make_dialog_popup (GtkWidget *dialog)
   g_signal_connect (dialog, "realize", G_CALLBACK (on_dialog_realize), NULL);
 }
 
+/* Screenator dialogs use normal managed windows so they keep title bars and
+ * can be moved.  Making each dialog transient for the active paper window
+ * keeps it stacked above the paper when the user clicks or raises the page. */
+static void
+make_dialog_transient (ScreenatorData *data, GtkWidget *dialog)
+{
+  GtkWidget *parent = data->top_dialog;
+
+  if (!parent && data->paper != SCREENATOR_PAPER_NONE)
+    parent = data->paper_win;
+  if (!parent)
+    parent = data->win;
+
+  if (parent && GTK_IS_WINDOW (parent))
+    gtk_window_set_transient_for (GTK_WINDOW (dialog), GTK_WINDOW (parent));
+  gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER_ON_PARENT);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_type_hint (GTK_WINDOW (dialog), GDK_WINDOW_TYPE_HINT_DIALOG);
+  dialog_install_border (dialog);
+}
+
 static void
 dialog_take_focus (ScreenatorData *data, GtkWidget *dialog)
 {
@@ -306,6 +331,19 @@ dialog_restore_focus (ScreenatorData *data)
 /* A fullscreen managed window can lose the window-manager "active" state
  * when an override-redirect dialog/popup takes focus, which makes some panels
  * appear.  Keep the paper above the panel while it is fullscreen. */
+static gboolean
+paper_companion_app_is_active (ScreenatorData *data)
+{
+  guint i;
+
+  if (!data)
+    return FALSE;
+  for (i = 0; i < G_N_ELEMENTS (data->companion_app_active); i++)
+    if (data->companion_app_active[i])
+      return TRUE;
+  return FALSE;
+}
+
 static void
 paper_update_panel_raise (ScreenatorData *data)
 {
@@ -315,9 +353,36 @@ paper_update_panel_raise (ScreenatorData *data)
     return;
 
   keep = data->paper_window_fullscreen && !data->paper_window_mode &&
-    (data->text_editor != NULL || data->top_dialog != NULL);
+    (data->text_editor != NULL || data->top_dialog != NULL ||
+     paper_companion_app_is_active (data));
 
   gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), keep);
+}
+
+void
+screenator_paper_companion_active (ScreenatorData *data, guint slot,
+				   gboolean active)
+{
+  if (!data || slot >= G_N_ELEMENTS (data->companion_app_active))
+    return;
+
+  data->companion_app_active[slot] = active;
+  if (!active)
+    {
+	data->companion_app_bound[slot] = FALSE;
+	data->companion_app_watch_attempts[slot] = 0;
+	data->companion_app_pids[slot] = 0;
+	if (data->companion_app_watch_id[slot])
+	{
+	  g_source_remove (data->companion_app_watch_id[slot]);
+	  data->companion_app_watch_id[slot] = 0;
+	}
+	screenator_clear_companion_transient (data, slot);
+    }
+  if (data->paper != SCREENATOR_PAPER_NONE && !data->top_dialog &&
+      !data->native_dialog_open)
+    update_paper_shortcuts (data, TRUE);
+  paper_update_panel_raise (data);
 }
 
 static void
@@ -336,7 +401,7 @@ paper_raise_over_panel (ScreenatorData *data)
 }
 
 /* Selecting a tool while the Paper window is behind another application must
- * make the paper usable immediately, with the tool bar still above it. */
+ * make the paper usable immediately, with the toolbar still above it. */
 static void
 paper_bring_to_front (ScreenatorData *data)
 {
@@ -356,54 +421,12 @@ paper_bring_to_front (ScreenatorData *data)
 
   paper_take_focus (data);
   raise_icon_window (data);
-}
-
-static gboolean
-on_dialog_map (GtkWidget *widget, GdkEvent *event, gpointer user_data)
-{
-  ScreenatorData *data = (ScreenatorData *) user_data;
-  GdkWindow *window = gtk_widget_get_window (widget);
-  gint width, height;
-
-  if (window)
-    {
-      GdkScreen *screen = gtk_widget_get_screen (widget);
-      GdkRectangle area;
-      gint monitor = 0;
-
-      /* No window manager places an override-redirect window: centre it at
-       * its real size on the primary monitor. */
-      gtk_window_get_size (GTK_WINDOW (widget), &width, &height);
-
-      if (screen)
-	{
-	  monitor = gdk_screen_get_primary_monitor (screen);
-	  if (monitor < 0)
-	    monitor = 0;
-	  gdk_screen_get_monitor_workarea (screen, monitor, &area);
-	}
-      else
-	{
-	  area.x = 0;
-	  area.y = 0;
-	  area.width = gdk_screen_width ();
-	  area.height = gdk_screen_height ();
-	}
-
-      gtk_window_move (GTK_WINDOW (widget),
-		       area.x + MAX (0, (area.width - width) / 2),
-		       area.y + MAX (0, (area.height - height) / 2));
-
-      /* The annotation window and the floating icon are raised above the
-       * other windows, so the dialog has to be raised again to stay in front
-       * of them. */
-      paper_raise_over_panel (data);
-      gdk_window_raise (window);
-    }
-
-  dialog_take_focus (data, widget);
-
-  return FALSE;
+  {
+    guint i;
+    for (i = 0; i < G_N_ELEMENTS (data->companion_app_active); i++)
+      if (data->companion_app_active[i])
+	screenator_raise_companion_above_paper (data, i);
+  }
 }
 
 static void
@@ -420,13 +443,20 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
   if (previous)
     return;
 
-  /* Do not raise the annotation window or the icon here: they were already
-   * in their stacking position, and raising the fullscreen annotation window
-   * again can put it over the desktop panel and its menus. */
+  /* Defer focus and input restoration until GTK has finished destroying the
+   * dialog. In Settings, this also lets the caller show Paper again first. */
+  g_idle_add (dialog_restore_after_close, data);
+}
 
-  /* Give the keyboard back to the paper or to the previous application. */
+static gboolean
+dialog_restore_after_close (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (data->top_dialog || data->native_dialog_open)
+    return G_SOURCE_REMOVE;
+
   dialog_restore_focus (data);
-
   if (data->paper != SCREENATOR_PAPER_NONE)
     update_paper_shortcuts (data, TRUE);
 
@@ -434,13 +464,14 @@ on_dialog_destroy (GtkWidget *widget, gpointer user_data)
     {
       data->dialog_released_grab = FALSE;
       paper_refresh_controls_hover (data);
-      acquire_grab (data, NULL);
-      if (data->paper != SCREENATOR_PAPER_NONE &&
-	  data->paper_hand_tool)
-	restore_paper_cursor (data);
+      reactivate_selected_tool (data);
     }
+  else
+    paper_refresh_active_cursor (data);
 
   paper_update_panel_raise (data);
+  schedule_tray_menu_refresh (data);
+  return G_SOURCE_REMOVE;
 }
 
 /* A managed dialog is placed by the window manager.  Do not move or resize it
@@ -468,11 +499,14 @@ show_dialog_common (ScreenatorData *data, GtkWidget *dialog, gboolean popup)
   paper_finish_temporary_eraser (data);
   screenator_paper_pan_end (data);
 
+  /* Normalize the selected tool before dropping the input grab. This keeps
+   * its cursor and device context ready to be restored after the dialog. */
+  if (!data->top_dialog)
+    reactivate_selected_tool (data);
+
   if (popup)
     {
-      /* The dialog lives in the same layer as the annotation window, so it
-       * can be raised above the drawings and the paper page. */
-      make_dialog_popup (dialog);
+      make_dialog_transient (data, dialog);
     }
   else
     {
@@ -500,7 +534,7 @@ show_dialog_common (ScreenatorData *data, GtkWidget *dialog, gboolean popup)
   data->top_dialog = dialog;
 
   g_signal_connect (dialog, "map-event",
-		    G_CALLBACK (popup ? on_dialog_map : on_managed_dialog_map),
+                    G_CALLBACK (on_managed_dialog_map),
 		    data);
   g_signal_connect (dialog, "destroy", G_CALLBACK (on_dialog_destroy), data);
 }
@@ -569,8 +603,12 @@ static gboolean on_icon_grab_broken (GtkWidget *widget,
 				     GdkEventGrabBroken *event,
 				     gpointer user_data);
 static gboolean event_source_is_stylus (const GdkEvent *event);
+static gboolean stylus_color_step_is_duplicate (ScreenatorDeviceData *devdata,
+							guint32 event_time,
+							gdouble x, gdouble y);
 static void apply_scroll_step (ScreenatorData *data, gboolean down,
 			       gboolean colors_only);
+static gboolean mouse_middle_click_apply_active_setting (gpointer user_data);
 static gboolean editable_handles_active (ScreenatorData *data);
 static void apply_stylus_step (ScreenatorData *data, gboolean down);
 static void paper_cycle_setting (ScreenatorData *data, gboolean down);
@@ -583,6 +621,7 @@ static gboolean show_math_dialog (ScreenatorData *data);
 static void quick_menu_cancel (ScreenatorData *data);
 static gboolean eraser_tool_active (ScreenatorData *data);
 static gboolean bucket_tool_active (ScreenatorData *data);
+static gboolean color_cycle_tool_active (ScreenatorData *data);
 static gboolean marker_tool_active (ScreenatorData *data);
 static void apply_icon_size (ScreenatorData *data, guint new_size);
 static void on_icon_timer (GtkMenuItem *menuitem, gpointer user_data);
@@ -673,6 +712,13 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "redo",          "Redo",                "redo.png" },
   { "screenshot",    "Screenshot",          "screenshot.png" },
   { "save",          "Save Paper",          "save.png" },
+  { "companion1",    "Companion App 1",     NULL },
+  { "companion2",    "Companion App 2",     NULL },
+  { "companion3",    "Companion App 3",     NULL },
+  { "companion4",    "Companion App 4",     NULL },
+  { "companion5",    "Companion App 5",     NULL },
+  { "companion6",    "Companion App 6",     NULL },
+  { "companion7",    "Companion App 7",     NULL },
   { "paper",         "Paper Type",          "paper.png" },
   { "insert_before", "Insert Page Before",  "add_before.png" },
   { "delete_page",   "Delete Page",         "delete-page.png" },
@@ -691,6 +737,146 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "hints",         "Show Hints",          "hint.png" },
   { "quit",          "Quit",                "quit.png" }
 };
+
+static gint
+toolbar_companion_slot (const gchar *id)
+{
+  guint slot;
+
+  for (slot = 0; slot < SCREENATOR_COMPANION_APP_COUNT; slot++)
+    {
+      gchar *item_id = g_strdup_printf ("companion%u", slot + 1);
+      gboolean matches = g_strcmp0 (id, item_id) == 0;
+      g_free (item_id);
+      if (matches)
+	return (gint) slot;
+    }
+
+  return -1;
+}
+
+static void
+companion_expand_command_path (gchar **argv)
+{
+  if (argv && argv[0] && g_str_has_prefix (argv[0], "~/"))
+    {
+      gchar *expanded = g_build_filename (g_get_home_dir (), argv[0] + 2, NULL);
+      g_free (argv[0]);
+      argv[0] = expanded;
+    }
+}
+
+static GAppInfo *
+companion_app_info (ScreenatorData *data, guint slot)
+{
+  GList *apps, *l;
+  GAppInfo *found = NULL;
+  gchar **argv = NULL;
+  gint argc = 0;
+  const gchar *command;
+  gchar *command_basename = NULL;
+
+  if (!data || slot >= SCREENATOR_COMPANION_APP_COUNT)
+    return NULL;
+
+  if (data->companion_app_ids[slot] &&
+      g_file_test (data->companion_app_ids[slot], G_FILE_TEST_IS_REGULAR))
+    return G_APP_INFO (g_desktop_app_info_new_from_filename (
+      data->companion_app_ids[slot]));
+
+  if (data->companion_app_ids[slot])
+    {
+      GDesktopAppInfo *desktop_app = g_desktop_app_info_new (
+	data->companion_app_ids[slot]);
+      if (desktop_app)
+	return G_APP_INFO (desktop_app);
+    }
+
+  command = data->companion_app_commands[slot];
+  if (!command || !*command ||
+      !g_shell_parse_argv (command, &argc, &argv, NULL) || argc == 0)
+    {
+      g_strfreev (argv);
+      return NULL;
+    }
+  companion_expand_command_path (argv);
+
+  if (g_str_has_suffix (argv[0], ".desktop") &&
+      g_file_test (argv[0], G_FILE_TEST_IS_REGULAR))
+    {
+      found = G_APP_INFO (g_desktop_app_info_new_from_filename (argv[0]));
+      g_strfreev (argv);
+      return found;
+    }
+  command_basename = g_path_get_basename (argv[0]);
+
+  apps = g_app_info_get_all ();
+  for (l = apps; l; l = l->next)
+    {
+      GAppInfo *app = l->data;
+      const gchar *id = g_app_info_get_id (app);
+      const gchar *executable = g_app_info_get_executable (app);
+      gchar *executable_basename = executable
+	? g_path_get_basename (executable) : NULL;
+
+	if ((data->companion_app_ids[slot] && id &&
+	     g_strcmp0 (id, data->companion_app_ids[slot]) == 0) ||
+	    (executable &&
+	     (g_strcmp0 (executable, argv[0]) == 0 ||
+	      g_strcmp0 (executable_basename, command_basename) == 0)))
+	{
+	  found = g_object_ref (app);
+	  g_free (executable_basename);
+	  break;
+	}
+	g_free (executable_basename);
+    }
+  g_list_free_full (apps, g_object_unref);
+  g_free (command_basename);
+  g_strfreev (argv);
+  return found;
+}
+
+static GdkPixbuf *
+companion_app_icon_pixbuf (ScreenatorData *data, guint slot, gint size)
+{
+  GAppInfo *app = companion_app_info (data, slot);
+  GIcon *icon = app ? g_app_info_get_icon (app) : NULL;
+  GtkIconTheme *theme = gtk_icon_theme_get_default ();
+  GtkIconInfo *info = icon
+    ? gtk_icon_theme_lookup_by_gicon (theme, icon, size,
+				      GTK_ICON_LOOKUP_FORCE_SIZE) : NULL;
+  GdkPixbuf *pixbuf = NULL;
+
+  if (!app)
+    return gtk_icon_theme_load_icon (theme, "dialog-warning", size,
+				     GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
+
+  if (!info)
+    info = gtk_icon_theme_lookup_icon (theme, "application-x-executable",
+                                      size, GTK_ICON_LOOKUP_FORCE_SIZE);
+  if (info)
+    {
+      GError *error = NULL;
+
+      pixbuf = gtk_icon_info_load_icon (info, &error);
+      if (error)
+	{
+	  g_debug ("Could not load companion application icon: %s",
+		   error->message);
+	  g_error_free (error);
+	}
+      gtk_icon_info_free (info);
+    }
+
+  if (!pixbuf)
+    pixbuf = gtk_icon_theme_load_icon (theme, "application-x-executable",
+				       size, GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
+
+  if (app)
+    g_object_unref (app);
+  return pixbuf;
+}
 
 
 /* Use bilinear filtering for screen-sized image surfaces.  Cairo's default
@@ -1416,7 +1602,7 @@ void on_monitors_changed ( GdkScreen *screen,
 
   update_window_shape (data);
 
-  /* Keep the floating icon and the paper tool bar in place after a
+  /* Keep the floating icon and the paper toolbar in place after a
    * resolution change. */
   screenator_position_icon (data);
   paper_top_bar_reposition (data);
@@ -4917,6 +5103,7 @@ screenator_activate_cursor_state (ScreenatorData *data)
   data->forced_context = NULL;
   data->pen_tool = 0;
   screenator_refresh_visibility_shortcut (data);
+  screenator_refresh_clear_shortcut (data);
 
   /* Drop cached per-device tool contexts as well, otherwise re-grabbing the
    * pointer could show the previous tool's cursor while Cursor is active. */
@@ -5093,12 +5280,38 @@ event_source_is_stylus (const GdkEvent *event)
 	 device_name_looks_like_stylus (device);
 }
 
+/* Some tablet drivers deliver a stylus side-button press through both the
+ * tablet device and its virtual pointer.  Ignore a repeated event at the same
+ * position within 8 ms, while preserving distinct rapid clicks. */
+static gboolean
+stylus_color_step_is_duplicate (ScreenatorDeviceData *devdata,
+				guint32 event_time,
+				gdouble x, gdouble y)
+{
+  guint32 elapsed;
+
+  if (!devdata || !event_time)
+    return FALSE;
+
+  elapsed = event_time - devdata->stylus_color_step_time;
+  if (devdata->stylus_color_step_time && elapsed <= 8 &&
+      fabs (x - devdata->stylus_color_step_x) < 1.0 &&
+      fabs (y - devdata->stylus_color_step_y) < 1.0)
+    return TRUE;
+
+  devdata->stylus_color_step_time = event_time;
+  devdata->stylus_color_step_x = x;
+  devdata->stylus_color_step_y = y;
+  return FALSE;
+}
+
 gboolean on_buttonpress (GtkWidget *win, 
 			 GdkEventButton *ev,
 			 gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   gdouble pressure = 1;
+  gboolean has_pressure = FALSE;
 
   /* A dialog is modal: clicks outside it must not paint on the annotation
    * window that is visible behind it. */
@@ -5141,23 +5354,39 @@ gboolean on_buttonpress (GtkWidget *win,
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
 
   if(data->debug)
-    g_printerr("DEBUG: Device '%s': Button %i Down State %d at (x,y)=(%.2f : %.2f)\n",
-	       gdk_device_get_name(ev->device), ev->button, ev->state, ev->x, ev->y);
-
-  /* In Screen mode the bucket changes colour on press. Paper mode waits
-   * for release to distinguish a short colour click from a held pan. */
-  if (ev->button == 2 && bucket_tool_active (data) &&
-      data->paper == SCREENATOR_PAPER_NONE)
     {
-      apply_scroll_step (data, TRUE, TRUE);
+      GdkDevice *source = gdk_event_get_source_device ((GdkEvent *) ev);
+	 has_pressure = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE,
+					    &pressure);
+      g_printerr("DEBUG: Device '%s' (source '%s'): Button %i Down State %d "
+		 "at (x,y)=(%.2f : %.2f), time=%u, pressure=%s%.3f\n",
+		 gdk_device_get_name(ev->device),
+		 source ? gdk_device_get_name (source) : "unknown",
+		 ev->button, ev->state, ev->x, ev->y, ev->time,
+		 has_pressure ? "" : "n/a ", pressure);
+    }
+
+  /* A short mouse middle click changes the active setting; in Paper mode a
+   * hold or drag pans after the existing 200 ms threshold. */
+  if (ev->button == 2 && !event_source_is_stylus ((GdkEvent *) ev) &&
+      data->paper == SCREENATOR_PAPER_NONE &&
+      (color_cycle_tool_active (data) || eraser_tool_active (data)) &&
+      !editable_handles_active (data) && !data->text_editor)
+    {
+      data->mouse_middle_color_pending = TRUE;
+      data->paper_pan_started = g_get_monotonic_time ();
       return TRUE;
     }
 
-  /* In Screen mode with Eraser selected, the secondary button changes
-   * its size instead of starting a temporary eraser gesture. */
+  /* The stylus first side button steps the Eraser size in Screen mode.
+   * The right mouse button and stylus second side button remain erase
+   * gestures, including when the pen is hovering. */
   if (data->paper == SCREENATOR_PAPER_NONE &&
-      eraser_tool_active (data) && ev->button == 3)
+      event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
+      eraser_tool_active (data))
     {
+      if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
+	return TRUE;
       apply_stylus_step (data, TRUE);
       return TRUE;
     }
@@ -5166,6 +5395,7 @@ gboolean on_buttonpress (GtkWidget *win,
    * Paper mode reserves it for panning, regardless of the selected tool. */
   if (data->paper == SCREENATOR_PAPER_NONE && ev->button == 2 &&
       !event_source_is_stylus ((GdkEvent *) ev) &&
+      !data->text_editor &&
       devdata && (devdata->cur_context == data->default_pen ||
 		  data->forced_context == data->default_pen))
     return TRUE;
@@ -5176,6 +5406,10 @@ gboolean on_buttonpress (GtkWidget *win,
     {
 	if (ev->button == 2)
 	  {
+	    if (event_source_is_stylus ((GdkEvent *) ev) &&
+		stylus_color_step_is_duplicate (devdata, ev->time,
+						ev->x, ev->y))
+	      return TRUE;
 	    apply_scroll_step (data, TRUE, TRUE);
 	    if (data->text_entry)
 	      gtk_widget_grab_focus (data->text_entry);
@@ -5211,10 +5445,39 @@ gboolean on_buttonpress (GtkWidget *win,
 	}
     }
 
+  /* Stylus side button 1 is normally mapped to middle click.  Some tablet
+   * drivers report it as button 1 while the pen is hovering, with zero
+   * pressure, so accept that form too. Keep the threshold at zero so the
+   * low-pressure start of a pen-tip stroke is not mistaken for this button. */
+  if (event_source_is_stylus ((GdkEvent *) ev) &&
+      (ev->button == 2 ||
+       (ev->button == 1 &&
+	gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE, &pressure) &&
+	pressure <= 0.0)) &&
+      data->paper == SCREENATOR_PAPER_NONE &&
+      color_cycle_tool_active (data) && !eraser_tool_active (data) &&
+      !editable_handles_active (data))
+    {
+	if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
+	  return TRUE;
+      if (data->debug)
+	g_printerr ("DEBUG: Stylus color step applied from button %u "
+		    "(pressure=%s%.3f)\n", ev->button,
+		    has_pressure ? "" : "n/a ", pressure);
+      apply_scroll_step (data, TRUE, TRUE);
+      return TRUE;
+    }
+
   /* While text or shape handles are active, the middle mouse button and
    * stylus side button 1 change colour without closing the edit. */
   if (ev->button == 2 && editable_handles_active (data))
     {
+	if (event_source_is_stylus ((GdkEvent *) ev) &&
+	    stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
+	  return TRUE;
+      if (data->debug && event_source_is_stylus ((GdkEvent *) ev))
+	g_printerr ("DEBUG: Stylus color step applied from button %u\n",
+		    ev->button);
       apply_scroll_step (data, TRUE, TRUE);
       return TRUE;
     }
@@ -5231,6 +5494,9 @@ gboolean on_buttonpress (GtkWidget *win,
 	  if (event_source_is_stylus ((GdkEvent *) ev) &&
 	      editable_handles_active (data))
 	    {
+	      if (stylus_color_step_is_duplicate (devdata, ev->time,
+						  ev->x, ev->y))
+		return TRUE;
 	      apply_stylus_step (data, TRUE);
 	      return TRUE;
 	    }
@@ -5302,6 +5568,8 @@ gboolean on_buttonpress (GtkWidget *win,
       data->paper == SCREENATOR_PAPER_NONE &&
       editable_handles_active (data))
     {
+	if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
+	  return TRUE;
       apply_stylus_step (data, TRUE);
       return TRUE;
     }
@@ -5397,13 +5665,22 @@ gboolean on_buttonpress (GtkWidget *win,
   if ((ev->button == 3 ||
        (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
         eraser_tool_active (data))) &&
-      devdata->cur_context != data->default_eraser)
+      ((data->paper == SCREENATOR_PAPER_NONE &&
+	!devdata->saved_context) ||
+       devdata->cur_context != data->default_eraser))
     {
-      /* Finish a translucent pen stroke first, so the eraser does not paint
-       * into the stroke's layer. */
-      stroke_finish (data, ev->device);
-      devdata->saved_context = devdata->cur_context;
-      devdata->cur_context = data->default_eraser;
+      if (devdata->cur_context != data->default_eraser)
+	{
+	  /* Finish a translucent pen stroke first, so the eraser does not paint
+	   * into the stroke's layer. */
+	  stroke_finish (data, ev->device);
+	  devdata->saved_context = devdata->cur_context;
+	  devdata->cur_context = data->default_eraser;
+	}
+      else if (data->paper == SCREENATOR_PAPER_NONE)
+	/* Mark the held gesture active so Screen-mode motion is not discarded.
+	 * The saved context is restored to this same Eraser on release. */
+	devdata->saved_context = devdata->cur_context;
 
       /* Show the eraser cursor at the selected eraser size. */
       set_device_cursor (data, ev->device, data->default_eraser);
@@ -5803,7 +6080,7 @@ gboolean on_motion (GtkWidget *win,
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
   gboolean stylus = event_source_is_stylus ((GdkEvent *) ev);
 
-  /* Leaving the tool bar can be reported only as a motion event over the
+  /* Leaving the toolbar can be reported only as a motion event over the
    * canvas.  Refresh the stale control-hover state here so the newly selected
    * tool cursor appears as soon as the pointer moves back to the drawing
    * area, without waiting for a click. */
@@ -6149,15 +6426,27 @@ gboolean on_buttonrelease (GtkWidget *win,
 
   if (data->paper_panning && ev->button == data->paper_pan_button)
     {
-      gboolean bucket = bucket_tool_active (data);
-      gboolean step = (eraser_tool_active (data) || bucket) &&
+      gboolean color_step = data->paper_pan_color_cycle &&
         !data->paper_pan_moved &&
-        g_get_monotonic_time () - data->paper_pan_started < 500000;
+        g_get_monotonic_time () - data->paper_pan_started < 200000;
+      gboolean step = eraser_tool_active (data) &&
+        !data->paper_pan_moved &&
+        g_get_monotonic_time () - data->paper_pan_started < 200000;
       screenator_paper_pan_end (data);
-      if (step && bucket)
+      if (color_step)
         apply_scroll_step (data, TRUE, TRUE);
       else if (step)
         apply_stylus_step (data, TRUE);
+      return TRUE;
+    }
+
+  if (ev->button == 2 && data->mouse_middle_color_pending)
+    {
+      gboolean click =
+	g_get_monotonic_time () - data->paper_pan_started < 200000;
+      data->mouse_middle_color_pending = FALSE;
+      if (click)
+	g_idle_add (mouse_middle_click_apply_active_setting, data);
       return TRUE;
     }
 
@@ -6809,6 +7098,7 @@ void on_about(GtkMenuItem *menuitem,
 
     /* About must be clickable while painting mode is active.  The drawings
      * stay visible; only the pointer grab is released for the dialog. */
+    screenator_activate_cursor_state (data);
     was_grabbed = screenator_any_grabbed (data);
     if (was_grabbed)
       release_grab (data, NULL);
@@ -6818,9 +7108,13 @@ void on_about(GtkMenuItem *menuitem,
     gtk_dialog_run (GTK_DIALOG (dialog));
     data->about_dialog = NULL;
     gtk_widget_destroy (dialog);
+    screenator_activate_cursor_state (data);
 
     if (was_grabbed)
-      acquire_grab (data, NULL);
+      {
+	data->dialog_released_grab = TRUE;
+	g_idle_add (dialog_restore_after_close, data);
+      }
 }
 
 /* ------------------------------------------------------------------
@@ -7033,28 +7327,28 @@ void update_icon_image (ScreenatorData *data)
 static const struct { const gchar *label; const gchar *name; } line_colors[] =
 {
   { "Red", "#FF0000" },
-  { "Green", "#00AA00" },
   { "Blue", "#0000FF" },
-  { "Yellow", "#FFFF00" },
+  { "Green", "#00AA00" },
   { "Black", "#000000" },
-  { "White", "#FFFFFF" },
   { "Orange", "#FF8000" },
-  { "Gray", "#808080" }
+  { "Yellow", "#FFFF00" },
+  { "Gray", "#808080" },
+  { "White", "#FFFFFF" }
 };
 
 /* Colours offered by the Shapes Fill Color menu; the mouse wheel cycles through
  * them while the Paint Bucket tool is active. */
 static const struct { const gchar *label; const gchar *name; } fill_colors[] =
 {
-  { "None", "none" },
-  { "Green", "#00AA00" },
-  { "Blue", "#0000FF" },
   { "Yellow", "#FFFF00" },
-  { "Black", "#000000" },
+  { "Gray", "#808080" },
   { "White", "#FFFFFF" },
   { "Red", "#FF0000" },
+  { "Blue", "#0000FF" },
+  { "Green", "#00AA00" },
+  { "Black", "#000000" },
   { "Orange", "#FF8000" },
-  { "Gray", "#808080" }
+  { "None", "none" }
 };
 
 /* Recolour the frames that are still being edited (a text that was just
@@ -7185,6 +7479,8 @@ apply_line_color (ScreenatorData *data, const gchar *name)
   data->pen_color.alpha = 1.0;
 
   apply_pen_settings (data);
+  screenator_update_tool_cursors (data);
+  paper_refresh_active_cursor (data);
   update_settings_indicator (data);
   update_active_frame_colors (data);
   invalidate_annotation_window (data);
@@ -7214,6 +7510,8 @@ apply_shape_fill (ScreenatorData *data, const gchar *name)
       data->shape_fill_enabled = TRUE;
     }
 
+  screenator_update_tool_cursors (data);
+  paper_refresh_active_cursor (data);
   update_settings_indicator (data);
   invalidate_annotation_window (data);
   paper_top_bar_update_images (data);
@@ -7422,10 +7720,10 @@ on_icon_custom_color (GtkMenuItem *menuitem, gpointer user_data)
 static guint
 color_table_index (const GdkRGBA *current, gboolean include_none)
 {
-  guint i, count = include_none ? G_N_ELEMENTS (fill_colors)
+  guint i, count = include_none ? G_N_ELEMENTS (fill_colors) - 1
 				: G_N_ELEMENTS (line_colors);
 
-  for (i = include_none ? 1 : 0; i < count; i++)
+  for (i = 0; i < count; i++)
     {
       const gchar *name = include_none ? fill_colors[i].name
 				       : line_colors[i].name;
@@ -7472,16 +7770,17 @@ cycle_line_color (ScreenatorData *data, gboolean down)
 static void
 cycle_shape_fill_color (ScreenatorData *data, gboolean down)
 {
-  guint presets = G_N_ELEMENTS (fill_colors);
-  guint count = presets + 1;   /* the last entry is the custom colour */
+  guint presets = G_N_ELEMENTS (fill_colors) - 1;
+  guint none = presets + 1;
+  guint count = none + 1;
   guint current;
 
   if (!data->shape_fill_enabled)
-    current = 0;
+    current = none;
   else
     current = color_table_index (&data->shape_fill_color, TRUE);
 
-  if (current > presets)
+  if (current > none)
     current = presets;
 
   if (down)
@@ -7496,6 +7795,8 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
       apply_shape_fill (data, hex);
       g_free (hex);
     }
+  else if (current == none)
+    apply_shape_fill (data, "none");
   else
     apply_shape_fill (data, fill_colors[current].name);
 }
@@ -7506,6 +7807,16 @@ bucket_tool_active (ScreenatorData *data)
   return data->forced_context &&
     data->forced_context->type == SCREENATOR_SHAPE &&
     data->shape_type == SCREENATOR_SHAPE_BUCKET;
+}
+
+static gboolean
+color_cycle_tool_active (ScreenatorData *data)
+{
+  ScreenatorPaintContext *context = data->forced_context;
+
+  return context && (context->type == SCREENATOR_PEN ||
+		     context->type == SCREENATOR_TEXT ||
+		     context->type == SCREENATOR_SHAPE);
 }
 
 /* TRUE while the Eraser tool is the selected tool. */
@@ -7569,6 +7880,18 @@ apply_scroll_step (ScreenatorData *data, gboolean down, gboolean colors_only)
     cycle_shape_fill_color (data, down);
   else
     cycle_line_color (data, down);
+}
+
+static gboolean
+mouse_middle_click_apply_active_setting (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (eraser_tool_active (data))
+    cycle_eraser_size (data, TRUE);
+  else
+    apply_scroll_step (data, TRUE, TRUE);
+  return G_SOURCE_REMOVE;
 }
 
 /* Step through the Line Thickness entries, wrapping at both ends. */
@@ -7704,6 +8027,9 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     apply_scroll_step (data, down, TRUE);
   else if (data->paper == SCREENATOR_PAPER_NONE && eraser_tool_active (data))
     cycle_eraser_size (data, down);
+  else if (data->paper == SCREENATOR_PAPER_NONE &&
+           color_cycle_tool_active (data))
+    apply_scroll_step (data, down, TRUE);
   else if (data->paper != SCREENATOR_PAPER_NONE)
     {
       if (editable_handles_active (data))
@@ -9154,7 +9480,7 @@ paper_pdf_prepare_active (ScreenatorData *data, ScreenatorPaperDocument *doc)
   paper_ensure_background (data, doc, index, page);
   paper_load_continuous_view (data, doc);
   paper_top_bar_update_active_tool (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
 }
 
 static void
@@ -9258,7 +9584,7 @@ paper_pdf_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
   paper_load_continuous_view (data, doc);
   paper_top_bar_update_active_tool (data);
   paper_repaint (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -10269,9 +10595,6 @@ paper_refresh_active_cursor (ScreenatorData *data)
   paper_update_hover_cursor (data);
 }
 
-/* A page or PDF switch can leave the toolbar icon selected while the device
- * context or grab is stale.  Reapply the selected tool before the next event
- * so the cursor and the actual drawing tool agree. */
 /* Ellipse and rounded-rectangle creation become a circle/square while Ctrl
  * is held.  The larger pointer distance wins, so the shape keeps following
  * the pointer instead of jumping to the smaller axis. */
@@ -10298,15 +10621,17 @@ shape_uses_ctrl_square (ScreenatorShapeType type)
 	 type == SCREENATOR_SHAPE_ROUNDED_RECTANGLE;
 }
 
+/* Reapply the selected tool after a page switch or dialog close, where the
+ * cached device context or input grab may be stale. */
 static void
-paper_reactivate_selected_tool (ScreenatorData *data)
+reactivate_selected_tool (ScreenatorData *data)
 {
   ScreenatorPaintContext *context;
   GHashTableIter it;
   gpointer value;
 
-  if (!data || data->paper == SCREENATOR_PAPER_NONE || data->timer_active ||
-      data->text_editor || data->quick_menu || data->top_dialog ||
+  if (!data || data->timer_active || data->text_editor || data->quick_menu ||
+      data->top_dialog ||
       data->native_dialog_open)
     return;
 
@@ -10476,6 +10801,8 @@ screenator_paper_pan_start (ScreenatorData *data, guint button, gint x, gint y)
   data->paper_pan_y = y;
   data->paper_pan_started = g_get_monotonic_time ();
   data->paper_pan_moved = FALSE;
+  data->paper_pan_color_cycle = color_cycle_tool_active (data) &&
+    !editable_handles_active (data) && !data->paper_hand_tool;
   set_paper_pan_cursor (data);
 }
 
@@ -10491,7 +10818,7 @@ screenator_paper_pan_motion (ScreenatorData *data, gint x, gint y)
 
   /* A brief delay and movement threshold distinguish size/colour clicks
    * from drags without the old half-second pause before panning. */
-  if ((eraser_tool_active (data) || bucket_tool_active (data)) &&
+  if ((eraser_tool_active (data) || data->paper_pan_color_cycle) &&
       !data->paper_pan_moved &&
       (g_get_monotonic_time () - data->paper_pan_started < 200000 ||
        (ABS (x - data->paper_pan_x) < 4 &&
@@ -10525,6 +10852,7 @@ screenator_paper_pan_end (ScreenatorData *data)
 
   data->paper_panning = FALSE;
   data->paper_pan_button = 0;
+  data->paper_pan_color_cycle = FALSE;
 
   if (was_panning)
     restore_paper_cursor (data);
@@ -11197,7 +11525,7 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
   reset_undo_history (data);
   paper_refresh_active_cursor (data);
   paper_repaint (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
   paper_bring_to_front (data);
   schedule_tray_menu_refresh (data);
 }
@@ -11212,6 +11540,13 @@ on_paper_window_focus_in (GtkWidget *widget, GdkEventFocus *event,
   (void) event;
 
   data->paper_window_focused = TRUE;
+  {
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (data->companion_app_active); i++)
+      if (data->companion_app_active[i])
+	screenator_raise_companion_above_paper (data, i);
+  }
   if (screenator_paper_local_input (data))
     screenator_paper_shortcuts_focus (data, TRUE);
 
@@ -11242,10 +11577,13 @@ on_paper_window_delete (GtkWidget *widget, GdkEvent *event, gpointer user_data)
   (void) widget;
   (void) event;
 
-  /* Alt+F4 and the Paper window's close button must quit Screenator, not
-   * merely leave Paper mode.  Ctrl+Q remains the way to return to Screen
-   * mode.  Returning TRUE keeps the window alive if the user cancels the
-   * quit/save dialog. */
+  /* Keep Paper alive while a companion is active.  Some window managers
+   * deliver Alt+F4 to the paper after activating an always-on-top companion. */
+  if (paper_companion_app_is_active (data))
+    return TRUE;
+
+  /* Alt+F4 and the Paper window's close button quit Screenator; Ctrl+Q
+   * remains the way to return to Screen mode. */
   screenator_request_quit (data);
   return TRUE;
 }
@@ -11534,6 +11872,7 @@ screenator_enter_paper_drawing (ScreenatorData *data,
     {
       text_editor_finish (data);
       screenator_exit_tool (data);
+      screenator_activate_cursor_state (data);
     }
 
   if (paper == SCREENATOR_PAPER_NONE)
@@ -11700,6 +12039,7 @@ screenator_exit_paper_drawing (ScreenatorData *data)
   /* A mode change always leaves Cursor selected. */
   text_editor_finish (data);
   screenator_exit_tool (data);
+  screenator_activate_cursor_state (data);
 
   paper_pdf_remember_current (data);
   screenator_timer_cancel (data);
@@ -11715,6 +12055,12 @@ screenator_exit_paper_drawing (ScreenatorData *data)
 
   data->painted = data->screen_annotations_painted;
   data->paper = SCREENATOR_PAPER_NONE;
+  {
+    guint i;
+
+    for (i = 0; i < G_N_ELEMENTS (data->companion_app_active); i++)
+      screenator_paper_companion_active (data, i, FALSE);
+  }
   paper_background_cache_free (data);
   data->hide_drawings = FALSE;
   data->paper_hand_tool = FALSE;
@@ -11724,8 +12070,7 @@ screenator_exit_paper_drawing (ScreenatorData *data)
   reset_undo_history (data);
   screenator_use_paper_window (data, FALSE);
 
-  /* The toolbar still shows the Paper tool after returning to Screen mode.
-   * Activate that tool again so the icon and the actual input agree. */
+  /* Cursor mode has no forced context or drawing grab. */
   if (data->forced_context && !screenator_any_grabbed (data))
     acquire_grab (data, NULL);
 
@@ -11915,7 +12260,7 @@ paper_load_pdf_file (ScreenatorData *data, const gchar *path)
     paper_switch_to (data, SCREENATOR_PAPER_PDF);
 
   paper_refresh_active_cursor (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
@@ -12435,7 +12780,7 @@ screenator_paper_restore_undo_state (ScreenatorData *data,
 
   paper_background_invalidate (data);
   paper_top_bar_update_active_tool (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -12465,7 +12810,7 @@ paper_show_page (ScreenatorData *data, ScreenatorPaperDocument *doc,
 
   paper_load_page (data, page);
   paper_repaint (data);
-  paper_reactivate_selected_tool (data);
+  reactivate_selected_tool (data);
   schedule_tray_menu_refresh (data);
 }
 
@@ -12916,6 +13261,7 @@ typedef struct
   GtkWidget      *icon_size_combo;
   GtkWidget      *icon_position_radio[4];
   GtkWidget      *timer_delay_combo;
+  GtkWidget      *cursor_dot_size_spin;
 
   GtkWidget      *continuous_check;
   GtkWidget      *toolbar_size_spin;
@@ -12930,39 +13276,43 @@ typedef struct
   GtkWidget      *width_spin;
   GtkWidget      *height_spin;
   GtkWidget      *shortcut_entries[SCREENATOR_SHORTCUT_COUNT];
+  GtkWidget      *companion_app_buttons[SCREENATOR_COMPANION_APP_COUNT];
+  GtkWidget      *companion_app_commands[SCREENATOR_COMPANION_APP_COUNT];
 
   PaperSettingsWidgets paper_widgets;
   guint            apply_idle_id;
-  gboolean         shortcuts_pending;
+  guint            live_apply_flags;
 } SettingsDialog;
 
+enum
+{
+  SETTINGS_LIVE_TOOLBAR_LAYOUT = 1 << 0,
+  SETTINGS_LIVE_TOOLBAR_ITEMS = 1 << 1,
+  SETTINGS_LIVE_COMPANION_APP = 1 << 2,
+  SETTINGS_LIVE_ICON_SIZE = 1 << 3,
+  SETTINGS_LIVE_ICON_INDICATOR = 1 << 4,
+  SETTINGS_LIVE_ICON_POSITION = 1 << 5
+};
+
 static void settings_apply_current (SettingsDialog *sd);
+static void settings_apply_live (SettingsDialog *sd, guint flags);
 
 static gboolean
 settings_apply_idle (gpointer user_data)
 {
   SettingsDialog *sd = user_data;
+  guint flags = sd->live_apply_flags;
 
   sd->apply_idle_id = 0;
-  settings_apply_current (sd);
+  sd->live_apply_flags = 0;
+  settings_apply_live (sd, flags);
   return G_SOURCE_REMOVE;
 }
 
-static gboolean
-settings_is_shortcut_entry (SettingsDialog *sd, GtkWidget *widget)
-{
-  guint i;
-
-  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
-    if (sd->shortcut_entries[i] == widget)
-      return TRUE;
-
-  return FALSE;
-}
-
 static void
-settings_schedule_apply (SettingsDialog *sd)
+settings_schedule_apply (SettingsDialog *sd, guint flags)
 {
+  sd->live_apply_flags |= flags;
   if (!sd->apply_idle_id)
     sd->apply_idle_id = g_idle_add (settings_apply_idle, sd);
 }
@@ -12971,23 +13321,34 @@ static void
 settings_control_changed (GtkWidget *widget, gpointer user_data)
 {
   SettingsDialog *sd = user_data;
+  guint flags = 0;
+  guint i;
 
-  if (settings_is_shortcut_entry (sd, widget))
-    sd->shortcuts_pending = TRUE;
-  settings_schedule_apply (sd);
-}
+  if (widget == sd->toolbar_size_spin ||
+      widget == sd->toolbar_direction_combo)
+    flags = SETTINGS_LIVE_TOOLBAR_LAYOUT;
+  else if (widget == sd->icon_size_combo)
+    flags = SETTINGS_LIVE_ICON_SIZE;
+  else if (widget == sd->indicator_check)
+    flags = SETTINGS_LIVE_ICON_INDICATOR;
+  else
+    for (i = 0; i < G_N_ELEMENTS (sd->icon_position_radio); i++)
+      if (widget == sd->icon_position_radio[i])
+	{
+	  flags = SETTINGS_LIVE_ICON_POSITION;
+	  break;
+	}
 
-static gboolean
-settings_control_focus_out (GtkWidget *widget, GdkEventFocus *event,
-                            gpointer user_data)
-{
-  SettingsDialog *sd = user_data;
+  if (!flags)
+    for (i = 0; i < SCREENATOR_COMPANION_APP_COUNT; i++)
+      if (widget == sd->companion_app_commands[i])
+	{
+	  flags = SETTINGS_LIVE_COMPANION_APP;
+	  break;
+	}
 
-  (void) event;
-  if (settings_is_shortcut_entry (sd, widget))
-    sd->shortcuts_pending = TRUE;
-  settings_schedule_apply (sd);
-  return FALSE;
+  if (flags)
+    settings_schedule_apply (sd, flags);
 }
 
 static void
@@ -13010,8 +13371,11 @@ settings_reset (GtkButton *button, gpointer user_data)
       g_source_remove (sd->apply_idle_id);
       sd->apply_idle_id = 0;
     }
+  sd->live_apply_flags = 0;
   sd->reset_clicked = TRUE;
+  sd->data->paper_toolbar_settings_update = TRUE;
   on_icon_reset_settings (NULL, sd->data);
+  sd->data->paper_toolbar_settings_update = FALSE;
   gtk_dialog_response (GTK_DIALOG (sd->dialog), GTK_RESPONSE_APPLY);
 }
 
@@ -13065,8 +13429,11 @@ toolbar_settings_icon (ScreenatorData *data, const ToolbarItemInfo *info)
 {
   const gint size = 24;
   GdkPixbuf *pixbuf = NULL;
+  gint companion_slot = toolbar_companion_slot (info->id);
 
-  if (g_strcmp0 (info->id, "eraser_size") == 0)
+  if (companion_slot >= 0)
+    pixbuf = companion_app_icon_pixbuf (data, (guint) companion_slot, size);
+  else if (g_strcmp0 (info->id, "eraser_size") == 0)
     pixbuf = paper_eraser_size_sample (MAX (1, (guint) data->eraser_width),
 				       size);
   else if (g_strcmp0 (info->id, "line_color") == 0)
@@ -13218,7 +13585,42 @@ toolbar_full_order (ScreenatorData *data)
       added[i] = TRUE;
     }
 
-  return g_string_free (out, FALSE);
+  {
+    gchar *full_order = g_string_free (out, FALSE);
+    gchar **ordered_tokens = g_strsplit (full_order, ",", -1);
+    GString *ordered = g_string_new (NULL);
+    guint companion_slot;
+
+    /* Keep the settings list aligned with the toolbar: companion launchers
+     * are grouped at the end and Quit remains the final row. */
+    for (t = 0; ordered_tokens[t]; t++)
+      {
+	const gchar *id = g_strstrip (ordered_tokens[t]);
+
+	if (!*id || g_strcmp0 (id, "quit") == 0 ||
+	    toolbar_companion_slot (id) >= 0)
+	  continue;
+	if (ordered->len > 0)
+	  g_string_append_c (ordered, ',');
+	g_string_append (ordered, id);
+      }
+    for (companion_slot = 0;
+	 companion_slot < SCREENATOR_COMPANION_APP_COUNT; companion_slot++)
+      {
+	gchar *id = g_strdup_printf ("companion%u", companion_slot + 1);
+	if (ordered->len > 0)
+	  g_string_append_c (ordered, ',');
+	g_string_append (ordered, id);
+	g_free (id);
+      }
+    if (ordered->len > 0)
+      g_string_append_c (ordered, ',');
+    g_string_append (ordered, "quit");
+
+    g_strfreev (ordered_tokens);
+    g_free (full_order);
+    return g_string_free (ordered, FALSE);
+  }
 }
 
 static GtkWidget *
@@ -13240,7 +13642,7 @@ build_toolbar_settings_page (SettingsDialog *sd)
     GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
 
     gtk_box_pack_start (GTK_BOX (row),
-			gtk_label_new ("Tool bar icon size (px)"),
+			gtk_label_new ("Toolbar icon size (px)"),
 			FALSE, FALSE, 0);
     sd->toolbar_size_spin = gtk_spin_button_new_with_range (16, 64, 1);
     gtk_spin_button_set_value (GTK_SPIN_BUTTON (sd->toolbar_size_spin),
@@ -13251,7 +13653,7 @@ build_toolbar_settings_page (SettingsDialog *sd)
 
     row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_box_pack_start (GTK_BOX (row),
-			gtk_label_new ("Tool bar direction"),
+			gtk_label_new ("Toolbar direction"),
 			FALSE, FALSE, 0);
     sd->toolbar_direction_combo = gtk_combo_box_text_new ();
     gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (
@@ -13276,8 +13678,8 @@ build_toolbar_settings_page (SettingsDialog *sd)
   gtk_box_pack_start (GTK_BOX (box), sd->toolbar_lock_check,
                       FALSE, FALSE, 0);
 
-  note = gtk_label_new ("Each row shows its tool bar icon. Checked items "
-			"appear on the tool bar; drag the ☰ handle of a row to "
+  note = gtk_label_new ("Each row shows its toolbar icon. Checked items "
+			"appear on the toolbar; drag the ☰ handle of a row to "
 			"change its position. Hidden items keep their place in "
 			"the list.");
   gtk_label_set_xalign (GTK_LABEL (note), 0.0);
@@ -13499,16 +13901,25 @@ build_general_settings_page (SettingsDialog *sd)
   sd->timer_delay_combo = combo;
   gtk_grid_attach (GTK_GRID (grid), combo, 1, 3, 1, 1);
 
-  label = gtk_label_new ("Text font");
+  label = gtk_label_new ("Cursor dot size (pixels)");
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
   gtk_grid_attach (GTK_GRID (grid), label, 0, 4, 1, 1);
+
+  sd->cursor_dot_size_spin = gtk_spin_button_new_with_range (1, 24, 1);
+  gtk_spin_button_set_value (GTK_SPIN_BUTTON (sd->cursor_dot_size_spin),
+			     data->cursor_dot_size);
+  gtk_grid_attach (GTK_GRID (grid), sd->cursor_dot_size_spin, 1, 4, 1, 1);
+
+  label = gtk_label_new ("Text font");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 5, 1, 1);
 
   row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   button = gtk_button_new_with_label ("Change Font...");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (settings_change_font), sd);
   gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
-  gtk_grid_attach (GTK_GRID (grid), row, 1, 4, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), row, 1, 5, 1, 1);
 
 
   gtk_box_pack_start (GTK_BOX (box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
@@ -13688,6 +14099,339 @@ build_shortcut_settings_page (SettingsDialog *sd)
   return box;
 }
 
+enum
+{
+  COMPANION_APP_ICON,
+  COMPANION_APP_NAME,
+  COMPANION_APP_ID,
+  COMPANION_APP_N_COLUMNS
+};
+
+static gint
+companion_app_compare (gconstpointer a, gconstpointer b)
+{
+  GAppInfo *app_a = (GAppInfo *) a;
+  GAppInfo *app_b = (GAppInfo *) b;
+  return g_utf8_collate (g_app_info_get_name (app_a),
+                         g_app_info_get_name (app_b));
+}
+
+static GList *
+companion_app_list (void)
+{
+  GList *all_apps = g_app_info_get_all ();
+  GList *apps = NULL, *l;
+
+  for (l = all_apps; l; l = l->next)
+    {
+      GAppInfo *app = l->data;
+      if (g_app_info_should_show (app) && g_app_info_get_id (app))
+        apps = g_list_prepend (apps, app);
+      else
+        g_object_unref (app);
+    }
+  g_list_free (all_apps);
+  return g_list_sort (apps, companion_app_compare);
+}
+
+static GdkPixbuf *
+companion_app_info_icon_pixbuf (GAppInfo *app, gint size)
+{
+  GtkIconTheme *theme = gtk_icon_theme_get_default ();
+  GIcon *icon = app ? g_app_info_get_icon (app) : NULL;
+  GtkIconInfo *info = icon
+    ? gtk_icon_theme_lookup_by_gicon (theme, icon, size,
+                                      GTK_ICON_LOOKUP_FORCE_SIZE) : NULL;
+  GdkPixbuf *pixbuf = NULL;
+
+  if (info)
+    {
+      pixbuf = gtk_icon_info_load_icon (info, NULL);
+      g_object_unref (info);
+    }
+  if (!pixbuf)
+    pixbuf = gtk_icon_theme_load_icon (theme, "application-x-executable",
+                                       size, GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
+  if (!pixbuf)
+    pixbuf = gtk_icon_theme_load_icon (theme, "application-x-desktop",
+                                       size, GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
+  return pixbuf;
+}
+
+static gchar *
+companion_choose_app_gtk (GtkWindow *parent, GList *apps,
+                          const gchar *selected_id)
+{
+  GtkWidget *dialog, *scroll, *view;
+  GtkListStore *store;
+  GtkTreeViewColumn *column;
+  GtkCellRenderer *renderer;
+  GtkTreeSelection *selection;
+  GtkTreeIter iter;
+  GtkWidget *content;
+  gchar *chosen = NULL;
+  GtkTreePath *selected_path = NULL;
+  GList *l;
+
+  dialog = gtk_dialog_new_with_buttons (
+    "Choose a companion application", parent, GTK_DIALOG_MODAL,
+    "_Cancel", GTK_RESPONSE_CANCEL, "_Select", GTK_RESPONSE_ACCEPT, NULL);
+  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
+  gtk_window_set_default_size (GTK_WINDOW (dialog), 520, 480);
+  store = gtk_list_store_new (COMPANION_APP_N_COLUMNS, GDK_TYPE_PIXBUF,
+                              G_TYPE_STRING, G_TYPE_STRING);
+  for (l = apps; l; l = l->next)
+    {
+      GAppInfo *app = l->data;
+      const gchar *id = g_app_info_get_id (app);
+      GdkPixbuf *icon = companion_app_info_icon_pixbuf (app, 32);
+      gtk_list_store_append (store, &iter);
+      gtk_list_store_set (store, &iter,
+                          COMPANION_APP_ICON, icon,
+                          COMPANION_APP_NAME, g_app_info_get_name (app),
+                          COMPANION_APP_ID, id, -1);
+      if (selected_id && g_strcmp0 (selected_id, id) == 0)
+	selected_path = gtk_tree_model_get_path (GTK_TREE_MODEL (store), &iter);
+      if (icon)
+        g_object_unref (icon);
+    }
+
+  view = gtk_tree_view_new_with_model (GTK_TREE_MODEL (store));
+  gtk_tree_view_set_headers_visible (GTK_TREE_VIEW (view), FALSE);
+  gtk_tree_view_set_search_column (GTK_TREE_VIEW (view), COMPANION_APP_NAME);
+  gtk_tree_view_set_enable_search (GTK_TREE_VIEW (view), TRUE);
+  if (selected_path)
+    {
+      gtk_tree_view_set_cursor (GTK_TREE_VIEW (view), selected_path, NULL,
+				FALSE);
+      gtk_tree_path_free (selected_path);
+    }
+  renderer = gtk_cell_renderer_pixbuf_new ();
+  column = gtk_tree_view_column_new_with_attributes (
+    "Application", renderer, "pixbuf", COMPANION_APP_ICON, NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+  renderer = gtk_cell_renderer_text_new ();
+  column = gtk_tree_view_column_new_with_attributes (
+    "Application", renderer, "text", COMPANION_APP_NAME, NULL);
+  gtk_tree_view_append_column (GTK_TREE_VIEW (view), column);
+  selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (view));
+  gtk_tree_selection_set_mode (selection, GTK_SELECTION_SINGLE);
+
+  scroll = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (scroll),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_container_add (GTK_CONTAINER (scroll), view);
+  gtk_widget_set_size_request (scroll, 500, 400);
+  content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
+  gtk_container_set_border_width (GTK_CONTAINER (content), 8);
+  gtk_box_pack_start (GTK_BOX (content), scroll, TRUE, TRUE, 0);
+  gtk_widget_show_all (dialog);
+
+  if (gtk_dialog_run (GTK_DIALOG (dialog)) == GTK_RESPONSE_ACCEPT &&
+      gtk_tree_selection_get_selected (selection, NULL, &iter))
+    gtk_tree_model_get (GTK_TREE_MODEL (store), &iter,
+                        COMPANION_APP_ID, &chosen, -1);
+
+  gtk_widget_destroy (dialog);
+  g_object_unref (store);
+  return chosen;
+}
+
+static gchar *
+companion_choose_app_kde (GtkWindow *parent, GList *apps)
+{
+  GdkWindow *parent_window = parent ? gtk_widget_get_window (
+    GTK_WIDGET (parent)) : NULL;
+  GPtrArray *args = g_ptr_array_new_with_free_func (g_free);
+  GList *l;
+  gchar *kdialog = g_find_program_in_path ("kdialog");
+  gchar *parent_id = NULL, *stdout_text = NULL, *chosen = NULL;
+  gint exit_status = 0;
+
+  if (!kdialog)
+    {
+      g_ptr_array_unref (args);
+      return NULL;
+    }
+
+  g_ptr_array_add (args, kdialog);
+#ifdef GDK_WINDOWING_X11
+  if (parent_window && GDK_IS_X11_WINDOW (parent_window))
+    {
+      parent_id = g_strdup_printf ("%lu", (gulong) GDK_WINDOW_XID (
+                                    parent_window));
+      g_ptr_array_add (args, g_strdup ("--attach"));
+      g_ptr_array_add (args, parent_id);
+      parent_id = NULL;
+    }
+#endif
+  g_ptr_array_add (args, g_strdup ("--title"));
+  g_ptr_array_add (args, g_strdup ("Choose a companion application"));
+  g_ptr_array_add (args, g_strdup ("--menu"));
+  g_ptr_array_add (args, g_strdup ("Select an installed application:"));
+  for (l = apps; l; l = l->next)
+    {
+      GAppInfo *app = l->data;
+      g_ptr_array_add (args, g_strdup (g_app_info_get_id (app)));
+      g_ptr_array_add (args, g_strdup (g_app_info_get_name (app)));
+    }
+  g_ptr_array_add (args, NULL);
+
+  if (g_spawn_sync (NULL, (gchar **) args->pdata, NULL, G_SPAWN_SEARCH_PATH,
+                    NULL, NULL, &stdout_text, NULL, &exit_status, NULL) &&
+      exit_status == 0 && stdout_text && *stdout_text)
+    chosen = g_strdup (g_strstrip (stdout_text));
+
+  g_free (stdout_text);
+  g_free (parent_id);
+  g_ptr_array_unref (args);
+  return chosen;
+}
+
+static gchar *
+companion_choose_app_id (GtkWindow *parent, const gchar *selected_id)
+{
+  GList *apps = companion_app_list ();
+  const gchar *desktop = g_getenv ("XDG_CURRENT_DESKTOP");
+  gchar *desktop_upper = g_ascii_strup (desktop ? desktop : "", -1);
+  gchar *kdialog = g_find_program_in_path ("kdialog");
+  gchar *chosen;
+
+  if (strstr (desktop_upper, "KDE") && kdialog)
+    chosen = companion_choose_app_kde (parent, apps);
+  else
+    chosen = companion_choose_app_gtk (parent, apps, selected_id);
+
+  g_free (kdialog);
+  g_free (desktop_upper);
+  g_list_free_full (apps, g_object_unref);
+  return chosen;
+}
+
+static void
+companion_app_choose_clicked (GtkButton *button, gpointer user_data)
+{
+  GtkWidget *command_entry = user_data;
+  GtkWidget *parent = gtk_widget_get_toplevel (GTK_WIDGET (button));
+  SettingsDialog *sd = g_object_get_data (G_OBJECT (command_entry),
+						 "settings-dialog");
+  ScreenatorData *data = g_object_get_data (G_OBJECT (command_entry),
+						      "screenator-data");
+  const gchar *current_id = g_object_get_data (G_OBJECT (command_entry),
+					       "companion-app-id");
+  gchar *app_id;
+
+  /* Let the modal chooser and its window manager transient appear above the
+   * fullscreen Paper window. Restore Paper's normal stacking after it closes. */
+  if (data && data->paper_win)
+    gtk_window_set_keep_above (GTK_WINDOW (data->paper_win), FALSE);
+  app_id = companion_choose_app_id (GTK_WINDOW (parent), current_id);
+  if (data)
+    paper_update_panel_raise (data);
+
+  if (app_id)
+    {
+      GDesktopAppInfo *app = g_desktop_app_info_new (app_id);
+      if (app)
+	{
+	  g_object_set_data_full (G_OBJECT (command_entry), "companion-app-id",
+				  g_strdup (app_id), g_free);
+	  /* Selecting an installed app must stop an older custom command from
+	   * taking precedence when the companion is launched. */
+	  gtk_entry_set_text (GTK_ENTRY (command_entry), "");
+	  gtk_button_set_label (button, g_app_info_get_name (G_APP_INFO (app)));
+	  if (sd)
+	    settings_schedule_apply (sd, SETTINGS_LIVE_COMPANION_APP);
+	  g_object_unref (app);
+	}
+      else
+	g_warning ("Could not load desktop application: %s", app_id);
+      g_free (app_id);
+    }
+}
+
+static void
+companion_app_clear_clicked (GtkButton *button, gpointer user_data)
+{
+  GtkWidget *entry = user_data;
+  SettingsDialog *sd = g_object_get_data (G_OBJECT (entry),
+						 "settings-dialog");
+  g_object_set_data_full (G_OBJECT (entry), "companion-app-id", NULL, NULL);
+  gtk_entry_set_text (GTK_ENTRY (entry), "");
+  gtk_button_set_label (GTK_BUTTON (
+    g_object_get_data (G_OBJECT (button), "companion-choose-button")),
+    "Choose app…");
+  if (sd)
+    settings_schedule_apply (sd, SETTINGS_LIVE_COMPANION_APP);
+}
+
+static GtkWidget *
+build_companion_apps_settings_page (SettingsDialog *sd)
+{
+  GtkWidget *box, *grid, *note;
+  guint slot;
+
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
+  gtk_container_set_border_width (GTK_CONTAINER (box), 12);
+
+  note = gtk_label_new (
+    "Choose a desktop app or enter a command or path. Use Ctrl+1 to Ctrl+7; "
+    "configured app icons appear on the Paper toolbar.");
+  gtk_label_set_xalign (GTK_LABEL (note), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (note), TRUE);
+  gtk_label_set_max_width_chars (GTK_LABEL (note), 56);
+  gtk_box_pack_start (GTK_BOX (box), note, FALSE, FALSE, 0);
+
+  grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 10);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 12);
+  gtk_box_pack_start (GTK_BOX (box), grid, FALSE, FALSE, 0);
+
+  for (slot = 0; slot < SCREENATOR_COMPANION_APP_COUNT; slot++)
+    {
+      GAppInfo *app = companion_app_info (sd->data, slot);
+      gchar *name = app ? g_strdup (g_app_info_get_name (app))
+        : sd->data->companion_app_ids[slot]
+          ? g_path_get_basename (sd->data->companion_app_ids[slot])
+          : g_strdup ("Choose app…");
+      GtkWidget *label = gtk_label_new (NULL);
+      GtkWidget *button = gtk_button_new_with_label (name);
+      GtkWidget *clear = gtk_button_new_with_label ("Clear");
+      GtkWidget *entry = gtk_entry_new ();
+      gchar *caption = g_strdup_printf ("Companion App %u", slot + 1);
+      gtk_label_set_text (GTK_LABEL (label), caption);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      if (sd->data->companion_app_commands[slot])
+        gtk_entry_set_text (GTK_ENTRY (entry),
+                            sd->data->companion_app_commands[slot]);
+      g_object_set_data_full (G_OBJECT (entry), "companion-app-id",
+                              g_strdup (sd->data->companion_app_ids[slot]),
+                              g_free);
+      g_object_set_data (G_OBJECT (entry), "screenator-data", sd->data);
+      g_object_set_data (G_OBJECT (entry), "settings-dialog", sd);
+      gtk_widget_set_tooltip_text (entry,
+                                   "Optional command or executable path; takes priority over the selected app");
+      gtk_entry_set_placeholder_text (GTK_ENTRY (entry), "Command or path (optional)");
+      g_signal_connect (button, "clicked",
+                        G_CALLBACK (companion_app_choose_clicked), entry);
+      g_object_set_data (G_OBJECT (clear), "companion-choose-button", button);
+      g_signal_connect (clear, "clicked",
+                        G_CALLBACK (companion_app_clear_clicked), entry);
+      gtk_grid_attach (GTK_GRID (grid), label, 0, slot, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), button, 1, slot, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), clear, 2, slot, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), entry, 3, slot, 1, 1);
+      sd->companion_app_buttons[slot] = button;
+      sd->companion_app_commands[slot] = entry;
+      g_free (name);
+      g_free (caption);
+      if (app)
+        g_object_unref (app);
+    }
+
+  return box;
+}
+
 static GtkWidget *
 build_icon_settings_page (SettingsDialog *sd)
 {
@@ -13763,6 +14507,7 @@ settings_dialog_populate (SettingsDialog *sd, GtkWidget *notebook)
   GtkWidget *toolbar = build_toolbar_settings_page (sd);
   GtkWidget *icons = build_icon_settings_page (sd);
   GtkWidget *shortcuts = build_shortcut_settings_page (sd);
+  GtkWidget *companions = build_companion_apps_settings_page (sd);
 
   gtk_notebook_append_page (GTK_NOTEBOOK (notebook), general,
 			    gtk_label_new ("General"));
@@ -13774,6 +14519,135 @@ settings_dialog_populate (SettingsDialog *sd, GtkWidget *notebook)
 			    gtk_label_new ("Floating Icon"));
   gtk_notebook_append_page (GTK_NOTEBOOK (notebook), shortcuts,
 			    gtk_label_new ("Shortcuts"));
+  gtk_notebook_append_page (GTK_NOTEBOOK (notebook), companions,
+			    gtk_label_new ("Companions Apps"));
+}
+
+/* Only controls that directly affect the toolbar or floating icon are live.
+ * Keep every other setting in its widgets until the dialog closes. */
+static void
+settings_apply_live (SettingsDialog *sd, guint flags)
+{
+  ScreenatorData *data = sd->data;
+  static const guint icon_sizes[] = { 16, 32, 48, 64, 128, 256 };
+  guint new_toolbar_size = (guint) gtk_spin_button_get_value_as_int (
+    GTK_SPIN_BUTTON (sd->toolbar_size_spin));
+  gint toolbar_direction = gtk_combo_box_get_active (
+    GTK_COMBO_BOX (sd->toolbar_direction_combo));
+  gboolean new_toolbar_vertical = toolbar_direction != 1;
+  gint icon_index = gtk_combo_box_get_active (
+    GTK_COMBO_BOX (sd->icon_size_combo));
+  guint new_icon_size =
+    (icon_index >= 0 && icon_index < (gint) G_N_ELEMENTS (icon_sizes))
+    ? icon_sizes[icon_index] : data->icon_size;
+  gboolean new_indicator = gtk_toggle_button_get_active (
+    GTK_TOGGLE_BUTTON (sd->indicator_check));
+  gboolean toolbar_rebuild_needed = FALSE;
+  guint i;
+
+  if ((flags & SETTINGS_LIVE_TOOLBAR_LAYOUT) &&
+      (new_toolbar_size != data->paper_toolbar_icon_size ||
+	new_toolbar_vertical != data->paper_toolbar_vertical))
+    {
+      if (new_toolbar_vertical != data->paper_toolbar_vertical)
+	{
+	  data->paper_toolbar_x_ratio = new_toolbar_vertical ? 1.0 : 0.5;
+	  data->paper_toolbar_y_ratio = new_toolbar_vertical ? 0.5 : 0.0;
+	  data->paper_toolbar_position_set = TRUE;
+	}
+      data->paper_toolbar_icon_size = CLAMP (new_toolbar_size, 16, 64);
+      data->paper_toolbar_vertical = new_toolbar_vertical;
+      toolbar_rebuild_needed = TRUE;
+    }
+
+  if (flags & SETTINGS_LIVE_TOOLBAR_ITEMS)
+    {
+      gchar *new_items = NULL;
+      gchar *new_order = NULL;
+
+      settings_collect_toolbar_items (sd, &new_items, &new_order);
+      if (g_strcmp0 (new_items, data->paper_toolbar_items) != 0)
+	{
+	  g_free (data->paper_toolbar_items);
+	  data->paper_toolbar_items = new_items;
+	  new_items = NULL;
+	  toolbar_rebuild_needed = TRUE;
+	}
+      if (g_strcmp0 (new_order, data->paper_toolbar_order) != 0)
+	{
+	  g_free (data->paper_toolbar_order);
+	  data->paper_toolbar_order = new_order;
+	  new_order = NULL;
+	  toolbar_rebuild_needed = TRUE;
+	}
+      g_free (new_items);
+      g_free (new_order);
+    }
+
+  if (flags & SETTINGS_LIVE_COMPANION_APP)
+    for (i = 0; i < SCREENATOR_COMPANION_APP_COUNT; i++)
+      {
+	const gchar *new_id = g_object_get_data (
+	  G_OBJECT (sd->companion_app_commands[i]), "companion-app-id");
+	const gchar *command = gtk_entry_get_text (
+	  GTK_ENTRY (sd->companion_app_commands[i]));
+
+	if (g_strcmp0 (data->companion_app_ids[i], new_id) != 0)
+	  {
+	    g_free (data->companion_app_ids[i]);
+	    data->companion_app_ids[i] = g_strdup (new_id);
+	    toolbar_rebuild_needed = TRUE;
+	  }
+	if (g_strcmp0 (data->companion_app_commands[i], command) != 0)
+	  {
+	    g_free (data->companion_app_commands[i]);
+	    data->companion_app_commands[i] = *command ? g_strdup (command) : NULL;
+	  }
+      }
+
+  if (toolbar_rebuild_needed)
+    {
+      data->paper_toolbar_settings_update = TRUE;
+      paper_top_bar_rebuild (data);
+      data->paper_toolbar_settings_update = FALSE;
+    }
+
+  if ((flags & SETTINGS_LIVE_ICON_SIZE) && new_icon_size != data->icon_size)
+    apply_icon_size (data, new_icon_size);
+
+  if ((flags & SETTINGS_LIVE_ICON_INDICATOR) &&
+	new_indicator != data->show_settings_indicator)
+    {
+      data->show_settings_indicator = new_indicator;
+      update_settings_indicator (data);
+    }
+
+  if (flags & SETTINGS_LIVE_ICON_POSITION)
+    {
+      gint new_position = data->icon_position;
+
+      for (i = 0; i < G_N_ELEMENTS (sd->icon_position_radio); i++)
+	if (sd->icon_position_radio[i] &&
+	    gtk_toggle_button_get_active (
+	      GTK_TOGGLE_BUTTON (sd->icon_position_radio[i])))
+	  {
+	    new_position = (gint) i;
+	    break;
+	  }
+
+      if (new_position != (gint) data->icon_position)
+	{
+	  data->icon_position = (ScreenatorIconPosition) new_position;
+	  screenator_position_icon (data);
+	  update_settings_indicator (data);
+	}
+    }
+
+  if (flags)
+    {
+      write_keyfile (data);
+      schedule_tray_menu_refresh (data);
+    }
 }
 
 static void
@@ -13803,6 +14677,8 @@ settings_apply_current (SettingsDialog *sd)
     (timer_index >= 0 &&
      timer_index < (gint) G_N_ELEMENTS (timer_delays))
     ? timer_delays[timer_index] : data->tool_delay_seconds;
+  guint new_cursor_dot_size = (guint) gtk_spin_button_get_value_as_int (
+    GTK_SPIN_BUTTON (sd->cursor_dot_size_spin));
   guint new_toolbar_size =
     (guint) gtk_spin_button_get_value_as_int (
       GTK_SPIN_BUTTON (sd->toolbar_size_spin));
@@ -13821,6 +14697,7 @@ settings_apply_current (SettingsDialog *sd)
   gdouble new_height = gtk_spin_button_get_value (
     GTK_SPIN_BUTTON (sd->height_spin));
   gboolean size_changed;
+  gboolean toolbar_rebuild_needed = FALSE;
 
       if (new_save != data->save_annotations_on_exit)
 	{
@@ -13865,8 +14742,17 @@ settings_apply_current (SettingsDialog *sd)
       }
 
       data->tool_delay_seconds = new_timer_delay;
-      data->paper_toolbar_position_locked =
-	new_toolbar_position_locked;
+      if (new_cursor_dot_size != data->cursor_dot_size)
+	{
+	  data->cursor_dot_size = CLAMP (new_cursor_dot_size, 1, 24);
+	  screenator_update_tool_cursors (data);
+	  /* Settings temporarily switches to the cursor tool.  Re-grabbing the
+	   * paper pointer on every spin-button change makes the toolbar flicker;
+	   * the active cursor is refreshed when the dialog closes. */
+	  if (!data->top_dialog)
+	    paper_refresh_active_cursor (data);
+	}
+      data->paper_toolbar_position_locked = new_toolbar_position_locked;
 
       if (new_toolbar_size != data->paper_toolbar_icon_size ||
 	  new_toolbar_vertical != data->paper_toolbar_vertical)
@@ -13882,7 +14768,7 @@ settings_apply_current (SettingsDialog *sd)
 	  data->paper_toolbar_icon_size =
 	    CLAMP (new_toolbar_size, 16, 64);
 	  data->paper_toolbar_vertical = new_toolbar_vertical;
-	  paper_top_bar_rebuild (data);
+	  toolbar_rebuild_needed = TRUE;
 	}
 
       {
@@ -13912,10 +14798,9 @@ settings_apply_current (SettingsDialog *sd)
 	g_free (new_order);
 
 	if (changed)
-	  paper_top_bar_rebuild (data);
+	  toolbar_rebuild_needed = TRUE;
       }
 
-      if (sd->shortcuts_pending)
 	{
 	  gchar *new_texts[SCREENATOR_SHORTCUT_COUNT];
 	  guint i;
@@ -13929,9 +14814,43 @@ settings_apply_current (SettingsDialog *sd)
 	  screenator_apply_shortcuts (data, new_texts);
 	  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
 	    g_free (new_texts[i]);
-	  sd->shortcuts_pending = FALSE;
 	}
-      paper_top_bar_update_active_tool (data);
+
+      {
+	gboolean companion_icons_changed = FALSE;
+	guint slot;
+
+	for (slot = 0; slot < SCREENATOR_COMPANION_APP_COUNT; slot++)
+	  {
+	    const gchar *new_id = g_object_get_data (
+	      G_OBJECT (sd->companion_app_commands[slot]), "companion-app-id");
+	    const gchar *command = gtk_entry_get_text (
+	      GTK_ENTRY (sd->companion_app_commands[slot]));
+
+	    if (g_strcmp0 (data->companion_app_ids[slot], new_id) != 0)
+	      {
+		g_free (data->companion_app_ids[slot]);
+		data->companion_app_ids[slot] = g_strdup (new_id);
+		companion_icons_changed = TRUE;
+	      }
+	    if (g_strcmp0 (data->companion_app_commands[slot], command) != 0)
+	      {
+		g_free (data->companion_app_commands[slot]);
+		data->companion_app_commands[slot] = *command ? g_strdup (command) : NULL;
+	      }
+	  }
+	if (companion_icons_changed)
+	  toolbar_rebuild_needed = TRUE;
+	}
+
+      /* Apply toolbar changes once, and only for its size, direction, icon
+       * list or companion launchers. Other settings must not flash the bar. */
+      if (toolbar_rebuild_needed)
+	{
+	  data->paper_toolbar_settings_update = TRUE;
+	  paper_top_bar_rebuild (data);
+	  data->paper_toolbar_settings_update = FALSE;
+	}
 
       paper_set_continuous_scrolling (data, new_continuous);
 
@@ -13969,7 +14888,7 @@ settings_toolbar_rows_changed (GtkTreeModel *model, GtkTreePath *path,
   (void) model;
   (void) path;
   (void) iter;
-  settings_schedule_apply (user_data);
+  settings_schedule_apply (user_data, SETTINGS_LIVE_TOOLBAR_ITEMS);
 }
 
 static void
@@ -13981,30 +14900,20 @@ settings_toolbar_rows_reordered (GtkTreeModel *model, GtkTreePath *path,
   (void) path;
   (void) iter;
   (void) new_order;
-  settings_schedule_apply (user_data);
+  settings_schedule_apply (user_data, SETTINGS_LIVE_TOOLBAR_ITEMS);
 }
 
 static void
 settings_dialog_connect_live (SettingsDialog *sd)
 {
   GtkWidget *toggles[] = {
-    sd->save_check,
-    sd->screenshot_message_check,
-    sd->pdf_message_check,
-    sd->continuous_check,
-    sd->toolbar_lock_check,
     sd->indicator_check,
-    sd->screen_radio,
-    sd->a4_portrait_radio,
-    sd->a4_landscape_radio,
-    sd->custom_radio,
     sd->icon_position_radio[0],
     sd->icon_position_radio[1],
     sd->icon_position_radio[2],
     sd->icon_position_radio[3]
   };
   GtkWidget *combos[] = {
-    sd->timer_delay_combo,
     sd->icon_size_combo,
     sd->toolbar_direction_combo
   };
@@ -14024,30 +14933,10 @@ settings_dialog_connect_live (SettingsDialog *sd)
     g_signal_connect (sd->toolbar_size_spin, "value-changed",
 		      G_CALLBACK (settings_control_changed), sd);
 
-  if (sd->width_spin)
-    {
-      g_signal_connect (sd->width_spin, "activate",
+  for (i = 0; i < SCREENATOR_COMPANION_APP_COUNT; i++)
+    if (sd->companion_app_commands[i])
+      g_signal_connect (sd->companion_app_commands[i], "changed",
 			G_CALLBACK (settings_control_changed), sd);
-      g_signal_connect (sd->width_spin, "focus-out-event",
-			G_CALLBACK (settings_control_focus_out), sd);
-    }
-
-  if (sd->height_spin)
-    {
-      g_signal_connect (sd->height_spin, "activate",
-			G_CALLBACK (settings_control_changed), sd);
-      g_signal_connect (sd->height_spin, "focus-out-event",
-			G_CALLBACK (settings_control_focus_out), sd);
-    }
-
-  for (i = 0; i < SCREENATOR_SHORTCUT_COUNT; i++)
-    if (sd->shortcut_entries[i])
-      {
-	g_signal_connect (sd->shortcut_entries[i], "activate",
-			  G_CALLBACK (settings_control_changed), sd);
-	g_signal_connect (sd->shortcut_entries[i], "focus-out-event",
-			  G_CALLBACK (settings_control_focus_out), sd);
-      }
 
   if (sd->toolbar_items_store)
     {
@@ -14078,7 +14967,6 @@ show_settings_dialog (ScreenatorData *data)
 					"Close", GTK_RESPONSE_CLOSE,
 					NULL);
   sd->dialog = dialog;
-  gtk_window_set_keep_above (GTK_WINDOW (dialog), TRUE);
   gtk_window_set_position (GTK_WINDOW (dialog), GTK_WIN_POS_CENTER);
   gtk_window_set_resizable (GTK_WINDOW (dialog), FALSE);
   gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CLOSE);
@@ -14097,7 +14985,10 @@ show_settings_dialog (ScreenatorData *data)
 				   GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
   }
 
-  show_dialog_above_drawings (data, dialog);
+  /* Opening Settings leaves the application in Cursor mode. */
+  screenator_activate_cursor_state (data);
+  data->settings_dialog_open = TRUE;
+  show_dialog_common (data, dialog, TRUE);
 
   content = gtk_dialog_get_content_area (GTK_DIALOG (dialog));
   notebook = gtk_notebook_new ();
@@ -14132,11 +15023,13 @@ show_settings_dialog (ScreenatorData *data)
       g_source_remove (sd->apply_idle_id);
       sd->apply_idle_id = 0;
     }
-  sd->shortcuts_pending = TRUE;
   if (!sd->reset_clicked)
     settings_apply_current (sd);
 
   gtk_widget_destroy (dialog);
+  data->settings_dialog_open = FALSE;
+  /* Keep Cursor selected after closing Settings as well. */
+  screenator_activate_cursor_state (data);
   g_free (sd);
 
   (void) response;
@@ -14750,6 +15643,7 @@ static void on_icon_reset_settings (GtkMenuItem *menuitem, gpointer user_data)
     paper_top_bar_destroy (data);
 
   apply_pen_settings (data);
+  screenator_update_tool_cursors (data);
   update_eraser_cursor (data);
   set_floating_icon_visible (data, TRUE);
   paper_top_bar_restore (data);
@@ -15274,7 +16168,7 @@ void create_icon_window (ScreenatorData *data)
 	gtk_widget_hide (data->settings_win);
     }
 
-  /* The tool bar works in both screen and paper modes. */
+  /* The toolbar works in both screen and paper modes. */
   paper_top_bar_restore (data);
 }
 
@@ -15614,53 +16508,61 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     GtkWidget *custom_item = NULL;
     guint i;
 
-    for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
+    for (i = 0; i < G_N_ELEMENTS (fill_colors) - 1; i++)
       {
 	GtkWidget *subitem;
 
 	subitem = gtk_radio_menu_item_new_with_label (group, fill_colors[i].label);
 	group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (subitem));
 
-	if (g_ascii_strcasecmp (fill_colors[i].name, "none") == 0)
-	  {
-	    if (!data->shape_fill_enabled)
-	      active_item = subitem;
-	  }
-	else
-	  {
-	    GdkRGBA color;
+	{
+	  GdkRGBA color;
 
-	    if (data->shape_fill_enabled &&
-		gdk_rgba_parse (&color, fill_colors[i].name) &&
-		data->shape_fill_color.red == color.red &&
-		data->shape_fill_color.green == color.green &&
-		data->shape_fill_color.blue == color.blue)
-	      active_item = subitem;
-	  }
+	  if (data->shape_fill_enabled &&
+	      gdk_rgba_parse (&color, fill_colors[i].name) &&
+	      data->shape_fill_color.red == color.red &&
+	      data->shape_fill_color.green == color.green &&
+	      data->shape_fill_color.blue == color.blue)
+	    active_item = subitem;
+	}
 
 	g_object_set_data (G_OBJECT (subitem), "icon-shape-fill-name",
 			   (gpointer) fill_colors[i].name);
 	items[i] = subitem;
 	gtk_menu_shell_append (GTK_MENU_SHELL (submenu), subitem);
 	gtk_widget_show (subitem);
-      }
+	      }
 
-    {
-      GtkWidget *sep = gtk_separator_menu_item_new ();
-      GtkWidget *custom =
-	gtk_radio_menu_item_new_with_label (group, "Custom...");
+	{
+	  GtkWidget *sep = gtk_separator_menu_item_new ();
+	  GtkWidget *custom =
+	    gtk_radio_menu_item_new_with_label (group, "Custom...");
 
-      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom));
-      g_object_set_data (G_OBJECT (custom), "icon-custom-target",
-			 (gpointer) "fill");
-      if (!active_item)
-	active_item = custom;
-      custom_item = custom;
-      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), sep);
-      gtk_widget_show (sep);
-      gtk_menu_shell_append (GTK_MENU_SHELL (submenu), custom);
-      gtk_widget_show (custom);
-    }
+	  group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom));
+	  g_object_set_data (G_OBJECT (custom), "icon-custom-target",
+			     (gpointer) "fill");
+	  if (!active_item)
+	    active_item = custom;
+	  custom_item = custom;
+	  gtk_menu_shell_append (GTK_MENU_SHELL (submenu), sep);
+	  gtk_widget_show (sep);
+	  gtk_menu_shell_append (GTK_MENU_SHELL (submenu), custom);
+	  gtk_widget_show (custom);
+	}
+
+	{
+	  i = G_N_ELEMENTS (fill_colors) - 1;
+	  items[i] = gtk_radio_menu_item_new_with_label (group,
+							 fill_colors[i].label);
+	  group = gtk_radio_menu_item_get_group (
+	    GTK_RADIO_MENU_ITEM (items[i]));
+	  g_object_set_data (G_OBJECT (items[i]), "icon-shape-fill-name",
+			     (gpointer) fill_colors[i].name);
+	  if (!data->shape_fill_enabled)
+	    active_item = items[i];
+	  gtk_menu_shell_append (GTK_MENU_SHELL (submenu), items[i]);
+	  gtk_widget_show (items[i]);
+	}
 
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
@@ -16555,7 +17457,7 @@ screenator_show_quick_menu (ScreenatorData *data)
 }
 
 /* ------------------------------------------------------------------
- * Paper Drawing tool bar
+ * Paper Drawing toolbar
  *
  * F10 shows a persistent strip of tool icons while Paper Drawing is active.
  * The bar is vertical on the right edge by default; it can be switched to a
@@ -16597,6 +17499,7 @@ typedef struct
   GtkWidget      *eraser_image;
   GtkWidget      *save_button;
   GtkWidget      *screenshot_button;
+  GtkWidget      *companion_buttons[SCREENATOR_COMPANION_APP_COUNT];
 
   GtkWidget      *tooltip_window;
   GtkWidget      *tooltip_label;
@@ -17107,6 +18010,77 @@ paper_top_bar_button (ScreenatorData *data, GdkPixbuf *pixbuf,
   return button;
 }
 
+static void
+paper_top_bar_show_missing_companion (ScreenatorData *data)
+{
+  GtkWidget *dialog = gtk_message_dialog_new (
+    NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+    "This companion app is not installed or could not be launched. Install it or choose another app in Settings > Companions Apps.");
+
+  gtk_window_set_title (GTK_WINDOW (dialog), "Companion app unavailable");
+  show_dialog_above_drawings (data, dialog);
+  gtk_dialog_run (GTK_DIALOG (dialog));
+  gtk_widget_destroy (dialog);
+}
+
+static void
+paper_top_bar_companion_clicked (GtkButton *button, gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+  guint slot = GPOINTER_TO_UINT (
+    g_object_get_data (G_OBJECT (button), "companion-slot"));
+
+  if (slot > 0)
+    {
+      GAppInfo *app = companion_app_info (data, slot - 1);
+      gboolean has_command = data->companion_app_commands[slot - 1] &&
+	*data->companion_app_commands[slot - 1];
+
+      if (!app && !has_command)
+	paper_top_bar_show_missing_companion (data);
+      else
+	if (!screenator_launch_companion (data, slot - 1))
+	  paper_top_bar_show_missing_companion (data);
+      if (app)
+	g_object_unref (app);
+    }
+}
+
+static GtkWidget *
+paper_top_bar_companion_button (ScreenatorData *data, guint slot)
+{
+  ScreenatorShortcutId shortcut_id = SCREENATOR_SHORTCUT_COMPANION_1 + slot;
+  gchar *tooltip;
+  GAppInfo *app = companion_app_info (data, slot);
+  GdkPixbuf *pixbuf = companion_app_icon_pixbuf (
+    data, slot, paper_top_bar_icon_size (data));
+  GtkWidget *button;
+
+  if (app)
+    tooltip = g_strdup_printf ("%s (%s)", g_app_info_get_name (app),
+			       data->shortcuts[shortcut_id].text);
+  else
+    tooltip = g_strdup_printf ("Companion App %u is not installed", slot + 1);
+
+  button = paper_top_bar_button (data, pixbuf, tooltip);
+  paper_toolbar_set_tooltip_text (button, tooltip);
+  {
+    gchar *item_id = g_strdup_printf ("companion%u", slot + 1);
+    g_object_set_data_full (G_OBJECT (button), "paper-toolbar-item", item_id,
+                            g_free);
+  }
+  g_object_set_data (G_OBJECT (button), "companion-slot",
+		     GUINT_TO_POINTER (slot + 1));
+  g_signal_connect (button, "clicked",
+		    G_CALLBACK (paper_top_bar_companion_clicked), data);
+  if (pixbuf)
+    g_object_unref (pixbuf);
+  if (app)
+    g_object_unref (app);
+  g_free (tooltip);
+  return button;
+}
+
 static GtkWidget *
 paper_top_bar_icon_button (ScreenatorData *data, const gchar *icon,
 			   const gchar *tooltip)
@@ -17523,13 +18497,13 @@ paper_top_bar_build_line_menu (ScreenatorData *data)
 	}
     }
 
-  custom_item = gtk_radio_menu_item_new_with_label (group, "Custom...");
-  group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom_item));
+  custom_item = paper_add_swatch_item (menu, &group,
+				       &data->custom_line_color, FALSE,
+				       swatch, "Custom...", NULL);
   g_object_set_data (G_OBJECT (custom_item), "icon-custom-target",
 		     (gpointer) "line");
   if (!active_item)
     active_item = custom_item;
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), custom_item);
 
   if (active_item)
     gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
@@ -17554,43 +18528,41 @@ paper_top_bar_build_fill_menu (ScreenatorData *data)
   guint i;
   gint swatch = MAX (16, MIN (paper_top_bar_icon_size (data), 32));
 
-  for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
+  for (i = 0; i < G_N_ELEMENTS (fill_colors) - 1; i++)
     {
-      gboolean none = g_ascii_strcasecmp (fill_colors[i].name, "none") == 0;
       GdkRGBA color;
 
-      if (!none && gdk_rgba_parse (&color, fill_colors[i].name))
-	items[i] = paper_add_fill_item (menu, &group, &color, FALSE,
-					swatch, fill_colors[i].label,
-					fill_colors[i].name);
-      else
-	{
-	  GdkRGBA fallback = { 0, 0, 0, 1 };
-	  items[i] = paper_add_fill_item (menu, &group, &fallback, none,
-					  swatch, fill_colors[i].label,
-					  fill_colors[i].name);
-	}
+      if (!gdk_rgba_parse (&color, fill_colors[i].name))
+	continue;
 
-      if (none)
-	{
-	  if (!data->shape_fill_enabled)
-	    active_item = items[i];
-	}
-      else if (data->shape_fill_enabled &&
-	       gdk_rgba_parse (&color, fill_colors[i].name) &&
-	       data->shape_fill_color.red == color.red &&
-	       data->shape_fill_color.green == color.green &&
-	       data->shape_fill_color.blue == color.blue)
+      items[i] = paper_add_fill_item (menu, &group, &color, FALSE,
+				      swatch, fill_colors[i].label,
+				      fill_colors[i].name);
+
+      if (data->shape_fill_enabled &&
+	  data->shape_fill_color.red == color.red &&
+	  data->shape_fill_color.green == color.green &&
+	  data->shape_fill_color.blue == color.blue)
 	active_item = items[i];
     }
 
-  custom_item = gtk_radio_menu_item_new_with_label (group, "Custom...");
-  group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (custom_item));
+  custom_item = paper_add_fill_item (menu, &group,
+				     &data->custom_fill_color, FALSE,
+				     swatch, "Custom...", NULL);
   g_object_set_data (G_OBJECT (custom_item), "icon-custom-target",
 		     (gpointer) "fill");
   if (!active_item)
     active_item = custom_item;
-  gtk_menu_shell_append (GTK_MENU_SHELL (menu), custom_item);
+
+  i = G_N_ELEMENTS (fill_colors) - 1;
+  {
+    GdkRGBA fallback = { 0, 0, 0, 1 };
+    items[i] = paper_add_fill_item (menu, &group, &fallback, TRUE, swatch,
+				    fill_colors[i].label,
+				    fill_colors[i].name);
+  }
+  if (!data->shape_fill_enabled)
+    active_item = items[i];
 
   if (active_item)
     gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
@@ -18048,16 +19020,21 @@ paper_toolbar_set_active (GtkWidget *button, gboolean active)
 static void
 paper_top_bar_update_active_tool (ScreenatorData *data)
 {
-  PaperTopBar *bar = data->paper_top_bar_data;
+  PaperTopBar *bar;
   gboolean cursor, pen, text, eraser, arrow, timer, shapes;
   gint old_x = 0, old_y = 0, old_width = 0, old_height = 0;
   GdkRectangle area = { 0, 0, 0, 0 };
   gboolean track_geometry = FALSE;
 
+  if (!data || (data->settings_dialog_open &&
+		!data->paper_toolbar_settings_update))
+    return;
+
+  bar = data->paper_top_bar_data;
   if (!bar)
     return;
 
-  /* Hiding or showing a mode-specific button changes the tool bar width.
+  /* Hiding or showing a mode-specific button changes the toolbar width.
    * Remember its current edge/centre alignment so it can be restored after
    * the new size is known instead of drifting away from the screen edge. */
   if (bar->window && gtk_widget_get_mapped (bar->window))
@@ -18652,6 +19629,16 @@ paper_toolbar_apply_items (ScreenatorData *data, PaperTopBar *bar)
       if (!button)
 	continue;
 
+      {
+	 gint companion_slot = toolbar_companion_slot (id);
+	 if (companion_slot >= 0 &&
+	     ((!data->companion_app_ids[companion_slot] ||
+	       !*data->companion_app_ids[companion_slot]) &&
+	      (!data->companion_app_commands[companion_slot] ||
+	       !*data->companion_app_commands[companion_slot])))
+	   continue;
+      }
+
       g_object_set_data (G_OBJECT (button), "paper-toolbar-enabled",
 			 GINT_TO_POINTER (TRUE));
       gtk_widget_show (button);
@@ -18673,6 +19660,28 @@ paper_toolbar_apply_items (ScreenatorData *data, PaperTopBar *bar)
 	  gtk_box_reorder_child (GTK_BOX (bar->box), button, position++);
 	}
     }
+
+  /* Companion launchers finish the toolbar, with Quit kept as the final
+   * button even when an older saved toolbar order placed them elsewhere. */
+  for (i = 0; i < SCREENATOR_COMPANION_APP_COUNT; i++)
+    {
+      gchar *id = g_strdup_printf ("companion%u", i + 1);
+      GtkWidget *button = g_hash_table_lookup (widgets, id);
+
+      if (button && gtk_widget_get_visible (button) &&
+	  GPOINTER_TO_INT (g_object_get_data (G_OBJECT (button),
+					      "paper-toolbar-enabled")))
+	gtk_box_reorder_child (GTK_BOX (bar->box), button, -1);
+      g_free (id);
+    }
+  {
+    GtkWidget *quit = g_hash_table_lookup (widgets, "quit");
+
+    if (quit && gtk_widget_get_visible (quit) &&
+	GPOINTER_TO_INT (g_object_get_data (G_OBJECT (quit),
+					    "paper-toolbar-enabled")))
+      gtk_box_reorder_child (GTK_BOX (bar->box), quit, -1);
+  }
 
   g_strfreev (visible);
   g_hash_table_destroy (widgets);
@@ -18887,6 +19896,17 @@ paper_top_bar_create (ScreenatorData *data)
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_save_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+
+  {
+    guint slot;
+
+    for (slot = 0; slot < G_N_ELEMENTS (bar->companion_buttons); slot++)
+      {
+	button = paper_top_bar_companion_button (data, slot);
+	bar->companion_buttons[slot] = button;
+	gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
+      }
+  }
 
   /* Paper type menu. */
   button = paper_top_bar_icon_button (data, "paper.png", "Paper Type");
@@ -19171,7 +20191,7 @@ paper_top_bar_rebuild (ScreenatorData *data)
   paper_top_bar_regrab (data);
 }
 
-/* Reopen the tool bar when Paper Drawing is entered again if it was open
+/* Reopen the toolbar when Paper Drawing is entered again if it was open
  * before, or at startup when it was left open. */
 static void
 paper_top_bar_restore (ScreenatorData *data)
@@ -19183,7 +20203,7 @@ paper_top_bar_restore (ScreenatorData *data)
   paper_top_bar_regrab (data);
 }
 
-/* F10 in Paper Drawing: show or hide the persistent tool bar. */
+/* F10 in Paper Drawing: show or hide the persistent toolbar. */
 void
 screenator_toggle_paper_top_bar (ScreenatorData *data)
 {
@@ -20168,7 +21188,7 @@ hints_load_html (void)
       "<li><b>F9</b> shows or hides the floating icon.</li>"
       "<li><b>F8</b> selects the Pen, <b>F6</b> the Arrow and "
       "<b>F7</b> the Text tool.</li>"
-      "<li><b>F10</b> shows or hides the tool bar.</li>"
+      "<li><b>F10</b> shows or hides the toolbar.</li>"
       "</ul>");
 
   return contents;

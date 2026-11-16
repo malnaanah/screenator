@@ -181,6 +181,13 @@ const gchar * const screenator_shortcut_defaults[SCREENATOR_SHORTCUT_COUNT] =
   "Ctrl+Z",      /* undo */
   "Ctrl+Shift+Z",/* redo */
   "Ctrl+S",      /* save */
+  "Ctrl+1",      /* companion app 1 */
+  "Ctrl+2",      /* companion app 2 */
+  "Ctrl+3",      /* companion app 3 */
+  "Ctrl+4",      /* companion app 4 */
+  "Ctrl+5",      /* companion app 5 */
+  "Ctrl+6",      /* companion app 6 */
+  "Ctrl+7",      /* companion app 7 */
   "Ctrl+B",      /* insert before */
   "Ctrl+A",      /* insert after */
   "Delete",      /* clear screen */
@@ -198,12 +205,19 @@ const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
   "Text tool",
   "Arrow tool",
   "Timer",
-  "Show tool bar",
+  "Show toolbar",
   "Switch Screen/Paper mode",
   "Screenshot",
   "Undo",
   "Redo",
   "Save paper as PDF",
+  "Companion App 1",
+  "Companion App 2",
+  "Companion App 3",
+  "Companion App 4",
+  "Companion App 5",
+  "Companion App 6",
+  "Companion App 7",
   "Insert page before",
   "Insert page after",
   "Clear Screen",
@@ -230,12 +244,19 @@ const ScreenatorShortcutScope screenator_shortcut_scopes[
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
-  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
-  SCREENATOR_SHORTCUT_PAINTING
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_PAPER,
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_ALWAYS
 };
 
 static gpointer HOTKEY_SYMBOL_VALUE  = (gpointer) 3;
@@ -685,7 +706,7 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
-#define PAPER_TOOLBAR_ITEMS_VERSION 4
+#define PAPER_TOOLBAR_ITEMS_VERSION 7
 
 /* Older saved toolbars predate Delete Page, Show Hints, Go to Page and the
  * current-page indicator.  Add them once, then record the migration version
@@ -700,6 +721,13 @@ toolbar_items_migrate (const gchar *items, gint version)
   gboolean has_hints = FALSE;
   gboolean has_goto = FALSE;
   gboolean has_page_number = FALSE;
+  gboolean has_companion_1 = FALSE;
+  gboolean has_companion_2 = FALSE;
+  gboolean has_companion_3 = FALSE;
+  gboolean has_companion_4 = FALSE;
+  gboolean has_companion_5 = FALSE;
+  gboolean has_companion_6 = FALSE;
+  gboolean has_companion_7 = FALSE;
   gboolean add_delete;
   gboolean add_hints;
   gboolean add_goto;
@@ -725,6 +753,20 @@ toolbar_items_migrate (const gchar *items, gint version)
 	has_goto = TRUE;
       if (g_strcmp0 (id, "page_number") == 0)
 	has_page_number = TRUE;
+      if (g_strcmp0 (id, "companion1") == 0)
+	has_companion_1 = TRUE;
+      if (g_strcmp0 (id, "companion2") == 0)
+	has_companion_2 = TRUE;
+      if (g_strcmp0 (id, "companion3") == 0)
+	has_companion_3 = TRUE;
+      if (g_strcmp0 (id, "companion4") == 0)
+	has_companion_4 = TRUE;
+      if (g_strcmp0 (id, "companion5") == 0)
+	has_companion_5 = TRUE;
+      if (g_strcmp0 (id, "companion6") == 0)
+	has_companion_6 = TRUE;
+      if (g_strcmp0 (id, "companion7") == 0)
+	has_companion_7 = TRUE;
     }
 
   if (!any)
@@ -733,10 +775,21 @@ toolbar_items_migrate (const gchar *items, gint version)
       return g_strdup (items);
     }
 
+  if (version < PAPER_TOOLBAR_ITEMS_VERSION)
+    {
+      has_companion_6 = TRUE;
+      has_companion_7 = TRUE;
+    }
+
   add_delete = !has_delete;
   add_hints = !has_hints;
   add_goto = !has_goto;
   add_page_number = !has_page_number;
+  has_companion_1 = version < 5 && !has_companion_1;
+  has_companion_2 = version < 5 && !has_companion_2;
+  has_companion_3 = version < 5 && !has_companion_3;
+  has_companion_4 = version < 6 && !has_companion_4;
+  has_companion_5 = version < 6 && !has_companion_5;
   out = g_string_new (NULL);
 
   for (i = 0; tokens[i]; i++)
@@ -811,6 +864,21 @@ toolbar_items_migrate (const gchar *items, gint version)
       g_string_append (out, "page_number");
     }
 
+  if (has_companion_1)
+	 g_string_append (out, out->len ? ",companion1" : "companion1");
+  if (has_companion_2)
+	 g_string_append (out, out->len ? ",companion2" : "companion2");
+  if (has_companion_3)
+	 g_string_append (out, out->len ? ",companion3" : "companion3");
+  if (has_companion_4)
+	 g_string_append (out, out->len ? ",companion4" : "companion4");
+  if (has_companion_5)
+	 g_string_append (out, out->len ? ",companion5" : "companion5");
+  if (has_companion_6)
+	 g_string_append (out, out->len ? ",companion6" : "companion6");
+  if (has_companion_7)
+	 g_string_append (out, out->len ? ",companion7" : "companion7");
+
   g_strfreev (tokens);
   return g_string_free (out, FALSE);
 }
@@ -826,6 +894,7 @@ void read_keyfile(ScreenatorData *data)
     data->marker_opacity = 0.40;
     data->pen_width = KEY_DFLT_PEN_WIDTH;
     data->eraser_width = KEY_DFLT_ERASER_WIDTH;
+    data->cursor_dot_size = 8;
     gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
     gdk_rgba_parse (&data->custom_line_color, "#FF00FF");
     data->custom_line_color.alpha = 1.0;
@@ -837,7 +906,7 @@ void read_keyfile(ScreenatorData *data)
     data->timer_active = FALSE;
     data->force_active_icon = FALSE;
     data->font = g_strdup (KEY_DFLT_FONT);
-    data->shape_fill_enabled = FALSE;
+    data->shape_fill_enabled = TRUE;
     gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
     data->shape_fill_color.alpha = 1.0;
     gdk_rgba_parse (&data->custom_fill_color, "#FF00FF");
@@ -858,6 +927,15 @@ void read_keyfile(ScreenatorData *data)
     data->paper_toolbar_items = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
     g_free (data->paper_toolbar_order);
     data->paper_toolbar_order = g_strdup (PAPER_TOOLBAR_DEFAULT_ITEMS);
+    for (guint companion = 0;
+	 companion < SCREENATOR_COMPANION_APP_COUNT; companion++)
+      {
+	g_free (data->companion_app_ids[companion]);
+	g_free (data->companion_app_commands[companion]);
+	data->companion_app_ids[companion] = companion == 0
+	  ? g_strdup ("qalculate-gtk.desktop") : NULL;
+	data->companion_app_commands[companion] = NULL;
+      }
     {
       guint i;
 
@@ -866,6 +944,14 @@ void read_keyfile(ScreenatorData *data)
 	  g_free (data->shortcuts[i].text);
 	  data->shortcuts[i].text =
 	    g_strdup (screenator_shortcut_defaults[i]);
+	}
+
+      /* Replace the previous built-in calculator default for existing
+       * configurations while preserving any other chosen companion app. */
+      if (g_strcmp0 (data->companion_app_ids[0], "org.kde.kcalc.desktop") == 0)
+	{
+	  g_free (data->companion_app_ids[0]);
+	  data->companion_app_ids[0] = g_strdup ("qalculate-gtk.desktop");
 	}
     }
     data->paper_pdf_page = 0;
@@ -963,6 +1049,14 @@ void read_keyfile(ScreenatorData *data)
 		data->eraser_width = width;
 	}
 
+    if (g_key_file_has_key (key_file, "Drawing", "CursorDotSize", NULL))
+	{
+	    gint size = g_key_file_get_integer (key_file, "Drawing",
+					       "CursorDotSize", NULL);
+	    if (size >= 1 && size <= 24)
+		data->cursor_dot_size = (guint) size;
+	}
+
     read_pen_color (key_file, &data->pen_color);
 
     if (g_key_file_has_key (key_file, "Drawing", "IconSize", NULL))
@@ -1003,7 +1097,9 @@ void read_keyfile(ScreenatorData *data)
 	    gchar *fill =
 		g_key_file_get_string (key_file, "Drawing", "ShapeFill", NULL);
 
-	    if (fill && g_ascii_strcasecmp (fill, "none") != 0)
+	    if (fill && g_ascii_strcasecmp (fill, "none") == 0)
+		data->shape_fill_enabled = FALSE;
+	    else if (fill)
 		{
 		    GdkRGBA parsed;
 
@@ -1326,10 +1422,42 @@ void read_keyfile(ScreenatorData *data)
 				    NULL);
 
     {
+      static const gchar * const app_keys[] =
+	{ "App1", "App2", "App3", "App4", "App5", "App6", "App7" };
+      guint i;
+
+      for (i = 0; i < G_N_ELEMENTS (app_keys); i++)
+	{
+	  if (g_key_file_has_key (key_file, "CompanionApps", app_keys[i], NULL))
+	    {
+	      gchar *app_id = g_key_file_get_string (key_file, "CompanionApps",
+						       app_keys[i], NULL);
+	      g_free (data->companion_app_ids[i]);
+	      data->companion_app_ids[i] = app_id && *app_id ? app_id : NULL;
+	      if (!data->companion_app_ids[i])
+		g_free (app_id);
+	    }
+	  {
+	    gchar *key = g_strdup_printf ("App%uCommand", i + 1);
+	    gchar *command = g_key_file_get_string (key_file, "CompanionApps",
+						     key, NULL);
+	    g_free (key);
+	    g_free (data->companion_app_commands[i]);
+	    data->companion_app_commands[i] = command && *command ? command : NULL;
+	    if (!data->companion_app_commands[i])
+	      g_free (command);
+	  }
+	}
+    }
+
+    {
       static const gchar * const shortcut_keys[SCREENATOR_SHORTCUT_COUNT] =
 	{
 	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
 	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
+	  "CompanionApp1", "CompanionApp2", "CompanionApp3",
+	  "CompanionApp4", "CompanionApp5",
+	  "CompanionApp6", "CompanionApp7",
 	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
 	  "ToggleVisibility", "ExitPaper",
 	  "Quit", "Escape"
@@ -1347,6 +1475,15 @@ void read_keyfile(ScreenatorData *data)
 	      g_free (data->shortcuts[i].text);
 	      data->shortcuts[i].text = text ? text : g_strdup ("");
 	    }
+	}
+
+      /* The old calculator shortcut is intentionally ignored; its replacement
+	 * is CompanionApp1 with the new Ctrl+1 default. */
+      if (g_key_file_has_key (key_file, "Shortcuts", "ShowCalculator", NULL))
+	{
+	  gchar *old_shortcut = g_key_file_get_string (key_file, "Shortcuts",
+						       "ShowCalculator", NULL);
+	  g_free (old_shortcut);
 	}
     }
 
@@ -1393,6 +1530,8 @@ void write_keyfile(ScreenatorData *data)
     g_key_file_set_integer (key_file, "Drawing", "PenWidth", data->pen_width);
     g_key_file_set_integer (key_file, "Drawing", "EraserWidth",
 			    data->eraser_width);
+    g_key_file_set_integer (key_file, "Drawing", "CursorDotSize",
+			    data->cursor_dot_size);
     g_key_file_set_string (key_file, "Drawing", "PenColor", color);
     g_key_file_set_integer (key_file, "Drawing", "IconSize", data->icon_size);
     g_key_file_set_integer (key_file, "Drawing", "IconPosition",
@@ -1505,6 +1644,9 @@ void write_keyfile(ScreenatorData *data)
 	{
 	  "FloatingIcon", "Pen", "Text", "Arrow", "Timer", "Toolbar",
 	  "SwitchMode", "Screenshot", "Undo", "Redo", "Save",
+	  "CompanionApp1", "CompanionApp2", "CompanionApp3",
+	  "CompanionApp4", "CompanionApp5",
+	  "CompanionApp6", "CompanionApp7",
 	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
 	  "ToggleVisibility", "ExitPaper",
 	  "Quit", "Escape"
@@ -1516,6 +1658,25 @@ void write_keyfile(ScreenatorData *data)
 			       data->shortcuts[i].text
 			       ? data->shortcuts[i].text
 			       : screenator_shortcut_defaults[i]);
+    }
+    {
+      static const gchar * const app_keys[] =
+	{ "App1", "App2", "App3", "App4", "App5", "App6", "App7" };
+      guint i;
+
+	for (i = 0; i < G_N_ELEMENTS (app_keys); i++)
+	{
+	  g_key_file_set_string (key_file, "CompanionApps", app_keys[i],
+			 data->companion_app_ids[i]
+			 ? data->companion_app_ids[i] : "");
+	  {
+	    gchar *key = g_strdup_printf ("App%uCommand", i + 1);
+	    g_key_file_set_string (key_file, "CompanionApps", key,
+			   data->companion_app_commands[i]
+			   ? data->companion_app_commands[i] : "");
+	    g_free (key);
+	  }
+	}
     }
     g_key_file_set_string (key_file, "Drawing", "Tool",
 			   (data->pen_tool >= 0 &&

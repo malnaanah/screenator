@@ -958,7 +958,7 @@ void raise_icon_window (ScreenatorData *data)
 {
   GdkWindow *icon_window;
 
-  /* The Paper Drawing tool bar is part of the paper, so keep it above the
+  /* The Paper Drawing toolbar is part of the paper, so keep it above the
    * full-screen annotation window. */
   if (data->paper_top_bar && gtk_widget_get_visible (data->paper_top_bar))
     {
@@ -1474,6 +1474,104 @@ gint reshape (gpointer user_data)
 
 /* Cursor that belongs to a paint context.  The paint bucket shares the shape
  * context with the other shapes, so its type is checked separately. */
+static GdkCursor *
+tool_cursor_with_color (ScreenatorData *data, const gchar **xpm,
+			gint hot_x, gint hot_y, const GdkRGBA *color,
+			gboolean show_x)
+{
+  GdkPixbuf *pixbuf = gdk_pixbuf_new_from_xpm_data (xpm);
+  gint width, height, channels, rowstride, x, y;
+  guchar *pixels;
+  GdkCursor *cursor;
+  gint center_x, center_y;
+  gdouble radius, rim_radius;
+
+  if (!pixbuf)
+    return NULL;
+
+  width = gdk_pixbuf_get_width (pixbuf);
+  height = gdk_pixbuf_get_height (pixbuf);
+  channels = gdk_pixbuf_get_n_channels (pixbuf);
+  rowstride = gdk_pixbuf_get_rowstride (pixbuf);
+  pixels = gdk_pixbuf_get_pixels (pixbuf);
+  center_x = width / 2;
+  center_y = height / 2;
+  radius = CLAMP (data->cursor_dot_size, 1, 24) / 2.0;
+  rim_radius = radius + 1.0;
+  if (show_x)
+    {
+      radius = MAX (radius, 3.0);
+      rim_radius = radius + 1.0;
+    }
+
+  /* The white rim keeps the dot or X visible on dark cursor art. */
+  for (y = MAX (0, center_y - (gint) ceil (rim_radius));
+       y <= MIN (height - 1, center_y + (gint) ceil (rim_radius)); y++)
+    for (x = MAX (0, center_x - (gint) ceil (rim_radius));
+         x <= MIN (width - 1, center_x + (gint) ceil (rim_radius)); x++)
+      {
+	const gint dx = x - center_x;
+	const gint dy = y - center_y;
+	const gdouble distance_squared = dx * dx + dy * dy;
+	const gdouble diagonal_distance = fabs ((gdouble) ABS (dx) - ABS (dy));
+	const gboolean x_mark = show_x && ABS (dx) <= radius &&
+	  ABS (dy) <= radius && diagonal_distance < 0.5;
+	const gboolean x_rim = show_x && ABS (dx) <= rim_radius &&
+	  ABS (dy) <= rim_radius && diagonal_distance <= 1.5;
+	const gboolean rim = show_x ? x_rim
+	  : distance_squared <= rim_radius * rim_radius;
+	const gboolean mark = show_x ? x_mark
+	  : distance_squared <= radius * radius;
+	guchar *pixel;
+
+	if (!rim)
+	  continue;
+	pixel = pixels + y * rowstride + x * channels;
+	pixel[0] = mark ? (show_x ? 0 :
+			   (guchar) (CLAMP (color->red, 0.0, 1.0) * 255.0 + 0.5))
+	               : 255;
+	pixel[1] = mark ? (show_x ? 0 :
+			   (guchar) (CLAMP (color->green, 0.0, 1.0) * 255.0 + 0.5))
+	               : 255;
+	pixel[2] = mark ? (show_x ? 0 :
+			   (guchar) (CLAMP (color->blue, 0.0, 1.0) * 255.0 + 0.5))
+	               : 255;
+	if (channels == 4)
+	  pixel[3] = 255;
+      }
+
+  cursor = gdk_cursor_new_from_pixbuf (data->display, pixbuf, hot_x, hot_y);
+  g_object_unref (pixbuf);
+  return cursor;
+}
+
+void
+screenator_update_tool_cursors (ScreenatorData *data)
+{
+  GdkRGBA fill;
+
+  if (!data || !data->display)
+    return;
+  fill = data->shape_fill_color;
+
+  if (data->paint_cursor)
+    g_object_unref (data->paint_cursor);
+  if (data->text_cursor)
+    g_object_unref (data->text_cursor);
+  if (data->bucket_cursor)
+    g_object_unref (data->bucket_cursor);
+
+  data->paint_cursor = tool_cursor_with_color (
+    data, paint_cursor_xpm, paint_cursor_x_hot, paint_cursor_y_hot,
+    &data->pen_color, FALSE);
+  data->text_cursor = tool_cursor_with_color (
+    data, text_cursor_xpm, text_cursor_x_hot, text_cursor_y_hot,
+    &data->pen_color, FALSE);
+  data->bucket_cursor = tool_cursor_with_color (
+    data, bucket_cursor_xpm, bucket_cursor_x_hot, bucket_cursor_y_hot, &fill,
+    !data->shape_fill_enabled);
+}
+
 GdkCursor *get_tool_cursor (ScreenatorData *data,
 			    ScreenatorPaintContext *context)
 {
@@ -5486,26 +5584,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   /* 
      CURSORS
   */
-  GdkPixbuf* paint_cursor_pixbuf = gdk_pixbuf_new_from_xpm_data(paint_cursor_xpm);
-  data->paint_cursor = gdk_cursor_new_from_pixbuf(data->display,
-						  paint_cursor_pixbuf,
-						  paint_cursor_x_hot,
-						  paint_cursor_y_hot);
-  g_object_unref (paint_cursor_pixbuf);
-
-  GdkPixbuf* text_cursor_pixbuf = gdk_pixbuf_new_from_xpm_data(text_cursor_xpm);
-  data->text_cursor = gdk_cursor_new_from_pixbuf(data->display,
-						 text_cursor_pixbuf,
-						 text_cursor_x_hot,
-						 text_cursor_y_hot);
-  g_object_unref (text_cursor_pixbuf);
-
-  GdkPixbuf* bucket_cursor_pixbuf = gdk_pixbuf_new_from_xpm_data(bucket_cursor_xpm);
-  data->bucket_cursor = gdk_cursor_new_from_pixbuf(data->display,
-						   bucket_cursor_pixbuf,
-						   bucket_cursor_x_hot,
-						   bucket_cursor_y_hot);
-  g_object_unref (bucket_cursor_pixbuf);
+  screenator_update_tool_cursors (data);
 
   /* Hand cursor shown while the paper is panned. */
   data->hand_cursor = gdk_cursor_new_from_name (data->display, "grab");
@@ -5611,6 +5690,9 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
     parse key file
   */
   read_keyfile(data);
+  /* Cursor objects are first created before settings are loaded.  Rebuild
+   * them now so the saved dot size and initial colours take effect at launch. */
+  screenator_update_tool_cursors (data);
 
   /* Start on the desktop with Plain selected. Keep the remembered PDF and
    * paper documents so their pages and paper-size settings remain available. */
@@ -5700,7 +5782,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
   apply_pen_settings (data);
 
   /* Screenator always starts with no drawing tool active: the Cursor tool is
-   * selected in the tool bar until the user chooses a tool.  A tool that was
+   * selected in the toolbar until the user chooses a tool.  A tool that was
    * selected when the application last quit must not look active on launch
    * before it has actually been activated. */
   data->pen_tool = 0;

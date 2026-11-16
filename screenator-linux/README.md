@@ -23,7 +23,7 @@ kept.
   Hints), Line Thickness, Line Color, Shapes Fill Color, Paper, Eraser Size,
   Opacity, Marker Opacity, Settings..., About and Quit. Quit uses `quit.png` and is also the
   last button in the toolbar. The icon turns into its active (red)
-  variant while a painting mode is on. The floating icon and tool bar stay
+  variant while a painting mode is on. The floating icon and toolbar stay
   clickable while a tool is selected; hovering them shows the normal pointer
   and suspends drawing.
   **Settings**
@@ -34,8 +34,9 @@ kept.
   size, position locking, and each icon's visibility and order, changed by
   dragging), a
   **Floating Icon** tab (icon size, position and settings indicator) and a
-  **Shortcuts** tab (every editable shortcut). The tool bar
-  and floating icon are visible by default. Settings apply as they are changed;
+  **Shortcuts** tab (every editable shortcut). The toolbar
+  and floating icon are visible by default. Toolbar controls and floating-icon
+  options apply as they are changed. Other settings apply when the dialog closes;
   shortcut and custom paper-size fields apply when Enter is pressed or the field
   loses focus.
   Screen Annotation mode also starts with the drawing window visible, even
@@ -58,7 +59,7 @@ kept.
   using the current line colour. Its opacity is 40% by default and is
   independent of the global pen opacity. The **Marker Opacity** menu with 10%,
   20%, 30%, 40%, 50%, 60%, 70%, 80% and 90% is available from the app menu and
-  tool bar; the choice is remembered across restarts. Selecting the Marker switches the line colour to yellow; leaving
+  toolbar; the choice is remembered across restarts. Selecting the Marker switches the line colour to yellow; leaving
   the Marker or exiting painting restores the colour that was active before.
   The mouse wheel or the stylus first side button changes its colour.
 - **Timer** (F12) is available in Screen Annotation mode only. It releases the
@@ -72,17 +73,28 @@ kept.
   the frozen background.
 - Line Thickness offers 1, 2, 3, 4, 5, 6, 12, 24 and 48 pixels; the menu marks the
   entry closest to the current width.
-- In Screen mode, while painting is active, the mouse wheel steps the line
-  colours, including the custom colour, or the shape fill colours over the
-  Paint Bucket. In Paper mode it scrolls pages, including with Paint Bucket
-  selected; with another tool selected, it changes the colour of active text
-  or shape handles instead.
+- The Pen, shape and Text cursors show the current line colour at their
+  centre. The Paint Bucket cursor shows the current fill colour, or an X when
+  Shapes Fill Color is None. Set the dot
+  size from 1 to 24 pixels in **Settings > General**; it defaults to 8.
+- In Screen mode, the mouse wheel changes the line colour, or the fill colour
+  with Paint Bucket selected. A short middle click or stylus side button 1
+  changes the active colour when no text or shape handles are being edited;
+  with Eraser selected, it changes eraser size. The stylus button also changes
+  Paint Bucket fill colour. In Paper mode the wheel scrolls pages,
+  and a middle-button press held for 200 ms or dragged pans the page. A short
+  middle click changes the active colour; the wheel changes colour only while
+  text or shape handles are being edited.
+  Line colour defaults to red and cycles Red, Blue, Green, Black, Orange,
+  Yellow, Gray, White, then Custom.
   With Paint Bucket selected, a middle click changes the fill colour; with
   Eraser selected, it changes the eraser size. Middle clicks do not erase.
   Right click accepts typed text first, then commits
   visible handles on another click; a later right click starts erasing without
   exiting the selected tool.
-  In Screen mode, with Eraser selected, right click or stylus button 2 changes its size.
+  In Screen mode, with Eraser selected, a short first side-button click
+  changes its size; holding and dragging right click or stylus button 2 erases
+  while hovering.
 - Shapes are drawn by dragging: press where the shape should start, move the
   pointer and release. The Line and Arrow follow the drag direction, which
   snaps to 0, 30, 45, 60, 90 and so on while `Ctrl` is held; without it the
@@ -93,7 +105,7 @@ kept.
   handle, and dragging the line itself moves the whole shape. Clicking outside,
   double-clicking or right-clicking commits it. The ellipse, rounded rectangle,
   polygon and triangle can optionally be filled using the Shapes Fill Color
-  submenu; the default is no fill and green is its first colour. Their outlines
+  submenu; yellow is the default fill colour. Their outlines
   are drawn outside the shape border, so a thick stroke never covers the
   inside of the shape. Line Color
   and Shapes Fill Color also have a Custom... entry. It opens a colour
@@ -182,9 +194,9 @@ kept.
   The area must be enclosed by drawn strokes and must not reach the
   screen edge; otherwise nothing is filled, so clicking outside a shape cannot
   flood the whole screen. With None selected the bucket erases the enclosed
-  fill instead, leaving the strokes around it. The tool shows a bucket cursor. Green is the first
-  shape fill colour and the default, so a first fill is green; Red is the last
-  entry in the submenu.
+  fill instead, leaving the strokes around it. The tool shows a bucket cursor.
+  Yellow is the default fill colour. The fill menu and cycle order is Yellow,
+  Gray, White, Red, Blue, Green, Black, Orange, Custom, then None.
 - The eraser size can be set to 20, 40, 60 or 120 pixels. Both the erasing area
   and the circular eraser cursor follow the selected size.
 - The Text tool shows an I-beam cursor and writes directly at the click
@@ -229,7 +241,7 @@ kept.
   Plain, Ruled and Graph
   are white pages (with blue writing lines for Ruled and a grey square grid for
   Graph), and selecting **PDF File** opens the desktop's own file chooser (KDE,
-  GNOME, etc.). **Reset Page or PDF File** in the Paper menu or the tool bar's
+  GNOME, etc.). **Reset Page or PDF File** in the Paper menu or the toolbar's
   Paper Type menu resets the current Plain, Ruled or Graph paper to one empty page,
   or opens another PDF when the current paper is PDF. If the current paper has
   unsaved changes, Screenator asks whether to save it in the Documents folder
@@ -259,7 +271,8 @@ kept.
   events instead of being grabbed globally. Pressing Ctrl+W again returns to
   fullscreen. **Ctrl+D** leaves fullscreen into a borderless, non-resizable
   window covering the monitor, so the desktop panel stays above the page;
-  press it again to return to fullscreen. In every Paper presentation
+  press it again to return to fullscreen. **Ctrl+1** through **Ctrl+7** show the configured Companion Apps above the paper while keeping
+  the desktop panel hidden. Configure up to seven apps in **Settings > Companions Apps** using the desktop app chooser or an optional command/path; their icons appear in the Paper toolbar. In every Paper presentation
   (fullscreen, Ctrl+D and Window mode), the drawing tool and cursor are
   limited to the Paper window, and Ctrl/Alt shortcuts are received only while
   that window is focused. **Ctrl+S**, or the **Save** toolbar button
@@ -300,10 +313,11 @@ kept.
   its handles on the next click, then starts erasing on a later click. The mouse wheel
   scrolls the pages, except while a placed shape or text shows its handles:
   then the wheel and stylus button 1 change its colour. While text is being
-  typed, the wheel and stylus side button 1 also change the text colour.
+  typed, the wheel, middle mouse button and stylus side button 1 also change
+  the text colour.
   Right click, stylus side button 2 or mouse button 2 accepts the text like
   Enter. **F10** shows
-  or hides the tool bar in both **Screen** and **Paper** modes.
+  or hides the toolbar in both **Screen** and **Paper** modes.
   By default the bar is horizontal along the top edge; **Settings > General**
   can make it vertical along the right edge, and **Settings > Toolbar** chooses
   which icons are shown and their order.
@@ -371,13 +385,13 @@ kept.
   and the opened PDF file and page. `Reset app settings and drawings` deletes
   the configuration file and saved drawings, clears every paper page, and
   restores red, 6 px, 100% opacity, no shape fill, Segoe Print Bold 24, a 60 px
-  eraser, a 48x48 icon, a 2 s Timer Delay, a visible 32 px horizontal tool bar
+  eraser, a 48x48 icon, a 2 s Timer Delay, a visible 32 px horizontal toolbar
   with all icons, and **Paper** mode off. Beside it, `Open Configuration
   Folder` opens `~/.config/Screenator`, and the folder path is shown below the
   buttons.
 - `F9` is a global shortcut that shows or hides the floating icon at any
   time. `F8` selects the Pen tool, `F6` the Arrow tool, `F7` the Text
-  tool and `F12` starts the Timer. `F10` shows or hides the tool bar in
+  tool and `F12` starts the Timer. `F10` shows or hides the toolbar in
   both modes (horizontal on the top by default; vertical on the right when
   chosen in **Settings > General**). `F3` activates the selected paper
   or turns it off. `F4` saves a screenshot of the current screen, including
@@ -395,13 +409,16 @@ kept.
 - Stylus: **IMPORTANT:** In your stylus configuration, set button 1 (near the
   tip) to **Middle Click** and button 2 to **Right Click**. The tip draws like
   the left mouse button, using the selected line
-  width; pen pressure is ignored so it behaves exactly like the mouse. The
-  first side button and the middle mouse button do not erase. With Pen
-  selected, middle mouse does nothing. While a text or shape still shows its
+  width; pen pressure is ignored so it behaves exactly like the mouse. With
+  Eraser selected, pressing and holding the tip button while hovering erases.
+  A short middle click or first side button click changes eraser size; holding
+  or dragging it pans in Paper mode.
+  While a text or shape still shows its
   handles, the first side button changes its colour instead. The second side
   button acts like right click: it accepts text, then commits visible handles
-  on another click before a later click erases, without exiting the tool. In Screen mode, with Eraser selected it
-  changes eraser size; the first side button erases in Screen mode when Eraser is selected.
+  on another click before a later click erases, without exiting the tool. In
+  Screen mode, with Eraser selected, the second side button or right click
+  erases while held and dragged, including while hovering.
   There is no side-button popup menu. In **Paper Drawing** the buttons
   change roles: hold side button 1 or the middle mouse button to pan, and hold
   side button 2 or the right mouse button to erase. Middle click never erases.
@@ -443,9 +460,9 @@ tools and runtime, and skips files already downloaded. Both scripts use
 
 The script builds the project and produces all three packages in `../build-linux/`:
 
-- `screenator_8.1_amd64.deb`
-- `screenator-8.1-1.x86_64.rpm`
-- `Screenator-8.1-x86_64.AppImage`
+- `screenator_8.2_amd64.deb`
+- `screenator-8.2-1.x86_64.rpm`
+- `Screenator-8.2-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

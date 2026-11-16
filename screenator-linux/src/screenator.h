@@ -37,9 +37,12 @@
 #endif
 
 /* Toolbar items in their default order.  The same ids are used by the
- * Settings > Toolbar page and by the tool bar builder. */
+ * Settings > Toolbar page and by the toolbar builder. */
+#define SCREENATOR_COMPANION_APP_COUNT 7
+
 #define PAPER_TOOLBAR_DEFAULT_ITEMS \
   "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,screenshot,save," \
+  "companion1,companion2,companion3,companion4,companion5,companion6,companion7," \
   "paper,insert_before,delete_page,insert_after,page_number,goto_page,clear," \
   "visibility,eraser_size," \
   "line_color,thickness,fill_color,opacity,marker_opacity,settings,hints,quit"
@@ -236,6 +239,13 @@ typedef enum
   SCREENATOR_SHORTCUT_UNDO,
   SCREENATOR_SHORTCUT_REDO,
   SCREENATOR_SHORTCUT_SAVE,
+  SCREENATOR_SHORTCUT_COMPANION_1,
+  SCREENATOR_SHORTCUT_COMPANION_2,
+  SCREENATOR_SHORTCUT_COMPANION_3,
+  SCREENATOR_SHORTCUT_COMPANION_4,
+  SCREENATOR_SHORTCUT_COMPANION_5,
+  SCREENATOR_SHORTCUT_COMPANION_6,
+  SCREENATOR_SHORTCUT_COMPANION_7,
   SCREENATOR_SHORTCUT_INSERT_BEFORE,
   SCREENATOR_SHORTCUT_INSERT_AFTER,
   SCREENATOR_SHORTCUT_CLEAR_SCREEN,
@@ -568,6 +578,9 @@ typedef struct
    * and the second side button is button 3 (Escape). */
   gboolean             stylus_eraser_active;
   gboolean             menu_button_down;
+  guint32              stylus_color_step_time;
+  gdouble              stylus_color_step_x;
+  gdouble              stylus_color_step_y;
 
   /* Smooth pen strokes: the last smoothed end point and the last raw
    * motion sample, used to finish the curve when the button is released. */
@@ -659,6 +672,7 @@ typedef struct
   gdouble      opacity;
   guint        pen_width;
   guint        eraser_width;
+  guint        cursor_dot_size;
   GdkRGBA      pen_color;
   GdkRGBA      custom_line_color;
   GdkRGBA      marker_color; /* line colour with marker_opacity for the Marker */
@@ -678,7 +692,7 @@ typedef struct
   gboolean     timer_active;
 
   /* Number of Screenator control windows (floating icon, settings ring,
-   * tool bar) under the pointer.  The drawing tool cursor is replaced by the
+   * toolbar) under the pointer.  The drawing tool cursor is replaced by the
    * normal cursor while this is above zero. */
   gint         controls_hover;
   guint        controls_hover_idle;
@@ -820,7 +834,7 @@ typedef struct
   GHashTable  *pdf_page_memory;
   gboolean     paper_saving;
 
-  /* The Hand tool in the paper tool bar: the left mouse button or stylus
+  /* The Hand tool in the paper toolbar: the left mouse button or stylus
    * tip pans the paper instead of drawing. */
   gboolean     paper_hand_tool;
 
@@ -831,6 +845,8 @@ typedef struct
   guint        paper_pan_button;
   gint64       paper_pan_started;
   gboolean     paper_pan_moved;
+  gboolean     paper_pan_color_cycle;
+  gboolean     mouse_middle_color_pending;
 
   /* Temporary eraser while the right mouse button or stylus side button 2
    * is pressed in Paper Drawing. */
@@ -838,11 +854,13 @@ typedef struct
   GdkDevice   *paper_eraser_device;
   gboolean     paper_eraser_was_grabbed;
 
-  /* Tool bar toggled with F10; horizontal on the top by default. */
+  /* Toolbar toggled with F10; horizontal on the top by default. */
   GtkWidget   *paper_top_bar;
   gpointer     paper_top_bar_data;
   guint        paper_toolbar_icon_size;
   gboolean     paper_toolbar_open;
+  gboolean     settings_dialog_open;
+  gboolean     paper_toolbar_settings_update;
   gboolean     paper_toolbar_vertical;  /* else horizontal */
   gboolean     paper_toolbar_position_locked;
   gdouble      paper_toolbar_x_ratio;
@@ -862,6 +880,15 @@ typedef struct
   gboolean     paper_window_fullscreen;
   gboolean     paper_window_mode;
   gboolean     paper_window_focused;
+  gboolean     companion_app_active[SCREENATOR_COMPANION_APP_COUNT];
+  gboolean     companion_app_bound[SCREENATOR_COMPANION_APP_COUNT];
+  guint        companion_app_watch_id[SCREENATOR_COMPANION_APP_COUNT];
+  guint        companion_app_watch_attempts[SCREENATOR_COMPANION_APP_COUNT];
+  GPid         companion_app_pids[SCREENATOR_COMPANION_APP_COUNT];
+  gulong       companion_app_windows[SCREENATOR_COMPANION_APP_COUNT];
+  gulong       companion_app_previous_focus[SCREENATOR_COMPANION_APP_COUNT];
+  gchar       *companion_app_ids[SCREENATOR_COMPANION_APP_COUNT];
+  gchar       *companion_app_commands[SCREENATOR_COMPANION_APP_COUNT];
   guint        paper_window_fit_id;
 
   /* Guards against a dialog-opening menu entry firing twice. */
@@ -928,6 +955,8 @@ void paper_size_dimensions (ScreenatorData *data, gint *canvas_width,
 void draw_paper_pattern (cairo_t *cr, ScreenatorPaperType paper,
 			 gint width, gint height);
 void paper_take_focus (ScreenatorData *data);
+void screenator_paper_companion_active (ScreenatorData *data, guint slot,
+					gboolean active);
 void paper_restore_focus (ScreenatorData *data);
 void screenator_enter_paper_drawing (ScreenatorData *data,
 				     ScreenatorPaperType paper);
@@ -1090,6 +1119,7 @@ void stroke_finish_all (ScreenatorData *data);
 
 GdkCursor *get_tool_cursor (ScreenatorData *data,
 			    ScreenatorPaintContext *context);
+void screenator_update_tool_cursors (ScreenatorData *data);
 void set_device_cursor (ScreenatorData *data, GdkDevice *device,
 			ScreenatorPaintContext *context);
 

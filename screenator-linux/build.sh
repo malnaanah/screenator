@@ -14,9 +14,9 @@ set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 BUILD="$ROOT/../build-linux"
-DEB="$BUILD/screenator_8.1_amd64.deb"
-RPM="$BUILD/screenator-8.1-1.x86_64.rpm"
-APPIMAGE="$BUILD/Screenator-8.1-x86_64.AppImage"
+DEB="$BUILD/screenator_8.2_amd64.deb"
+RPM="$BUILD/screenator-8.2-1.x86_64.rpm"
+APPIMAGE="$BUILD/Screenator-8.2-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -162,12 +162,13 @@ install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 8.1
+Version: 8.2
 Section: x11
 Priority: optional
 Architecture: amd64
 Maintainer: Mahmoud Alnaanah <malnaanah@gmail.com>
 Depends: libayatana-appindicator3-1 (>= 0.2.92), libc6 (>= 2.34), libcairo2 (>= 1.10.0), libgdk-pixbuf-2.0-0 (>= 2.22.0), libglib2.0-0 (>= 2.39.4), libgtk-3-0 (>= 3.21.4), libpoppler-glib8 (>= 0.20), libx11-6, libxi6 (>= 2:1.2.99.4)
+Recommends: qalculate-gtk
 Installed-Size: 320
 Description: vibe-coded screen annotation tool based on Gromit-MPX
  Screenator is an on-screen annotation tool for X11.  Draw over any
@@ -248,13 +249,14 @@ cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
 %define _build_id_links none
 %global __os_install_post %{nil}
 Name:           screenator
-Version:        8.1
+Version:        8.2
 Release:        1
 Summary:        Vibe-coded screen annotation tool based on Gromit-MPX
 License:        GPL-2.0-or-later
 URL:            https://github.com/malnaanah/screenator
 BuildArch:      x86_64
 AutoReqProv:    yes
+Recommends:     qalculate-gtk
 
 %description
 Screenator is an on-screen annotation tool for X11.  Draw over any running
@@ -298,6 +300,8 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 %changelog
+* Mon Nov 16 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 8.2-1
+- Screenator 8.2
 * Sat Nov 14 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 8.1-1
 - Screenator 8.1
 EOF
@@ -315,7 +319,7 @@ else
   "$RPMBUILD" -bb --define "_topdir $RPMTOP" \
     --define "_tmppath $RPMTMP" "$RPMTOP/SPECS/screenator.spec"
 fi
-cp "$RPMTOP/RPMS/x86_64/screenator-8.1-1.x86_64.rpm" "$RPM"
+cp "$RPMTOP/RPMS/x86_64/screenator-8.2-1.x86_64.rpm" "$RPM"
 echo "==> Built: $RPM"
 
 # ---------------------------------------------------------------------------
@@ -383,7 +387,7 @@ done
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=8.1
+export LINUXDEPLOY_OUTPUT_VERSION=8.2
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.
