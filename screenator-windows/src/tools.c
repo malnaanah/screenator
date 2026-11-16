@@ -12,15 +12,15 @@ const unsigned g_delays[9] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
 const NamedColor g_line_colors[8] =
 {
   { "Red", "#FF0000" }, { "Blue", "#0000FF" }, { "Green", "#00AA00" },
-  { "Black", "#000000" }, { "Orange", "#FF8000" }, { "Gray", "#808080" },
-  { "Yellow", "#FFFF00" }, { "White", "#FFFFFF" }
+  { "Black", "#000000" }, { "Orange", "#FF8000" }, { "Yellow", "#FFFF00" },
+  { "Gray", "#808080" }, { "White", "#FFFFFF" }
 };
 
 const NamedColor g_fill_colors[9] =
 {
-  { "Yellow", "#FFFF00" }, { "Orange", "#FF8000" }, { "Gray", "#808080" },
-  { "White", "#FFFFFF" }, { "Green", "#00AA00" }, { "Red", "#FF0000" },
-  { "Blue", "#0000FF" }, { "Black", "#000000" }, { "None", "none" }
+  { "Yellow", "#FFFF00" }, { "Gray", "#808080" }, { "White", "#FFFFFF" },
+  { "Red", "#FF0000" }, { "Blue", "#0000FF" }, { "Green", "#00AA00" },
+  { "Black", "#000000" }, { "Orange", "#FF8000" }, { "None", "none" }
 };
 
 static double angle0;

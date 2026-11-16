@@ -435,6 +435,42 @@ static void menu_color_swatch(HMENU menu, UINT id, Color color)
   SetMenuItemBitmaps(menu, id, MF_BYCOMMAND, bmp, bmp);
 }
 
+static void menu_none_swatch(HMENU menu, UINT id)
+{
+  BITMAPINFO bi;
+  void *bits = NULL;
+  HBITMAP bmp;
+  if (menu_color_bitmap_count >= MENU_COLOR_BITMAP_MAX) return;
+  memset(&bi, 0, sizeof(bi));
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = 18;
+  bi.bmiHeader.biHeight = -16;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  bmp = CreateDIBSection(NULL, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+  if (!bmp || !bits)
+    {
+      if (bmp) DeleteObject(bmp);
+      return;
+    }
+  {
+    uint32_t *px = (uint32_t *) bits;
+    for (int y = 0; y < 16; y++)
+      for (int x = 0; x < 18; x++)
+        {
+          uint32_t c = (x == 0 || x == 17 || y == 0 || y == 15)
+            ? 0xFF303030u : 0xFFFFFFFFu;
+          if (x >= 3 && x <= 14 && y >= 2 && y <= 13 &&
+              abs((x - 3) - (y - 2)) <= 1)
+            c = 0xFFE02020u;
+          px[y * 18 + x] = c;
+        }
+  }
+  menu_color_bitmaps[menu_color_bitmap_count++] = bmp;
+  SetMenuItemBitmaps(menu, id, MF_BYCOMMAND, bmp, bmp);
+}
+
 static void menu_color_bitmaps_clear(void)
 {
   for (int i = 0; i < menu_color_bitmap_count; i++)
@@ -530,8 +566,11 @@ static HMENU build_fill_color_menu(void)
       MultiByteToWideChar(CP_UTF8, 0, g_fill_colors[i].label, -1, wl, 32);
       add_radio(sub, CMD_FILL_BASE + i, wl,
                 i == 8 ? idx == 9 : idx == i);
-      menu_color_swatch(sub, CMD_FILL_BASE + i,
-                        color_from_hex(g_fill_colors[i].hex, NULL));
+      if (i == 8)
+        menu_none_swatch(sub, CMD_FILL_BASE + i);
+      else
+        menu_color_swatch(sub, CMD_FILL_BASE + i,
+                          color_from_hex(g_fill_colors[i].hex, NULL));
     }
   AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
   add_radio(sub, CMD_FILL_CUSTOM, L"Custom...", idx == 8);
