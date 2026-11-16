@@ -5,7 +5,7 @@
 set -e
 cd "$(dirname "$0")"
 WINDOWS_DIR="$(pwd)"
-OUTPUT_DIR="$WINDOWS_DIR/../build-windows"
+OUTPUT_DIR="${SCREENATOR_OUTPUT_DIR:-$WINDOWS_DIR/../build-windows}"
 BUILD_DIR="$OUTPUT_DIR/build"
 DIST_DIR="$OUTPUT_DIR/dist"
 export PATH=/mingw64/bin:$PATH

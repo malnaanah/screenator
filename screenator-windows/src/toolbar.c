@@ -59,6 +59,13 @@ static const TbAction tb_actions[] =
     TB_POPUP_MARKER_OPACITY },
   { "settings", "Settings", "settings.png", CMD_SETTINGS, 0 },
   { "hints", "Show Hints", "hint.png", CMD_SHOW_HINTS, 0 },
+  { "companion1", "Companion App 1", "actions.png", CMD_COMPANION1, 0 },
+  { "companion2", "Companion App 2", "actions.png", CMD_COMPANION1 + 1, 0 },
+  { "companion3", "Companion App 3", "actions.png", CMD_COMPANION1 + 2, 0 },
+  { "companion4", "Companion App 4", "actions.png", CMD_COMPANION1 + 3, 0 },
+  { "companion5", "Companion App 5", "actions.png", CMD_COMPANION1 + 4, 0 },
+  { "companion6", "Companion App 6", "actions.png", CMD_COMPANION1 + 5, 0 },
+  { "companion7", "Companion App 7", "actions.png", CMD_COMPANION1 + 6, 0 },
   { "quit", "Quit", "quit.png", CMD_QUIT, 0 }
 };
 #define TB_ACTION_COUNT ((int) (sizeof(tb_actions) / sizeof(tb_actions[0])))
@@ -193,6 +200,20 @@ static void tb_parse_order(const char *text, int *order, int *count)
       p = comma ? comma + 1 : NULL;
     }
 
+  /* Companion controls are grouped immediately before Quit in both this
+   * settings order and the rendered toolbar, including upgraded profiles. */
+  int quit = tb_action_index("quit");
+  for (int slot = 1; slot <= COMPANION_COUNT; slot++)
+    {
+      char id[24]; _snprintf(id, sizeof(id), "companion%d", slot);
+      int idx = tb_action_index(id);
+      if (idx < 0 || seen[idx] || *count >= TB_ACTION_COUNT) continue;
+      int at = *count;
+      for (int j = 0; j < *count; j++) if (order[j] == quit) { at = j; break; }
+      memmove(&order[at + 1], &order[at], (size_t)(*count - at) * sizeof(order[0]));
+      order[at] = idx; (*count)++; seen[idx] = 1;
+    }
+
   /* Keep the setting list complete; new actions are appended so they stay
    * available without disturbing an existing order. */
   for (int i = 0; i < TB_ACTION_COUNT; i++)
@@ -234,6 +255,22 @@ static int tb_load_items(void)
   char buf[TOOLBAR_ITEMS_MAX];
 
   memcpy(old, tb_items, sizeof(tb_items));
+  if (!tb_list_is_none(g.toolbar_items))
+    for (int slot = 1; slot <= COMPANION_COUNT; slot++)
+      if (slot == 1 || g.companion_apps[slot - 1][0])
+        {
+          char id[24]; _snprintf(id, sizeof(id), "companion%d", slot);
+          if (strstr(g.toolbar_items, id)) continue;
+          size_t used = strlen(g.toolbar_items);
+          char *q = strstr(g.toolbar_items, ",quit");
+          size_t at = q ? (size_t)(q - g.toolbar_items) : used;
+          size_t n = strlen(id);
+          if (used + n + 2 >= sizeof(g.toolbar_items)) break;
+          memmove(g.toolbar_items + at + n + 1, g.toolbar_items + at,
+                  used - at + 1);
+          memcpy(g.toolbar_items + at, id, n);
+          g.toolbar_items[at + n] = ',';
+        }
   memset(seen, 0, sizeof(seen));
   tb_count = 0;
 
@@ -285,6 +322,8 @@ static int tb_action_visible(int idx)
   if (!strcmp(id, "timer"))
     return !paper;
   if (!strcmp(id, "save")) return paper;
+  if (!strncmp(id, "companion", 9))
+    { int slot = atoi(id + 9) - 1; return slot >= 0 && slot < COMPANION_COUNT && g.companion_apps[slot][0]; }
   return 1;
 }
 
@@ -292,6 +331,7 @@ static int tb_action_enabled(int idx)
 {
   const char *id = tb_actions[idx].id;
   int paper = g.paper != PAPER_NONE;
+  if (!strncmp(id, "companion", 9)) return 1;
   if (!strcmp(id, "page_insert_before") ||
       !strcmp(id, "page_insert_after"))
     return paper && g.paper != PAPER_PDF;
@@ -444,6 +484,28 @@ static HBITMAP tb_icon(const char *name, int size)
       return NULL;
     }
   return bmp;
+}
+
+static void tb_companion_executable(int slot, wchar_t *path, size_t cap)
+{
+  const wchar_t *saved = g.companion_apps[slot];
+  size_t n = wcslen(saved);
+  path[0] = 0;
+  if (!wcscmp(saved, L"Calculator"))
+    {
+      wcsncpy(path, L"C:\\Program Files\\Calc\\calc1.exe", cap - 1);
+      path[cap - 1] = 0;
+      return;
+    }
+  if (GetFileAttributesW(saved) != INVALID_FILE_ATTRIBUTES)
+    { wcsncpy(path, saved, cap - 1); path[cap - 1] = 0; return; }
+  const wchar_t *start = saved, *end;
+  if (*start == L'"') { start++; end = wcschr(start, L'"'); }
+  else end = wcschr(start, L' ');
+  if (!end) end = saved + n;
+  size_t len = (size_t)(end - start);
+  if (len >= cap) len = cap - 1;
+  wcsncpy(path, start, len); path[len] = 0;
 }
 
 static int tb_active(int cmd)
@@ -758,11 +820,43 @@ static void tb_paint(HWND h)
       else
         {
           const char *icon_name = a->icon;
+          HICON custom_icon = NULL;
+          int owns_custom_icon = 0;
+          int custom_slot = -1;
           if (!strcmp(a->id, "visibility"))
             icon_name = g.hide_drawings ? "eye-closed.png"
                                         : "eye-opened.png";
-          HBITMAP icon = tb_icon(icon_name, tb_size);
-          if (icon)
+          if (!strncmp(a->id, "companion", 9))
+            {
+              custom_slot = atoi(a->id + 9) - 1;
+              if (custom_slot >= 0 && custom_slot < COMPANION_COUNT)
+                {
+                  wchar_t exe[COMPANION_PATH_MAX];
+                  tb_companion_executable(custom_slot, exe,
+                                          COMPANION_PATH_MAX);
+                  if (exe[0] && GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES)
+                    {
+                      SHFILEINFOW info;
+                      if (SHGetFileInfoW(exe, 0, &info, sizeof(info),
+                                         SHGFI_ICON | SHGFI_SMALLICON))
+                        { custom_icon = info.hIcon; owns_custom_icon = 1; }
+                      else if (ExtractIconExW(exe, 0, NULL, &custom_icon, 1))
+                        owns_custom_icon = 1;
+                    }
+                  if (!custom_icon)
+                    custom_icon = LoadIconW(NULL, IDI_APPLICATION);
+                }
+            }
+          HBITMAP icon = custom_icon ? NULL : tb_icon(icon_name, tb_size);
+          if (custom_icon)
+            {
+              int x = r.left + (r.right - r.left - tb_size) / 2;
+              int y = r.top + (r.bottom - r.top - tb_size) / 2;
+              DrawIconEx(mem, x, y, custom_icon, tb_size, tb_size, 0,
+                         NULL, DI_NORMAL);
+              if (owns_custom_icon) DestroyIcon(custom_icon);
+            }
+          else if (icon)
             {
               HDC idc = CreateCompatibleDC(dc);
               HGDIOBJ io = SelectObject(idc, icon);
@@ -774,6 +868,16 @@ static void tb_paint(HWND h)
                          tb_size, bf);
               SelectObject(idc, io);
               DeleteDC(idc);
+            }
+          if (custom_slot >= 0 && custom_slot < COMPANION_COUNT)
+            {
+              wchar_t exe[COMPANION_PATH_MAX];
+              tb_companion_executable(custom_slot, exe, COMPANION_PATH_MAX);
+              if (g.companion_apps[custom_slot][0] &&
+                  (!exe[0] || GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES))
+                DrawIconEx(mem, r.right - 16, r.bottom - 16,
+                           LoadIconW(NULL, IDI_WARNING), 16, 16, 0,
+                           NULL, DI_NORMAL);
             }
         }
     }

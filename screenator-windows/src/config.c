@@ -8,24 +8,170 @@
 #include <wchar.h>
 #include <ctype.h>
 
+static HANDLE companion_process[COMPANION_COUNT];
+static DWORD companion_pid[COMPANION_COUNT];
+static HWND companion_window[COMPANION_COUNT];
+static int companion_active[COMPANION_COUNT];
+static int companion_calculator[COMPANION_COUNT];
+
+static void companion_restore_paper(void)
+{
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    if (companion_active[i]) return;
+  if (g.paper != PAPER_NONE && g.overlay)
+    {
+      toolbar_hide_temporary(0);
+      app_activate_overlay_input();
+      SetForegroundWindow(g.overlay);
+    }
+}
+
+typedef struct { DWORD pid; HWND hwnd; } CompanionWindowSearch;
+static BOOL CALLBACK companion_find_window(HWND h, LPARAM lp)
+{
+  CompanionWindowSearch *s = (CompanionWindowSearch *) lp;
+  DWORD pid = 0;
+  if (!IsWindowVisible(h)) return TRUE;
+  GetWindowThreadProcessId(h, &pid);
+  if (pid == s->pid && GetWindow(h, GW_OWNER) == NULL)
+    { s->hwnd = h; return FALSE; }
+  return TRUE;
+}
+
+void companion_launch(int slot)
+{
+  if (slot < 0 || slot >= COMPANION_COUNT) return;
+  const wchar_t *saved = g.companion_apps[slot];
+  if (companion_process[slot] && companion_window[slot] &&
+      IsWindow(companion_window[slot]))
+    { SetForegroundWindow(companion_window[slot]); return; }
+  if (companion_active[slot]) return;
+  if (!saved[0])
+    { MessageBoxW(g.overlay, L"Choose an app for this slot in Settings > Companion Apps.", L"Companion app not configured", MB_OK | MB_ICONINFORMATION); return; }
+  wchar_t app[COMPANION_PATH_MAX];
+  const wchar_t *args = L"";
+  int calculator = !wcscmp(saved, L"Calculator");
+  size_t n = wcslen(saved);
+  if (calculator)
+    wcscpy(app, L"C:\\Program Files\\Calc\\calc1.exe");
+  else if (GetFileAttributesW(saved) != INVALID_FILE_ATTRIBUTES)
+    { wcscpy(app, saved); }
+  else
+    {
+      const wchar_t *end;
+      if (*saved == L'"')
+        { end = wcschr(saved + 1, L'"'); if (!end) end = saved + n; wcsncpy(app, saved + 1, (size_t)(end - saved - 1)); app[end - saved - 1] = 0; args = *end ? end + 1 : end; }
+      else
+        { end = wcschr(saved, L' '); if (!end) end = saved + n; wcsncpy(app, saved, (size_t)(end - saved)); app[end - saved] = 0; args = *end ? end + 1 : end; }
+    }
+  if (GetFileAttributesW(app) == INVALID_FILE_ATTRIBUTES && !wcschr(saved, L' '))
+    wcscpy(app, saved);
+  const wchar_t *app_base = wcsrchr(app, L'\\');
+  if (app_base && !_wcsicmp(app_base + 1, L"calc1.exe")) calculator = 1;
+  SHELLEXECUTEINFOW sei;
+  memset(&sei, 0, sizeof(sei));
+  sei.cbSize = sizeof(sei); sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+  sei.lpVerb = L"open";
+  sei.lpFile = app;
+  sei.lpParameters = calculator ? NULL : args;
+  sei.nShow = SW_SHOWNORMAL;
+  if (!ShellExecuteExW(&sei))
+    {
+      DWORD launch_error = GetLastError();
+      wchar_t msg[768];
+      if (calculator)
+        _snwprintf(msg, 768, L"Could not start Windows Calculator. Make sure Calculator is installed, or choose another app in Settings > Companion Apps.\n\nWindows error: %lu", launch_error);
+      else
+        _snwprintf(msg, 768, L"Could not start this companion app. Check its path or command in Settings > Companion Apps.\n\nWindows error: %lu", launch_error);
+      MessageBoxW(NULL, msg, calculator ? L"Calculator launch failed" :
+                  L"Companion app launch failed", MB_OK | MB_ICONERROR);
+      return;
+    }
+  companion_process[slot] = sei.hProcess;
+  companion_pid[slot] = sei.hProcess ? GetProcessId(sei.hProcess) : 0;
+  companion_window[slot] = NULL; companion_active[slot] = 1;
+  const wchar_t *base = wcsrchr(app, L'\\');
+  companion_calculator[slot] = calculator || !wcscmp(app, L"calc") ||
+    (base && !_wcsicmp(base + 1, L"calc.exe")) ||
+    (base && !_wcsicmp(base + 1, L"calc1.exe")) ||
+    (!base && !_wcsicmp(app, L"calc.exe"));
+  if (g.paper != PAPER_NONE)
+    app_set_click_through(1);
+  SetTimer(g.msgwin, TIMER_COMPANION + (UINT_PTR) slot, 250, NULL);
+}
+
+void companion_poll(int slot)
+{
+  if (slot < 0 || slot >= COMPANION_COUNT || !companion_active[slot]) return;
+  if (!companion_window[slot])
+    {
+      CompanionWindowSearch s = { companion_pid[slot], NULL };
+      if (s.pid) EnumWindows(companion_find_window, (LPARAM) &s);
+      if (!s.hwnd && companion_calculator[slot])
+        {
+          HWND calc = FindWindowW(L"ApplicationFrameWindow", L"Calculator");
+          if (calc && IsWindowVisible(calc)) s.hwnd = calc;
+        }
+      if (s.hwnd)
+        {
+          companion_window[slot] = s.hwnd;
+          SetWindowLongPtrW(s.hwnd, GWLP_HWNDPARENT, (LONG_PTR) g.overlay);
+          SetWindowPos(s.hwnd, HWND_TOP, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+  if (companion_process[slot] &&
+      WaitForSingleObject(companion_process[slot], 0) == WAIT_OBJECT_0)
+    {
+      if (companion_window[slot] && IsWindow(companion_window[slot]))
+        return; /* Some launchers exit after handing off to a GUI process. */
+      KillTimer(g.msgwin, TIMER_COMPANION + (UINT_PTR) slot);
+      CloseHandle(companion_process[slot]); companion_process[slot] = NULL;
+      companion_pid[slot] = 0; companion_window[slot] = NULL;
+      companion_active[slot] = 0;
+      companion_restore_paper();
+    }
+  else if (companion_window[slot] && !IsWindow(companion_window[slot]))
+    {
+      /* Keep Screenator alive; closing the companion only restores Paper. */
+      companion_window[slot] = NULL;
+      if (companion_process[slot]) CloseHandle(companion_process[slot]);
+      companion_process[slot] = NULL; companion_pid[slot] = 0;
+      companion_active[slot] = 0;
+      companion_restore_paper();
+    }
+}
+
+static void companion_find_calculator(void)
+{
+  wcscpy(g.companion_apps[0], L"C:\\Program Files\\Calc\\calc1.exe");
+}
+
 const char *g_shortcut_keys[SK_COUNT] =
 {
   "arrow", "text", "pen", "floating_icon", "toolbar", "switch_mode",
   "screenshot", "timer", "undo", "redo", "leave_paper",
-  "toggle_visibility", "clear_screen", "delete_page", "quit"
+  "toggle_visibility", "clear_screen", "delete_page", "quit",
+  "companion_app_1", "companion_app_2", "companion_app_3",
+  "companion_app_4", "companion_app_5", "companion_app_6",
+  "companion_app_7"
 };
 
 const char *g_shortcut_defaults[SK_COUNT] =
 {
   "F6", "F7", "F8", "F9", "F10", "F3", "F4", "F12",
-  "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Delete", "Ctrl+X", "Alt+F4"
+  "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Delete", "Ctrl+X", "Alt+F4",
+  "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7"
 };
 
 const char *g_shortcut_labels[SK_COUNT] =
 {
   "Arrow", "Text", "Pen", "Floating Icon", "Toolbar", "Switch Mode",
   "Screenshot", "Timer", "Undo", "Redo", "Leave Paper",
-  "Toggle Visibility", "Clear Screen", "Delete Page", "Quit"
+  "Toggle Visibility", "Clear Screen", "Delete Page", "Quit",
+  "Companion App 1", "Companion App 2", "Companion App 3",
+  "Companion App 4", "Companion App 5", "Companion App 6",
+  "Companion App 7"
 };
 
 static wchar_t *wide_from_utf8(const char *s)
@@ -329,9 +475,9 @@ void config_defaults(void)
   g.opacity = 1.0;
   g.pen_color = color_from_hex("#FF0000", NULL);
   g.custom_line_color = color_from_hex("#FF00FF", NULL);
-  g.fill_color = color_from_hex("#00AA00", NULL);
+  g.fill_color = color_from_hex("#FFFF00", NULL);
   g.custom_fill_color = color_from_hex("#FF00FF", NULL);
-  g.fill_enabled = 0;
+  g.fill_enabled = 1;
   g.marker_opacity = 0.4;
   g.marker_saved_valid = 0;
   strcpy(g.font, "Segoe Print Bold 24");
@@ -362,10 +508,13 @@ void config_defaults(void)
               sizeof(g.shortcuts[i]) - 1);
       g.shortcuts[i][sizeof(g.shortcuts[i]) - 1] = 0;
     }
+  memset(g.companion_apps, 0, sizeof(g.companion_apps));
+  companion_find_calculator();
   g.save_on_exit = 1;
   g.hide_hints = 0;
   g.wheel_mode = WHEEL_COLOR;
   g.stylus_mode = STYLUS_COLOR;
+  g.cursor_dot_size = 8;
   g.tool = TOOL_NONE;
   g.pending_tool = TOOL_NONE;
   g.tool_delay_seconds = 0;
@@ -449,7 +598,7 @@ void config_load_from(const wchar_t *path)
   g.fill_color = get_color(path, L"fill_color", g.fill_color);
   g.custom_fill_color = get_color(path, L"custom_fill_color",
                                   g.custom_fill_color);
-  g.fill_enabled = (int) get_int(path, L"fill_enabled", 0);
+  g.fill_enabled = (int) get_int(path, L"fill_enabled", 1);
   g.marker_opacity = get_double(path, L"marker_opacity", 0.4);
   if (g.marker_opacity < 0.1 || g.marker_opacity > 1.0) g.marker_opacity = 0.4;
 
@@ -487,6 +636,16 @@ void config_load_from(const wchar_t *path)
   g.toolbar_locked = (int) get_int(path, L"toolbar_locked", 0);
   g.screenshot_saved_message = (int) get_int(path, L"screenshot_saved_message", 1);
   g.pdf_saved_message = (int) get_int(path, L"pdf_saved_message", 1);
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    {
+      wchar_t key[48];
+      _snwprintf(key, 48, L"companion_app_%d", i + 1);
+      key[47] = 0;
+      GetPrivateProfileStringW(L"screenator", key, g.companion_apps[i],
+                               g.companion_apps[i], COMPANION_PATH_MAX, path);
+      if (!wcscmp(g.companion_apps[i], L"Calculator"))
+        wcscpy(g.companion_apps[i], L"C:\\Program Files\\Calc\\calc1.exe");
+    }
   {
     wchar_t tbuf[TOOLBAR_ITEMS_MAX];
     wchar_t tdef[TOOLBAR_ITEMS_MAX];
@@ -543,6 +702,9 @@ void config_load_from(const wchar_t *path)
   g.hide_hints = (int) get_int(path, L"hide_hints", 0);
   g.wheel_mode = (WheelMode) get_int(path, L"wheel_mode", 0);
   g.stylus_mode = (StylusMode) get_int(path, L"stylus_mode", 0);
+  g.cursor_dot_size = get_int(path, L"cursor_dot_size", 8);
+  if (g.cursor_dot_size < 1) g.cursor_dot_size = 1;
+  if (g.cursor_dot_size > 24) g.cursor_dot_size = 24;
   if (g.wheel_mode > WHEEL_THICKNESS) g.wheel_mode = WHEEL_COLOR;
   if (g.stylus_mode > STYLUS_THICKNESS) g.stylus_mode = STYLUS_COLOR;
 
@@ -610,6 +772,14 @@ void config_save(void)
     WritePrivateProfileStringW(L"screenator", L"screenshot_saved_message", num, g.config_path);
     _snwprintf(num, 32, L"%d", g.pdf_saved_message);
     WritePrivateProfileStringW(L"screenator", L"pdf_saved_message", num, g.config_path);
+    for (int i = 0; i < COMPANION_COUNT; i++)
+      {
+        wchar_t key[48];
+        _snwprintf(key, 48, L"companion_app_%d", i + 1);
+        key[47] = 0;
+        WritePrivateProfileStringW(L"screenator", key,
+                                   g.companion_apps[i], g.config_path);
+      }
 
     wchar_t *items = wide_from_utf8(g.toolbar_items[0] ? g.toolbar_items
                                                        : "none");
@@ -638,6 +808,9 @@ void config_save(void)
     WritePrivateProfileStringW(L"screenator", L"wheel_mode", num, g.config_path);
     _snwprintf(num, 32, L"%d", (int) g.stylus_mode);
     WritePrivateProfileStringW(L"screenator", L"stylus_mode", num, g.config_path);
+    _snwprintf(num, 32, L"%u", g.cursor_dot_size);
+    WritePrivateProfileStringW(L"screenator", L"cursor_dot_size", num,
+                               g.config_path);
   }
 
   color_to_hex(g.pen_color, hex, sizeof(hex));

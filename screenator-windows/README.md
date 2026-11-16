@@ -1,4 +1,4 @@
-# Screenator for Windows 8.1
+# Screenator for Windows 8.2
 
 A native Windows port of [Screenator 6.0](https://github.com/malnaanah/screenator),
 the screen annotation tool for X11. Draw over any running application with a
@@ -9,7 +9,7 @@ This port keeps Screenator's cairo-based drawing and tool behaviour and
 replaces the X11/GTK platform layer with Win32: a per-pixel layered overlay,
 native menus and dialogs, a tray icon, global hotkeys and a floating icon with
 the settings ring. It now includes the applicable Linux 8.0 behaviour; the
-version 8.1 adds page navigation with the wheel and Up/Down arrows when
+version 8.2 adds page navigation with the wheel and Up/Down arrows when
 continuous page scrolling is disabled.
 
 ## Features
@@ -132,13 +132,20 @@ continuous page scrolling is disabled.
   erases, and a short middle click keeps its fill-color or eraser-size action.
   Other tools and stylus input keep their existing behavior. The mouse wheel
   scrolls Paper pages with Paint Bucket selected as well.
-- In Paper mode the middle mouse button or the first stylus side button changes
-  color while text or shape handles are being edited. After editing is finished,
-  the middle button pans the continuous strip. Right click and stylus button 2
+- A mouse left click keeps its normal tool action and never changes the line
+  color or Paint Bucket fill color. In Screen mode, the mouse wheel advances
+  line color for Pen, Text and shapes, eraser size for Eraser, and fill color
+  for Paint Bucket. A middle click has the same tool-specific step in Screen
+  and Paper modes; in Paper mode, holding and dragging the middle button still
+  pans the page.
+- In Paper mode, a short middle click or short stylus side-button-1 click steps
+  the active tool setting: line color for Pen, Text and shapes, eraser size for
+  Eraser, or fill color for Paint Bucket. Holding and dragging the middle button
+  or side button pans the continuous strip. Right click and stylus button 2
   first accept text,
   then finish shape editing; after those steps they erase while held. The
-  first stylus side button changes the color while text or shape handles are
-  active. Choosing a paper type or opening a PDF brings the paper to the front.
+  color step keeps text or shape editing active. Choosing a paper type or
+  opening a PDF brings the paper to the front.
 - **Ctrl+W** toggles Paper mode between the full-screen strip and a framed
   window; drawing, the toolbar and the floating icon all work the same inside
   the window. Screen-size pages follow both the window width and height while
@@ -204,10 +211,16 @@ continuous page scrolling is disabled.
   Icon tab and remains configurable while the icon is hidden.
   **Settings > General > Show PDF saved message** controls the success notice
   after exporting a Paper document; save failures are always reported.
+  **Settings > General > Cursor color dot size** sets the 1–24 px indicator
+  shown at the center of the Pen, shape and Text cursors; it defaults to 8 px.
+  The Paint Bucket cursor shows its active fill color, or a black X with a
+  contrasting outline when **Shapes Fill Color** is **None**.
 - Tray menu, editable hints dialog with an About button, quick tool menu
   (Ctrl+F10), and a tabbed **Settings** dialog (General, Paper, Toolbar,
-  Floating Icon), math dialog and About window. Modal dialogs stay above the
-  overlay and the toolbar stays visible and usable while they are open.
+  Floating Icon, Companion Apps), math dialog and About window. Paper dialogs
+  are movable owned windows that stay above Paper and their parent dialogs;
+  they remain modal where appropriate. The toolbar stays visible and usable
+  while dialogs are open.
   Floating-icon size lives in
   Settings; the toolbar is toggled with **F10**. Paper types, Open PDF and
   Save Paper are not in Settings. General includes **Edit Shortcuts...** and
@@ -222,6 +235,14 @@ continuous page scrolling is disabled.
   fixed. Invalid or conflicting keys are rejected and the previous binding is
   kept. `F12` is reserved by Windows, so the Timer key is read by a keyboard
   hook instead of a registered hotkey.
+- **Settings > Companion Apps** configures seven optional companion slots. Use
+  **Choose...** to select an installed app from the list or browse for an
+  executable, or type a command/path directly;
+  **Clear** removes both values for that slot. The first slot defaults to
+  Windows Calculator when its launcher is available. If it is missing, the
+  toolbar shows a warning badge and explains how to install it or choose
+  another app. Companion windows remain above Paper while the Paper toolbar
+  stays visible. Closing a companion never closes Screenator.
 - Settings saved to `%APPDATA%\Screenator\screenator.ini`; drawings saved to
   `%APPDATA%\Screenator\screenator-annotations.png`. The INI stores toolbar
   direction, icon size, position, the ordered `toolbar_items` list (plus a
@@ -269,6 +290,7 @@ below lists the defaults; menu labels show the currently configured keys.
 | Clear Screen (Screen mode with a tool active or Paper mode) | `Delete` |
 | Delete Page (Paper mode) | `Ctrl+X` |
 | Quit | `Alt+F4` |
+| Companion App 1–7 (Paper mode) | `Ctrl+1` through `Ctrl+7` |
 
 - `Ctrl+F10` remains the quick tool menu.
 - While painting: `Esc` closes shape handles, a further `Esc` exits to Cursor.
@@ -327,9 +349,9 @@ the portable package in `dist/`:
       AUTHORS
       PDFIUM_LICENSE.txt
   release/
-    Screenator-8.1-win64/       portable package folder
-    Screenator-8.1-win64.zip
-    Screenator-8.1-win64-setup.exe
+    Screenator-8.2-win64/       portable package folder
+    Screenator-8.2-win64.zip
+    Screenator-8.2-win64-setup.exe
 ```
 
 Run `package.ps1` from PowerShell to copy `dist/` into the versioned portable
@@ -353,7 +375,7 @@ cd installer
 
 On Linux or macOS install `nsis` and run the same wrapper; it adds
 `-DPOSIX_BUILD` so the POSIX NSIS uses the right path separators. The result is
-`../build-windows/release/Screenator-8.1-win64-setup.exe`. The installer places
+`../build-windows/release/Screenator-8.2-win64-setup.exe`. The installer places
 the app in
 `%LOCALAPPDATA%\Programs\Screenator`, creates Start menu entries, and includes
 the **PDF Open with list** task, selected by default. That task registers
@@ -388,9 +410,9 @@ error path. The normal settings and annotation files are not changed.
 
 ## Notes on the Windows port
 
-- In Screen mode, the mouse wheel changes color only while typing text or
-  editing text/shape handles. Otherwise it does nothing, even with a tool
-  selected. In Paper mode, the wheel scrolls outside editing.
+- In Screen mode, the mouse wheel steps line color for Pen, Text and shapes,
+  eraser size for Eraser, and fill color for Paint Bucket. In Paper mode it
+  keeps its page-scrolling behavior outside editing.
 - The Screen overlay is a layered, always-on-top Win32 window. While a tool is
   active it takes the mouse; otherwise clicks pass through to the applications
   below.  **Paper mode uses a normal, opaque window** (painted from the same
@@ -403,31 +425,26 @@ error path. The normal settings and annotation files are not changed.
 - Pango/Cairo provide the same anti-aliased drawing and text rendering,
   including right-to-left text.
 - Stylus pens use Windows Ink pointer input plus a raw HID fallback: the tip
-  draws and the eraser tip erases. With no text or shape handles active, the
-  middle mouse button does nothing with the Pen tool selected. With the Eraser
-  tool selected, stylus button 1 erases
-  while held, including while the pen hovers. While the text editor is open or a
-  shape/text still shows its editing handles, the first side button changes the
-  color like the wheel instead; the text editor stays open and the handles stay
-  visible. Middle mouse changes the color while editing and keeps the editor or
-  handles active. After editing is finished, middle mouse pans the Paper page.
-  In Screen mode, middle mouse / Button 1 does nothing with Text or a shape
-  tool selected after the editing handles are closed.
-  This works while the pen hovers or
-  touches, and also when the driver promotes the side button to a middle,
-  right or browser mouse event: the global mouse hook turns that press into a
-  color step wherever the pen is over Screenator. The second side button
-  finishes or exits on a short press and accepts inline text; the right-button
-  menu is no longer shown in Screen mode. In Paper mode the first side button /
-  middle mouse pans and the second side button / right mouse is the temporary
-  eraser. When the pen exposes its HID barrel switch, Screenator reads it
-  directly so the first side button also works while the pen is merely
-  hovering; pointer-second-button reports are accepted as well. Recent pen
-  activity also lets promoted side-button mouse messages be
-  recognised as pen input. A real mouse click clears any stale pen state, so
-  switching from the stylus to the mouse works immediately.
-- The **Button 1 Mode** menu selects Color or Thickness for the stylus first
-  side button; the Eraser tool uses it to step through eraser sizes.
+  draws and the eraser tip erases. In Screen mode, side button 1 advances the
+  active setting on a short side-button-1 click: line color for Pen, Text and
+  shapes, eraser size for Eraser, or fill color for Paint Bucket. In Screen
+  mode this works while the pen hovers. A tip contact alone, including initial
+  low pressure, continues its normal drawing action. Drivers that promote
+  side button 1 to a left
+  click are recognized only with the pen in range and zero pressure. Duplicate
+  reports from the pointer, HID and promoted mouse paths count as one press;
+  separate rapid presses still count separately. These actions also work while
+  text or shape handles are being edited. Ordinary mouse left
+  clicks never change either color. In Paper mode, dragging with side button 1
+  pans the page; a short click steps the active tool setting. Side button 2 is
+  the temporary eraser. In Screen mode a long side-button-1 hold with Eraser
+  still starts erasing. The second side button finishes or exits on a short
+  press and accepts inline text; the right-button menu is no longer shown in
+  Screen mode. Windows Ink and raw HID reports are both supported. A real mouse
+  click clears stale pen state, so switching from the stylus to the mouse works
+  immediately.
+- The **Button 1 Mode** menu selects Color or Thickness for stylus input paths
+  that use the configured wheel-style action.
 - **Important pen-driver setting:** set the pen's **button 1 (nearest the
   tip) to Middle Click** and **button 2 to Right Click**. Screenator uses the
   middle-click event for button 1 and the right-click event for button 2. If

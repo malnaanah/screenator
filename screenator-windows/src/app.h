@@ -35,14 +35,16 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "8.1"
-#define APP_TITLE    "Screenator 8.1"
+#define APP_VERSION  "8.2"
+#define APP_TITLE    "Screenator 8.2"
 #define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
 
 #define TOOLBAR_ITEMS_MAX 1024
 #define SHORTCUT_TEXT_MAX 32
+#define COMPANION_COUNT 7
+#define COMPANION_PATH_MAX 512
 
 /* Toolbar items in their default order.  The same ids are used by the
  * Settings > Toolbar > Configure dialog and by the toolbar builder. */
@@ -50,14 +52,16 @@
   "switch_mode,cursor,pen,text,eraser,arrow,timer,shapes,undo,redo,screenshot,save," \
   "paper,page_insert_before,page_delete,page_insert_after,page_number," \
   "goto_page,clear,visibility,eraser_size,line_color,thickness,fill_color," \
-  "opacity,marker_opacity,settings,hints,quit"
+  "opacity,marker_opacity,settings,hints,companion1,companion2,companion3,companion4,companion5,companion6,companion7,quit"
 
 /* Editable shortcuts.  Escape and Ctrl+F10 stay fixed. */
 typedef enum
 {
   SK_ARROW = 0, SK_TEXT, SK_PEN, SK_ICON, SK_TOOLBAR, SK_SWITCH,
   SK_SHOT, SK_TIMER, SK_UNDO, SK_REDO, SK_PAPER_Q, SK_PAPER_T,
-  SK_CLEAR, SK_DELETE_PAGE, SK_QUIT, SK_COUNT
+  SK_CLEAR, SK_DELETE_PAGE, SK_QUIT,
+  SK_COMPANION1, SK_COMPANION2, SK_COMPANION3, SK_COMPANION4,
+  SK_COMPANION5, SK_COMPANION6, SK_COMPANION7, SK_COUNT
 } ShortcutId;
 
 /* Popup menus opened at a toolbar button. */
@@ -76,6 +80,7 @@ typedef enum
 #define TIMER_STYLUS_HOLD  8
 #define TIMER_PEN_POLL     9
 #define TIMER_COUNTDOWN   10
+#define TIMER_COMPANION   20
 
 /* Hotkey ids. */
 #define HK_PEN       100
@@ -109,7 +114,7 @@ enum
   CMD_WIDTH_6, CMD_WIDTH_12, CMD_WIDTH_24, CMD_WIDTH_48,
   CMD_COLOR_BASE,              /* +8 presets */
   CMD_COLOR_CUSTOM = CMD_COLOR_BASE + 8,
-  CMD_FILL_BASE,               /* +9 presets, first is None */
+  CMD_FILL_BASE,               /* +9 presets, None is last */
   CMD_FILL_CUSTOM = CMD_FILL_BASE + 9,
   CMD_PAPER_NONE, CMD_PAPER_PLAIN, CMD_PAPER_RULED, CMD_PAPER_GRAPH,
   CMD_PAPER_PDF,
@@ -140,6 +145,10 @@ enum
   CMD_PAPER_UNDO, CMD_PAPER_REDO, CMD_PAPER_CONTINUOUS,
   CMD_PAPER_RESET
 };
+
+#define CMD_COMPANION1 9101
+#define CMD_COMPANION7 (CMD_COMPANION1 + 6)
+#define HK_COMPANION1  120
 
 typedef struct { double r, g, b, a; } Color;
 
@@ -301,6 +310,7 @@ typedef struct
   int toolbar_locked;
   int screenshot_saved_message;
   int pdf_saved_message;
+  wchar_t companion_apps[COMPANION_COUNT][COMPANION_PATH_MAX];
   char toolbar_items[TOOLBAR_ITEMS_MAX];
   char toolbar_order[TOOLBAR_ITEMS_MAX];
   char shortcuts[SK_COUNT][SHORTCUT_TEXT_MAX];
@@ -335,6 +345,7 @@ typedef struct
   Pt paper_pan_last;
   WheelMode wheel_mode;
   StylusMode stylus_mode;
+  unsigned cursor_dot_size;
   int autostart;
 
   /* Config paths. */
@@ -498,6 +509,8 @@ void config_load_from(const wchar_t *path);
 void config_save(void);
 void config_shortcuts_load(const wchar_t *path);
 void config_shortcuts_save(void);
+void companion_launch(int slot);
+void companion_poll(int slot);
 void annotations_save(void);
 void annotations_load(void);
 void annotations_remove(void);

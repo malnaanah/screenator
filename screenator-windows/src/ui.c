@@ -69,6 +69,20 @@ static const wchar_t *SETTINGS_CLASS = L"ScreenatorSettings";
 #define ID_SET_SCREENSHOT_MESSAGE 7234
 #define ID_SET_TOOLBAR_LOCK 7235
 #define ID_SET_PDF_MESSAGE 7236
+#define ID_SET_CURSOR_DOT 7237
+#define ID_SET_CURSOR_DOT_VALUE 7238
+#define ID_SET_CURSOR_DOT_LABEL 7239
+#define ID_SET_COMPANION_BASE 7300
+#define ID_COMPANION_LIST 7501
+#define ID_COMPANION_USE 7502
+#define ID_COMPANION_BROWSE 7503
+
+typedef struct { wchar_t name[128]; wchar_t path[COMPANION_PATH_MAX]; } InstalledApp;
+static InstalledApp installed_apps[256];
+static int installed_app_count;
+static wchar_t companion_choice[COMPANION_PATH_MAX];
+static int companion_choice_ready;
+static int companion_choice_slot;
 #define ID_SET_PAPER_SIZE 7228
 #define ID_SET_PAPER_W 7229
 #define ID_SET_PAPER_H 7230
@@ -212,6 +226,8 @@ static void run_modal(HWND hwnd, int outside_close)
   MSG msg;
   HWND prev_dialog = g.modal_dialog;
   int prev_flag = g.modal_outside_close;
+  int quit = 0;
+  int quit_code = 0;
 
   ui_prepare_dialog();
   modal_depth++;
@@ -222,8 +238,14 @@ static void run_modal(HWND hwnd, int outside_close)
                                          g.hinst, 0);
   ShowWindow(hwnd, SW_SHOW);
   app_force_foreground(hwnd);
-  while (IsWindow(hwnd) && GetMessageW(&msg, NULL, 0, 0) > 0)
+  while (IsWindow(hwnd))
     {
+      int result = GetMessageW(&msg, NULL, 0, 0);
+      if (result <= 0)
+        {
+          if (result == 0) { quit = 1; quit_code = (int) msg.wParam; }
+          break;
+        }
       if (!IsDialogMessageW(hwnd, &msg))
         {
           TranslateMessage(&msg);
@@ -235,9 +257,16 @@ static void run_modal(HWND hwnd, int outside_close)
       UnhookWindowsHookEx(modal_mouse_hook);
       modal_mouse_hook = NULL;
     }
+  if (quit && IsWindow(hwnd)) DestroyWindow(hwnd);
   g.modal_dialog = prev_dialog;
   g.modal_outside_close = prev_flag;
   modal_depth--;
+  if (quit) PostQuitMessage(quit_code);
+  else
+    {
+      HWND restore = IsWindow(prev_dialog) ? prev_dialog : g.overlay;
+      if (restore && IsWindow(restore)) app_force_foreground(restore);
+    }
 }
 
 void ui_run_modal(HWND hwnd, int outside_close)
@@ -499,15 +528,17 @@ static HMENU build_fill_color_menu(void)
     {
       wchar_t wl[32];
       MultiByteToWideChar(CP_UTF8, 0, g_fill_colors[i].label, -1, wl, 32);
-      add_radio(sub, CMD_FILL_BASE + i, wl, idx == i);
+      add_radio(sub, CMD_FILL_BASE + i, wl,
+                i == 8 ? idx == 9 : idx == i);
       menu_color_swatch(sub, CMD_FILL_BASE + i,
                         color_from_hex(g_fill_colors[i].hex, NULL));
     }
   AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
-  add_radio(sub, CMD_FILL_CUSTOM, L"Custom...", idx == 9);
+  add_radio(sub, CMD_FILL_CUSTOM, L"Custom...", idx == 8);
   menu_color_swatch(sub, CMD_FILL_CUSTOM, g.custom_fill_color);
-  CheckMenuRadioItem(sub, CMD_FILL_BASE, CMD_FILL_CUSTOM,
-                     idx == 9 ? CMD_FILL_CUSTOM : CMD_FILL_BASE + idx,
+  int checked = idx == 8 ? CMD_FILL_CUSTOM :
+                CMD_FILL_BASE + (idx == 9 ? 8 : idx);
+  CheckMenuRadioItem(sub, CMD_FILL_BASE, CMD_FILL_CUSTOM, checked,
                      MF_BYCOMMAND);
   return sub;
 }
@@ -817,7 +848,8 @@ static void menu_command(int id)
   if (id == CMD_COLOR_CUSTOM) { ui_choose_color(0); return; }
   if (id >= CMD_FILL_BASE && id < CMD_FILL_BASE + 9)
     {
-      apply_fill_color_index(id - CMD_FILL_BASE);
+      int index = id - CMD_FILL_BASE;
+      apply_fill_color_index(index == 8 ? 9 : index);
       return;
     }
   if (id == CMD_FILL_CUSTOM) { ui_choose_color(1); return; }
@@ -907,6 +939,8 @@ static void menu_command(int id)
 
 void ui_execute_command(int id)
 {
+  if (id >= CMD_COMPANION1 && id <= CMD_COMPANION7)
+    { companion_launch(id - CMD_COMPANION1); return; }
   menu_command(id);
 }
 
@@ -1433,7 +1467,7 @@ void ui_choose_color(int fill)
       g.custom_fill_color = c;
       g.fill_enabled = 1;
       g.fill_color = c;
-      apply_fill_color_index(9);
+      apply_fill_color_index(8);
     }
   else
     {
@@ -1597,10 +1631,11 @@ void ui_show_icon_position(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, POS_CLASS,
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, POS_CLASS,
                            L"Floating Icon Position", WS_POPUP | WS_CAPTION |
                            WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 340,
-                           250, g.overlay, NULL, g.hinst, NULL);
+                           250, g.modal_dialog ? g.modal_dialog : g.overlay,
+                           NULL, g.hinst, NULL);
   center_window(h, 340, 250);
   run_modal(h, 0);
 }
@@ -1712,7 +1747,7 @@ void ui_show_goto_page(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, GOTO_CLASS,
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, GOTO_CLASS,
                            L"Go to Page", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                            CW_USEDEFAULT, CW_USEDEFAULT, 350, 190, g.overlay,
                            NULL, g.hinst, NULL);
@@ -1739,6 +1774,18 @@ static void settings_sync(HWND h)
                  g.toolbar_locked ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(h, ID_SET_IND,
                  g.show_indicator ? BST_CHECKED : BST_UNCHECKED);
+  SendDlgItemMessageW(h, ID_SET_CURSOR_DOT, TBM_SETRANGE, TRUE,
+                      MAKELPARAM(1, 24));
+  SendDlgItemMessageW(h, ID_SET_CURSOR_DOT, TBM_SETPOS, TRUE,
+                      g.cursor_dot_size);
+  {
+    wchar_t dot[24];
+    _snwprintf(dot, 24, L"%u px", g.cursor_dot_size);
+    SetDlgItemTextW(h, ID_SET_CURSOR_DOT_VALUE, dot);
+  }
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    SetDlgItemTextW(h, ID_SET_COMPANION_BASE + i * 3,
+                    g.companion_apps[i]);
   CheckDlgButton(h, ID_SET_CONTINUOUS,
                  g.paper_continuous_scroll ? BST_CHECKED : BST_UNCHECKED);
   {
@@ -1799,6 +1846,12 @@ static void settings_show(HWND h, int id, int show)
 
 static void settings_show_tab(HWND h, int tab)
 {
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    {
+      for (int j = 0; j < 3; j++)
+      settings_show(h, ID_SET_COMPANION_BASE + i * 3 + j, 0);
+      settings_show(h, ID_SET_COMPANION_BASE + 100 + i, 0);
+    }
   for (int id = ID_SET_SAVE; id <= ID_SET_PDF_MESSAGE; id++)
     if (id != ID_SET_TAB) settings_show(h, id, 0);
   settings_show(h, CMD_PAPER_NONE, 0);
@@ -1806,6 +1859,9 @@ static void settings_show_tab(HWND h, int tab)
   settings_show(h, CMD_PAPER_RULED, 0);
   settings_show(h, CMD_PAPER_GRAPH, 0);
   settings_show(h, ID_SET_SIZE_VAL, 0);
+  settings_show(h, ID_SET_CURSOR_DOT, 0);
+  settings_show(h, ID_SET_CURSOR_DOT_VALUE, 0);
+  settings_show(h, ID_SET_CURSOR_DOT_LABEL, 0);
   settings_show(h, ID_SET_PAPER_SIZE_LABEL, 0);
   settings_show(h, ID_SET_PAPER_SIZE, 0);
   settings_show(h, ID_SET_PAPER_W_LABEL, 0);
@@ -1823,6 +1879,9 @@ static void settings_show_tab(HWND h, int tab)
       settings_show(h, ID_SET_RESET, 1);
       settings_show(h, ID_SET_OPEN_CFG, 1);
       settings_show(h, ID_SET_LABEL_PATH, 1);
+      settings_show(h, ID_SET_CURSOR_DOT, 1);
+      settings_show(h, ID_SET_CURSOR_DOT_VALUE, 1);
+      settings_show(h, ID_SET_CURSOR_DOT_LABEL, 1);
     }
   else if (tab == 1)
     {
@@ -1847,13 +1906,20 @@ static void settings_show_tab(HWND h, int tab)
       settings_show(h, ID_SET_CFG, 1);
       settings_show(h, ID_SET_TOOLBAR_LOCK, 1);
     }
-  else
+  else if (tab == 3)
     {
       settings_show(h, ID_SET_LABEL_ICON_SIZE, 1);
       settings_show(h, ID_SET_ICON_SIZE, 1);
       settings_show(h, ID_SET_POS2, 1);
       settings_show(h, ID_SET_IND, 1);
     }
+  else
+    for (int i = 0; i < COMPANION_COUNT; i++)
+      {
+        for (int j = 0; j < 3; j++)
+        settings_show(h, ID_SET_COMPANION_BASE + i * 3 + j, 1);
+        settings_show(h, ID_SET_COMPANION_BASE + 100 + i, 1);
+      }
 }
 
 static void ui_open_config_folder(void)
@@ -1905,6 +1971,243 @@ static void settings_apply_paper_size(HWND h)
   config_save();
 }
 
+static void ui_show_companion_picker(HWND owner);
+
+static int settings_companion_command(HWND h, WPARAM wp)
+{
+  int id = LOWORD(wp);
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    {
+      int edit = ID_SET_COMPANION_BASE + i * 3;
+      int browse = edit + 1, clear = edit + 2;
+      if (id == edit && HIWORD(wp) == EN_KILLFOCUS)
+        {
+          GetDlgItemTextW(h, edit, g.companion_apps[i], COMPANION_PATH_MAX);
+          config_save(); toolbar_refresh();
+          return 1;
+        }
+      if (id == clear && HIWORD(wp) == BN_CLICKED)
+        {
+          g.companion_apps[i][0] = 0;
+          SetDlgItemTextW(h, edit, L"");
+          config_save(); toolbar_refresh();
+          return 1;
+        }
+      if (id == browse && HIWORD(wp) == BN_CLICKED)
+        {
+          companion_choice_ready = 0;
+          companion_choice_slot = i;
+          ui_show_companion_picker(h);
+          if (companion_choice_ready)
+            {
+              wcsncpy(g.companion_apps[i], companion_choice,
+                      COMPANION_PATH_MAX - 1);
+              g.companion_apps[i][COMPANION_PATH_MAX - 1] = 0;
+              SetDlgItemTextW(h, edit, g.companion_apps[i]);
+              config_save(); toolbar_refresh();
+            }
+          return 1;
+        }
+    }
+  return 0;
+}
+
+static void installed_app_add(const wchar_t *name, const wchar_t *path)
+{
+  if (installed_app_count >= (int)(sizeof(installed_apps) / sizeof(installed_apps[0])) ||
+      !name || !name[0] || !path || !path[0]) return;
+  for (int i = 0; i < installed_app_count; i++)
+    if (!_wcsicmp(installed_apps[i].path, path)) return;
+  wcsncpy(installed_apps[installed_app_count].name, name,
+          sizeof(installed_apps[0].name) / sizeof(wchar_t) - 1);
+  wcsncpy(installed_apps[installed_app_count].path, path,
+          COMPANION_PATH_MAX - 1);
+  installed_app_count++;
+}
+
+static int __cdecl installed_app_compare(const void *left, const void *right)
+{
+  const InstalledApp *a = (const InstalledApp *) left;
+  const InstalledApp *b = (const InstalledApp *) right;
+  return _wcsicmp(a->name, b->name);
+}
+
+static void installed_apps_scan_folder(const wchar_t *folder, int depth)
+{
+  if (depth > 5 || installed_app_count >= 256) return;
+  wchar_t pattern[MAX_PATH * 2];
+  _snwprintf(pattern, sizeof(pattern) / sizeof(pattern[0]), L"%s\\*", folder);
+  WIN32_FIND_DATAW fd;
+  HANDLE find = FindFirstFileW(pattern, &fd);
+  if (find == INVALID_HANDLE_VALUE) return;
+  do
+    {
+      if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+      wchar_t full[MAX_PATH * 2];
+      _snwprintf(full, sizeof(full) / sizeof(full[0]), L"%s\\%s", folder,
+                 fd.cFileName);
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        { installed_apps_scan_folder(full, depth + 1); continue; }
+      size_t len = wcslen(fd.cFileName);
+      if (len < 5 || _wcsicmp(fd.cFileName + len - 4, L".lnk")) continue;
+
+      IShellLinkW *link = NULL;
+      IPersistFile *persist = NULL;
+      if (SUCCEEDED(CoCreateInstance(&CLSID_ShellLink, NULL,
+                                     CLSCTX_INPROC_SERVER, &IID_IShellLinkW,
+                                     (void **) &link)) && link)
+        {
+          if (SUCCEEDED(link->lpVtbl->QueryInterface(link, &IID_IPersistFile,
+                                                    (void **) &persist)) && persist &&
+              SUCCEEDED(persist->lpVtbl->Load(persist, full, STGM_READ)))
+            {
+              wchar_t target[MAX_PATH] = L"", args[256] = L"";
+              WIN32_FIND_DATAW target_data;
+              link->lpVtbl->GetPath(link, target, MAX_PATH, &target_data,
+                                    SLGP_RAWPATH);
+              link->lpVtbl->GetArguments(link, args, 256);
+              if (target[0] && GetFileAttributesW(target) != INVALID_FILE_ATTRIBUTES)
+                {
+                  wchar_t command[COMPANION_PATH_MAX];
+                  if (args[0])
+                    _snwprintf(command, COMPANION_PATH_MAX, L"\"%s\" %s",
+                               target, args);
+                  else
+                    wcsncpy(command, target, COMPANION_PATH_MAX - 1);
+                  command[COMPANION_PATH_MAX - 1] = 0;
+                  wchar_t name[128];
+                  size_t n = len - 4;
+                  if (n >= 128) n = 127;
+                  wcsncpy(name, fd.cFileName, n); name[n] = 0;
+                  installed_app_add(name, command);
+                }
+            }
+          if (persist) persist->lpVtbl->Release(persist);
+          link->lpVtbl->Release(link);
+        }
+    }
+  while (FindNextFileW(find, &fd));
+  FindClose(find);
+}
+
+static void installed_apps_load(void)
+{
+  installed_app_count = 0;
+  const wchar_t *calc = L"C:\\Program Files\\Calc\\calc1.exe";
+  if (GetFileAttributesW(calc) != INVALID_FILE_ATTRIBUTES)
+    installed_app_add(L"Calculator", calc);
+  HRESULT com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+  wchar_t folder[MAX_PATH];
+  if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_PROGRAMS, NULL, SHGFP_TYPE_CURRENT,
+                                 folder)))
+    installed_apps_scan_folder(folder, 0);
+  if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_COMMON_PROGRAMS, NULL,
+                                 SHGFP_TYPE_CURRENT, folder)))
+    installed_apps_scan_folder(folder, 0);
+  if (SUCCEEDED(com)) CoUninitialize();
+  qsort(installed_apps, (size_t) installed_app_count,
+        sizeof(installed_apps[0]), installed_app_compare);
+}
+
+static LRESULT CALLBACK companion_picker_proc(HWND h, UINT msg, WPARAM wp,
+                                              LPARAM lp)
+{
+  switch (msg)
+    {
+    case WM_CREATE:
+      {
+        HWND note = CreateWindowW(L"STATIC",
+          L"Select an installed app, or browse for an executable.",
+          WS_CHILD | WS_VISIBLE, 18, 14, 470, 24, h, NULL, g.hinst, NULL);
+        ui_set_font(note);
+        HWND list = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+          WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY |
+          LBS_HASSTRINGS | LBS_NOINTEGRALHEIGHT,
+          18, 44, 470, 326, h, (HMENU) (INT_PTR) ID_COMPANION_LIST,
+          g.hinst, NULL);
+        ui_set_font(list);
+        for (int i = 0; i < installed_app_count; i++)
+          {
+            int at = (int) SendMessageW(list, LB_ADDSTRING, 0,
+                                         (LPARAM) installed_apps[i].name);
+            SendMessageW(list, LB_SETITEMDATA, at, (LPARAM) i);
+            if (!_wcsicmp(installed_apps[i].path,
+                          g.companion_apps[companion_choice_slot]))
+              SendMessageW(list, LB_SETCURSEL, at, 0);
+          }
+        HWND b = CreateWindowW(L"BUTTON", L"Use App",
+          WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 206, 388, 90, 30, h,
+          (HMENU) (INT_PTR) ID_COMPANION_USE, g.hinst, NULL);
+        ui_set_font(b);
+        b = CreateWindowW(L"BUTTON", L"Browse Executable...",
+          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 18, 388, 170, 30, h,
+          (HMENU) (INT_PTR) ID_COMPANION_BROWSE, g.hinst, NULL);
+        ui_set_font(b);
+        b = CreateWindowW(L"BUTTON", L"Cancel",
+          WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 398, 388, 90, 30, h,
+          (HMENU) IDCANCEL, g.hinst, NULL);
+        ui_set_font(b);
+      }
+      return 0;
+    case WM_COMMAND:
+      if (LOWORD(wp) == ID_COMPANION_LIST && HIWORD(wp) == LBN_DBLCLK)
+        SendMessageW(h, WM_COMMAND, ID_COMPANION_USE, 0);
+      else if (LOWORD(wp) == ID_COMPANION_USE)
+        {
+          int at = (int) SendDlgItemMessageW(h, ID_COMPANION_LIST,
+                                              LB_GETCURSEL, 0, 0);
+          if (at != LB_ERR)
+            {
+              int index = (int) SendDlgItemMessageW(h, ID_COMPANION_LIST,
+                                                     LB_GETITEMDATA, at, 0);
+              if (index >= 0 && index < installed_app_count)
+                {
+                  wcsncpy(companion_choice, installed_apps[index].path,
+                          COMPANION_PATH_MAX - 1);
+                  companion_choice[COMPANION_PATH_MAX - 1] = 0;
+                  companion_choice_ready = 1;
+                  DestroyWindow(h);
+                }
+            }
+        }
+      else if (LOWORD(wp) == ID_COMPANION_BROWSE)
+        {
+          OPENFILENAMEW ofn; wchar_t path[COMPANION_PATH_MAX] = L"";
+          memset(&ofn, 0, sizeof(ofn)); ofn.lStructSize = sizeof(ofn);
+          ofn.hwndOwner = h;
+          ofn.lpstrFilter = L"Applications (*.exe)\0*.exe\0All files (*.*)\0*.*\0\0";
+          ofn.lpstrFile = path; ofn.nMaxFile = COMPANION_PATH_MAX;
+          ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+          if (GetOpenFileNameW(&ofn))
+            {
+              wcscpy(companion_choice, path); companion_choice_ready = 1;
+              DestroyWindow(h);
+            }
+        }
+      else if (LOWORD(wp) == IDCANCEL) DestroyWindow(h);
+      return 0;
+    case WM_CLOSE: DestroyWindow(h); return 0;
+    }
+  return DefWindowProcW(h, msg, wp, lp);
+}
+
+static void ui_show_companion_picker(HWND owner)
+{
+  static const wchar_t *cls = L"ScreenatorCompanionPicker";
+  WNDCLASSEXW wc; memset(&wc, 0, sizeof(wc));
+  wc.cbSize = sizeof(wc); wc.hInstance = g.hinst;
+  wc.lpfnWndProc = companion_picker_proc; wc.lpszClassName = cls;
+  wc.hbrBackground = (HBRUSH) (COLOR_WINDOW + 1);
+  wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+  RegisterClassExW(&wc);
+  installed_apps_load();
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, cls, L"Choose Companion App",
+    WS_POPUP | WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT,
+    520, 470, owner, NULL, g.hinst, NULL);
+  center_window(h, 520, 470);
+  run_modal(h, 0);
+}
+
 static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
   switch (msg)
@@ -1924,6 +2227,8 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         TabCtrl_InsertItem(tab, 2, &item);
         item.pszText = L"Floating Icon";
         TabCtrl_InsertItem(tab, 3, &item);
+        item.pszText = L"Companion Apps";
+        TabCtrl_InsertItem(tab, 4, &item);
       }
       settings_ctl(h, 0, L"BUTTON", L"Save annotations on exit",
                    BS_AUTOCHECKBOX, 30, 55, 300, 24, ID_SET_SAVE);
@@ -1943,6 +2248,13 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       settings_ctl(h, 0, L"STATIC",
                    L"Settings are stored in %APPDATA%\\Screenator",
                    SS_LEFT, 30, 230, 380, 22, ID_SET_LABEL_PATH);
+      settings_ctl(h, 0, L"STATIC", L"Cursor color dot size", SS_LEFT,
+                   30, 265, 150, 22, ID_SET_CURSOR_DOT_LABEL);
+      settings_ctl(h, 0, TRACKBAR_CLASSW, L"",
+                   WS_TABSTOP | TBS_HORZ | TBS_NOTICKS,
+                   175, 258, 190, 32, ID_SET_CURSOR_DOT);
+      settings_ctl(h, 0, L"STATIC", L"8 px", SS_LEFT,
+                   375, 265, 55, 22, ID_SET_CURSOR_DOT_VALUE);
 
       settings_ctl(h, 1, L"STATIC", L"Paper size", SS_LEFT,
                    30, 55, 90, 22, ID_SET_PAPER_SIZE_LABEL);
@@ -2009,6 +2321,21 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                    L"Show settings indicator on Floating Icon",
                    BS_AUTOCHECKBOX, 30, 135, 380, 24, ID_SET_IND);
 
+      for (int i = 0; i < COMPANION_COUNT; i++)
+        {
+          int y = 53 + i * 37;
+          wchar_t label[32];
+          _snwprintf(label, 32, L"App %d", i + 1);
+          settings_ctl(h, 4, L"STATIC", label, SS_LEFT,
+                       22, y + 5, 42, 22, ID_SET_COMPANION_BASE + 100 + i);
+          settings_ctl(h, 4, L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP,
+                       66, y, 240, 26, ID_SET_COMPANION_BASE + i * 3);
+          settings_ctl(h, 4, L"BUTTON", L"Choose...", BS_PUSHBUTTON,
+                       311, y, 82, 26, ID_SET_COMPANION_BASE + i * 3 + 1);
+          settings_ctl(h, 4, L"BUTTON", L"Clear", BS_PUSHBUTTON,
+                       398, y, 55, 26, ID_SET_COMPANION_BASE + i * 3 + 2);
+        }
+
       settings_ctl(h, 0, L"BUTTON", L"Close", BS_DEFPUSHBUTTON,
                    350, 330, 105, 30, IDOK);
       settings_show_tab(h, 0);
@@ -2035,10 +2362,23 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             _snwprintf(sz, 32, L"%d px", v);
             SetDlgItemTextW(h, ID_SET_SIZE_VAL, sz);
           }
+        else if (tb && GetDlgCtrlID(tb) == ID_SET_CURSOR_DOT)
+          {
+            int v = (int) SendMessageW(tb, TBM_GETPOS, 0, 0);
+            if (v < 1) v = 1;
+            if (v > 24) v = 24;
+            g.cursor_dot_size = (unsigned) v;
+            wchar_t sz[24];
+            _snwprintf(sz, 24, L"%d px", v);
+            SetDlgItemTextW(h, ID_SET_CURSOR_DOT_VALUE, sz);
+            app_update_cursor();
+            if (LOWORD(wp) == TB_ENDTRACK) config_save();
+          }
       }
       return 0;
 
     case WM_COMMAND:
+      if (settings_companion_command(h, wp)) { settings_sync(h); return 0; }
       switch (LOWORD(wp))
         {
         case ID_SET_SAVE: ui_execute_command(CMD_SAVE_ON_EXIT); break;
@@ -2095,9 +2435,11 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case IDOK:
           settings_apply_icon_size(h);
           settings_apply_paper_size(h);
+          config_save();
           DestroyWindow(h);
           return 0;
         case IDCANCEL:
+          config_save();
           DestroyWindow(h);
           return 0;
         }
@@ -2105,6 +2447,7 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
 
     case WM_CLOSE:
+      config_save();
       DestroyWindow(h);
       return 0;
     }
@@ -2123,10 +2466,11 @@ void ui_show_settings(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, SETTINGS_CLASS,
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, SETTINGS_CLASS,
                            L"Screenator Settings", WS_POPUP | WS_CAPTION |
                            WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 480, 410,
-                           g.overlay, NULL, g.hinst, NULL);
+                           g.modal_dialog ? g.modal_dialog : g.overlay,
+                           NULL, g.hinst, NULL);
   center_window(h, 480, 410);
   run_modal(h, 0);
 }
@@ -2232,19 +2576,20 @@ static LRESULT CALLBACK shortcuts_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
             free(wkey);
           }
 
+        int buttons_y = 56 + SK_COUNT * 26 + 42;
         st = CreateWindowW(L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                           16, 456, 520, 38, h,
+                           16, buttons_y - 40, 520, 38, h,
                            (HMENU) (INT_PTR) ID_SC_ERR, g.hinst, NULL);
         ui_set_font(st);
 
         HWND b = CreateWindowW(L"BUTTON", L"OK",
                                WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                               350, 500, 80, 28, h, (HMENU) IDOK, g.hinst,
+                               350, buttons_y, 80, 28, h, (HMENU) IDOK, g.hinst,
                                NULL);
         ui_set_font(b);
         b = CreateWindowW(L"BUTTON", L"Cancel",
                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                          442, 500, 80, 28, h, (HMENU) IDCANCEL, g.hinst,
+                          442, buttons_y, 80, 28, h, (HMENU) IDCANCEL, g.hinst,
                           NULL);
         ui_set_font(b);
       }
@@ -2305,11 +2650,12 @@ void ui_show_shortcuts(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, SHORTCUT_CLASS,
+  HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, SHORTCUT_CLASS,
                            L"Shortcuts", WS_POPUP | WS_CAPTION | WS_SYSMENU,
                            CW_USEDEFAULT, CW_USEDEFAULT, 550, 580,
-                           g.overlay, NULL, g.hinst, NULL);
-  center_window(h, 550, 580);
+                           g.modal_dialog ? g.modal_dialog : g.overlay,
+                           NULL, g.hinst, NULL);
+  center_window(h, 550, 56 + SK_COUNT * 26 + 100);
   run_modal(h, 0);
 }
 
@@ -2989,9 +3335,15 @@ static char *hints_rtf(void)
                   "selected tool. In Paper mode, dragging with Cursor or Paint "
                   "Bucket scrolls the pages. With Paint Bucket or Eraser, hold "
                   "the left or middle button 200 ms before dragging to scroll; "
-                  "short clicks keep their tool action.\\par\n");
-      sb_addf(&b, "\\cf1\\bullet\\cf0  While text or shape handles are being edited, middle click changes color and keeps editing active. After editing ends, it does nothing in Screen mode with the Text or a shape tool selected. Otherwise it erases while held, except with the Pen tool, or pans the page in Paper mode. In Paper mode, short middle clicks with Paint Bucket or Eraser keep their fill-color or eraser-size action.\\par\n");
-      sb_addf(&b, "\\cf1\\bullet\\cf0  In Screen mode, the mouse wheel changes color only while typing text or editing text/shape handles. Otherwise it does nothing, even with a tool selected. In Paper mode it scrolls outside editing, including with Paint Bucket selected.\\par\n");
+                  "short clicks keep their tool action. A left click never "
+                  "changes line or bucket fill color.\\par\n");
+      sb_addf(&b, "\\cf1\\bullet\\cf0  Settings > General > Cursor color "
+                  "dot size sets the 1 to 24 px dot at the Pen, shape and Text "
+                  "cursor centers (default 8 px). The Paint Bucket cursor shows "
+                  "its fill color; Shapes Fill Color None shows a black X with "
+                  "a contrasting outline.\\par\n");
+      sb_addf(&b, "\\cf1\\bullet\\cf0  Middle click steps the active setting in Screen and Paper modes: line color for Pen, Text and shapes, eraser size for Eraser, or fill color for Paint Bucket. Hold and drag in Paper mode to pan instead.\\par\n");
+      sb_addf(&b, "\\cf1\\bullet\\cf0  In Screen mode, the mouse wheel steps line color for Pen, Text and shapes, eraser size for Eraser, and fill color for Paint Bucket. In Paper mode it keeps its page-scrolling behavior outside editing.\\par\n");
       sb_addf(&b, "\\cf1\\bullet\\cf0  Right click first accepts text, then "
                   "finishes shape editing; the next right click erases while "
                   "held.\\par\n");
@@ -3001,16 +3353,20 @@ static char *hints_rtf(void)
                   "\\b button 1\\b0  (nearest the tip) to \\b Middle Click\\b0  "
                   "and \\b button 2\\b0  to \\b Right Click\\b0.\\par\n");
       sb_addf(&b, "\\cf2\\bullet\\cf0  Hold side button 1 with the "
-                  "Eraser selected to erase, even while hovering.\\par\n");
+                  "Eraser selected in Screen mode to erase. A short click "
+                  "steps the eraser size.\\par\n");
       sb_addf(&b, "\\cf2\\bullet\\cf0  \\b Long press side button 2\\b0  "
                   "opens the Button 1 Mode menu (Color or Thickness); a "
                   "long right click opens Scroll Mode.\\par\n");
-      sb_addf(&b, "\\cf2\\bullet\\cf0  Short press side button 1: step "
-                  "through the selected Color or Thickness, or the eraser "
-                  "size with the Eraser tool.\\par\n");
+      sb_addf(&b, "\\cf2\\bullet\\cf0  A short side button 1 click steps "
+                  "line color for Pen, Text and shapes, eraser size for Eraser, "
+                  "or fill color for Paint Bucket. In Screen mode this works "
+                  "while hovering. Tip contact alone keeps drawing, even at low "
+                  "initial pressure. Duplicate reports count once; separate "
+                  "rapid clicks are retained.\\par\n");
       sb_addf(&b, "\\cf2\\bullet\\cf0  In Paper mode, side button 1 "
-                  "or middle click pans the page when no edit handles are "
-                  "active.\\par\n");
+                  "or a short middle click steps the active tool setting; "
+                  "holding and dragging pans the page.\\par\n");
       sb_addf(&b, "\\cf2\\bullet\\cf0  Side button 2 follows the right-click "
                   "sequence: accept text, finish shape editing, then erase "
                   "while held.\\par\n");
@@ -3236,11 +3592,12 @@ void ui_show_hints(int startup)
   if (wa.bottom - wa.top - 80 < hgt) hgt = wa.bottom - wa.top - 80;
   if (hgt < 400) hgt = 400;
 
-  g.hintsdlg = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+  g.hintsdlg = CreateWindowExW(WS_EX_TOOLWINDOW,
                                HINTS_CLASS, L"Screenator Hints",
                                WS_POPUP | WS_CAPTION | WS_SYSMENU,
                                CW_USEDEFAULT, CW_USEDEFAULT, w, hgt,
-                               g.overlay, NULL, g.hinst, NULL);
+                               g.modal_dialog ? g.modal_dialog : g.overlay,
+                               NULL, g.hinst, NULL);
   center_window(g.hintsdlg, w, hgt);
   run_modal(g.hintsdlg, 0);
   g.hintsdlg = NULL;
@@ -3534,10 +3891,11 @@ void ui_show_math_dialog(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  g.mathdlg = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, MATH_CLASS,
+  g.mathdlg = CreateWindowExW(WS_EX_TOOLWINDOW, MATH_CLASS,
                               L"Math Function", WS_POPUP | WS_CAPTION |
                               WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 520,
-                              360, g.overlay, NULL, g.hinst, NULL);
+                              360, g.modal_dialog ? g.modal_dialog : g.overlay,
+                              NULL, g.hinst, NULL);
   center_window(g.mathdlg, 520, 360);
   run_modal(g.mathdlg, 0);
   g.mathdlg = NULL;
@@ -3616,10 +3974,11 @@ void ui_show_about(void)
   wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
   RegisterClassExW(&wc);
 
-  g.aboutdlg = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, ABOUT_CLASS,
+  g.aboutdlg = CreateWindowExW(WS_EX_TOOLWINDOW, ABOUT_CLASS,
                                L"About Screenator", WS_POPUP | WS_CAPTION |
                                WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 440,
-                               310, g.overlay, NULL, g.hinst, NULL);
+                               310, g.modal_dialog ? g.modal_dialog : g.overlay,
+                               NULL, g.hinst, NULL);
   center_window(g.aboutdlg, 440, 330);
   run_modal(g.aboutdlg, 0);
   g.aboutdlg = NULL;
@@ -3840,7 +4199,7 @@ void ui_quick_menu(void)
   for (int i = 0; i < QUICK_COUNT; i++)
     quick_icons[i] = NULL;
 
-  g.quickwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, QUICK_CLASS,
+  g.quickwnd = CreateWindowExW(WS_EX_TOOLWINDOW, QUICK_CLASS,
                                L"Quick Tools", WS_POPUP,
                                CW_USEDEFAULT, CW_USEDEFAULT, w, h, g.overlay,
                                NULL, g.hinst, NULL);
@@ -3851,13 +4210,23 @@ void ui_quick_menu(void)
   app_force_foreground(g.quickwnd);
 
   MSG msg;
-  while (IsWindow(g.quickwnd) && GetMessageW(&msg, NULL, 0, 0) > 0)
+  int quit = 0, quit_code = 0;
+  while (IsWindow(g.quickwnd))
     {
+      int result = GetMessageW(&msg, NULL, 0, 0);
+      if (result <= 0)
+        {
+          if (result == 0) { quit = 1; quit_code = (int) msg.wParam; }
+          break;
+        }
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+  if (quit && IsWindow(g.quickwnd)) DestroyWindow(g.quickwnd);
   modal_depth--;
   g.quickwnd = NULL;
+
+  if (quit) { PostQuitMessage(quit_code); return; }
 
   if (quick_result == QUICK_CURSOR)
     { app_cancel_timer(); tools_exit(); }

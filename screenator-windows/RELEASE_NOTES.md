@@ -1,10 +1,15 @@
-# Screenator for Windows 8.1
+# Screenator for Windows 8.2
 
 - In Paper mode with continuous page scrolling disabled, the mouse wheel and
   Up/Down arrows change pages.
 
 A portable 64-bit Windows release of the Screenator screen annotation tool,
 based on Screenator 6.0 by Mahmoud Alnaanah.
+
+## Windows 8.2 changes
+
+- Added configurable companion applications to the toolbar, with per-slot shortcuts.
+- Updated drawing, eraser, cursor and color-selection behavior across Screen and Paper modes.
 
 ## Windows 8.1 changes
 
@@ -463,3 +468,10 @@ Screenator.exe --smoke
 ## License
 
 GNU General Public License version 2 or later. See `COPYING`.
+- Added seven configurable Paper companion-app slots in Settings. Windows
+  Calculator is the first-slot default when found; a warning badge explains
+  when it is unavailable. Added Ctrl+1 through Ctrl+7 and Paper toolbar actions.
+  Companion windows stay above Paper while the toolbar stays visible; closing
+  one never closes Screenator.
+- Paper dialogs are now movable owned windows that stay above Paper and nested
+  parent dialogs while preserving modal behavior.

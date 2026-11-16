@@ -29,6 +29,11 @@ static cairo_surface_t *asset_icon_normal;
 static cairo_surface_t *asset_icon_active;
 static HCURSOR eraser_cursor_cache[4];
 static const int eraser_cursor_sizes[4] = { 20, 40, 60, 120 };
+static int tool_cursor_cache_valid;
+static int tool_cursor_owns_pen, tool_cursor_owns_text, tool_cursor_owns_bucket;
+static Color tool_cursor_line_color, tool_cursor_fill_color;
+static unsigned tool_cursor_dot_size;
+static int tool_cursor_fill_enabled;
 static int old_vx, old_vy, old_vw, old_vh;
 static WNDPROC edit_old_proc;
 static HHOOK g_wheel_hook;
@@ -44,6 +49,7 @@ static void right_button_up(Pt p);
 static int editable_handles_active(void);
 static void stylus_step(int dir, int colors_only);
 static void pen_scroll_tap(Pt p, int source);
+static void pen_barrel_begin(Pt p);
 static void pen_barrel_end(void);
 static int is_pen_mouse(void);
 static void pen_classify(DWORD pointer_flags, DWORD pen_flags,
@@ -76,9 +82,14 @@ static int app_paper_on_top;
 static void text_accept_and_restart(Pt p);
 static void text_accept_and_erase(Pt p);
 static int raw_pen_available;
+static int raw_barrel_prev;
+static int raw_second_prev;
+static int raw_tip_prev;
 static int pen_second_recent(void);
 static int pen_input_recent(void);
 static int pen_now_first_side(void);
+static void paper_pan_begin(Pt p);
+static void paper_pan_finish(void);
 static int paper_control_at_point(POINT p);
 static void unregister_managed_hotkeys(void);
 
@@ -975,9 +986,106 @@ static unsigned xpm_color(const char *spec)
   return 0xFF000000u;
 }
 
+static void cursor_color_mark(cairo_t *cr, double x, double y, int size,
+                              Color color, int none)
+{
+  double r = size / 2.0;
+  /* A light or dark border keeps the active color visible over any desktop. */
+  double lum = color.r * 0.299 + color.g * 0.587 + color.b * 0.114;
+  double br = lum > 0.5 ? 0.0 : 1.0;
+  cairo_set_line_width(cr, 2.0);
+  cairo_set_source_rgba(cr, br, br, br, 1.0);
+  if (none)
+    {
+      cairo_move_to(cr, x-r, y-r); cairo_line_to(cr, x+r, y+r);
+      cairo_move_to(cr, x+r, y-r); cairo_line_to(cr, x-r, y+r);
+      cairo_set_line_width(cr, 3.0);
+      cairo_set_source_rgba(cr, 1, 1, 1, 1);
+      cairo_stroke(cr);
+      cairo_set_source_rgba(cr, 0, 0, 0, 1);
+      cairo_set_line_width(cr, 1.0);
+      cairo_move_to(cr, x-r, y-r); cairo_line_to(cr, x+r, y+r);
+      cairo_move_to(cr, x+r, y-r); cairo_line_to(cr, x-r, y+r);
+      cairo_stroke(cr);
+      return;
+    }
+  cairo_arc(cr, x, y, r + 0.6, 0, 2 * M_PI);
+  cairo_stroke(cr);
+  cairo_arc(cr, x, y, r, 0, 2 * M_PI);
+  cairo_set_source_rgba(cr, color.r, color.g, color.b, 1.0);
+  cairo_fill(cr);
+}
+
+static HCURSOR build_crosshair_cursor(Color color, int size, int text)
+{
+  const int dim = 32, hot = 16;
+  BITMAPINFO bi;
+  memset(&bi, 0, sizeof(bi));
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = dim;
+  bi.bmiHeader.biHeight = -dim;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  HDC screen = GetDC(NULL), dc = CreateCompatibleDC(screen);
+  void *bits = NULL;
+  HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+  if (!bmp || !bits)
+    { if (bmp) DeleteObject(bmp); DeleteDC(dc); ReleaseDC(NULL, screen); return NULL; }
+  memset(bits, 0, dim * dim * 4);
+  cairo_surface_t *surf = cairo_image_surface_create_for_data(
+    (unsigned char *) bits, CAIRO_FORMAT_ARGB32, dim, dim, dim * 4);
+  cairo_t *cr = cairo_create(surf);
+  cairo_set_line_cap(cr, CAIRO_LINE_CAP_SQUARE);
+  cairo_set_line_width(cr, 3.0);
+  cairo_set_source_rgba(cr, 1, 1, 1, 1);
+  if (text)
+    {
+      cairo_move_to(cr, hot, 5); cairo_line_to(cr, hot, 27);
+      cairo_move_to(cr, hot - 5, 6); cairo_line_to(cr, hot + 5, 6);
+      cairo_move_to(cr, hot - 5, 26); cairo_line_to(cr, hot + 5, 26);
+    }
+  else
+    {
+      cairo_move_to(cr, hot, 2); cairo_line_to(cr, hot, 12);
+      cairo_move_to(cr, hot, 20); cairo_line_to(cr, hot, 30);
+      cairo_move_to(cr, 2, hot); cairo_line_to(cr, 12, hot);
+      cairo_move_to(cr, 20, hot); cairo_line_to(cr, 30, hot);
+    }
+  cairo_stroke(cr);
+  cairo_set_line_width(cr, 1.0);
+  cairo_set_source_rgba(cr, 0, 0, 0, 1);
+  if (text)
+    {
+      cairo_move_to(cr, hot, 5); cairo_line_to(cr, hot, 27);
+      cairo_move_to(cr, hot - 5, 6); cairo_line_to(cr, hot + 5, 6);
+      cairo_move_to(cr, hot - 5, 26); cairo_line_to(cr, hot + 5, 26);
+    }
+  else
+    {
+      cairo_move_to(cr, hot, 2); cairo_line_to(cr, hot, 12);
+      cairo_move_to(cr, hot, 20); cairo_line_to(cr, hot, 30);
+      cairo_move_to(cr, 2, hot); cairo_line_to(cr, 12, hot);
+      cairo_move_to(cr, 20, hot); cairo_line_to(cr, 30, hot);
+    }
+  cairo_stroke(cr);
+  cursor_color_mark(cr, hot, hot, size, color, 0);
+  cairo_surface_flush(surf);
+  HBITMAP mask = CreateBitmap(dim, dim, 1, 1, NULL);
+  ICONINFO ii;
+  memset(&ii, 0, sizeof(ii));
+  ii.fIcon = FALSE; ii.xHotspot = hot; ii.yHotspot = hot;
+  ii.hbmMask = mask; ii.hbmColor = bmp;
+  HCURSOR cur = CreateIconIndirect(&ii);
+  cairo_destroy(cr); cairo_surface_destroy(surf);
+  DeleteObject(mask); DeleteObject(bmp); DeleteDC(dc); ReleaseDC(NULL, screen);
+  return cur;
+}
+
 /* Convert an XPM cursor (as embedded by the original Screenator sources) into
  * an HCURSOR, preserving its hotspot. */
-static HCURSOR build_xpm_cursor(const char **xpm, int hot_x, int hot_y)
+static HCURSOR build_xpm_cursor(const char **xpm, int hot_x, int hot_y,
+                                Color fill, int dot_size, int fill_none)
 {
   int w = 0, h = 0, n = 0, cpp = 0;
   if (!xpm || sscanf(xpm[0], "%d %d %d %d", &w, &h, &n, &cpp) != 4)
@@ -1024,6 +1132,12 @@ static HCURSOR build_xpm_cursor(const char **xpm, int hot_x, int hot_y)
           pix[y * w + x] = c;
         }
     }
+  cairo_surface_t *mark_surface = cairo_image_surface_create_for_data(
+    (unsigned char *) pix, CAIRO_FORMAT_ARGB32, w, h, w * 4);
+  cairo_t *mark_cr = cairo_create(mark_surface);
+  cursor_color_mark(mark_cr, 20, 13, dot_size, fill, fill_none);
+  cairo_destroy(mark_cr);
+  cairo_surface_destroy(mark_surface);
   BITMAPINFO bi;
   memset(&bi, 0, sizeof(bi));
   bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -1064,7 +1178,9 @@ static HCURSOR build_xpm_cursor(const char **xpm, int hot_x, int hot_y)
 static HCURSOR build_bucket_cursor(void)
 {
   return build_xpm_cursor((const char **) bucket_cursor_xpm,
-                          bucket_cursor_x_hot, bucket_cursor_y_hot);
+                          bucket_cursor_x_hot, bucket_cursor_y_hot,
+                          g.fill_color, (int) g.cursor_dot_size,
+                          !g.fill_enabled);
 }
 
 static HCURSOR build_eraser_cursor(int width)
@@ -1144,11 +1260,51 @@ static int our_foreground(void)
   return pid == GetCurrentProcessId();
 }
 
+/* A few tablet drivers promote the barrel switch to a left mouse click.
+ * Only accept that fallback while the Windows pen is hovering with zero
+ * pressure, so a tip contact at stroke start remains an ordinary draw. */
+static int pen_hover_zero_pressure_at(POINT at)
+{
+  if (!g.pen_id) return 0;
+  POINTER_INFO pi;
+  POINTER_PEN_INFO pen;
+  memset(&pi, 0, sizeof(pi));
+  memset(&pen, 0, sizeof(pen));
+  if (!GetPointerInfo(g.pen_id, &pi) || pi.pointerType != PT_PEN ||
+      !(pi.pointerFlags & POINTER_FLAG_INRANGE) ||
+      (pi.pointerFlags & POINTER_FLAG_INCONTACT) ||
+      !GetPointerPenInfo(g.pen_id, &pen)) return 0;
+  if ((pen.penMask & PEN_MASK_PRESSURE) && pen.pressure != 0) return 0;
+  return abs(at.x - pi.ptPixelLocation.x) <= 32 &&
+         abs(at.y - pi.ptPixelLocation.y) <= 32;
+}
+
 static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
 {
   if (code == HC_ACTION)
     {
       MSLLHOOKSTRUCT *m = (MSLLHOOKSTRUCT *) lp;
+      if (wp == WM_LBUTTONDOWN && pen_input_recent() &&
+          pen_hover_zero_pressure_at(m->pt))
+        {
+          Pt p = { (double) m->pt.x, (double) m->pt.y };
+          if (g.paper == PAPER_NONE)
+            pen_barrel_begin(p);
+          else if (editable_handles_active() || g.tool == TOOL_BUCKET)
+            pen_scroll_tap(p, 3);
+          else
+            {
+              paper_pan_begin(p);
+              g.paper_pan_pen = 1;
+            }
+          return 1;
+        }
+      if (wp == WM_LBUTTONUP && g.paper_panning && g.paper_pan_pen &&
+          pen_input_recent())
+        { paper_pan_finish(); return 1; }
+      if (wp == WM_LBUTTONUP && g.pen_barrel_down &&
+          g.pen_first_source == 3 && pen_input_recent())
+        { pen_barrel_end(); return 1; }
       if (g.paper != PAPER_NONE &&
           (wp == WM_LBUTTONDOWN || wp == WM_RBUTTONDOWN))
         {
@@ -1474,12 +1630,32 @@ void app_remove_wheel_hook(void)
 
 void app_update_cursor(void)
 {
-  if (!g.cur_pen) g.cur_pen = LoadCursorW(NULL, IDC_CROSS);
-  if (!g.cur_text) g.cur_text = LoadCursorW(NULL, IDC_IBEAM);
-  if (!g.cur_bucket)
+  int changed = !tool_cursor_cache_valid ||
+    memcmp(&tool_cursor_line_color, &g.pen_color, sizeof(Color)) != 0 ||
+    memcmp(&tool_cursor_fill_color, &g.fill_color, sizeof(Color)) != 0 ||
+    tool_cursor_dot_size != g.cursor_dot_size ||
+    tool_cursor_fill_enabled != g.fill_enabled;
+  if (changed)
     {
+      if (tool_cursor_owns_pen && g.cur_pen) DestroyCursor(g.cur_pen);
+      if (tool_cursor_owns_text && g.cur_text) DestroyCursor(g.cur_text);
+      if (tool_cursor_owns_bucket && g.cur_bucket) DestroyCursor(g.cur_bucket);
+      g.cur_pen = build_crosshair_cursor(g.pen_color,
+                                         (int) g.cursor_dot_size, 0);
+      g.cur_text = build_crosshair_cursor(g.pen_color,
+                                          (int) g.cursor_dot_size, 1);
       g.cur_bucket = build_bucket_cursor();
+      tool_cursor_owns_pen = g.cur_pen != NULL;
+      tool_cursor_owns_text = g.cur_text != NULL;
+      tool_cursor_owns_bucket = g.cur_bucket != NULL;
+      if (!g.cur_pen) g.cur_pen = LoadCursorW(NULL, IDC_CROSS);
+      if (!g.cur_text) g.cur_text = LoadCursorW(NULL, IDC_IBEAM);
       if (!g.cur_bucket) g.cur_bucket = LoadCursorW(NULL, IDC_CROSS);
+      tool_cursor_line_color = g.pen_color;
+      tool_cursor_fill_color = g.fill_color;
+      tool_cursor_dot_size = g.cursor_dot_size;
+      tool_cursor_fill_enabled = g.fill_enabled;
+      tool_cursor_cache_valid = 1;
     }
   if (!g.cur_erase || g.cur_erase_size != (int) g.eraser_width)
     {
@@ -1675,7 +1851,7 @@ void app_update_tray_icon(void)
   if (!g.tray_added) return;
   g.nid.uFlags = NIF_ICON | NIF_TIP;
   g.nid.hIcon = (g.tool != TOOL_NONE) ? g.hicon_active : g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.1");
+  wcscpy(g.nid.szTip, L"Screenator 8.2");
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -2134,6 +2310,7 @@ static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
     case WM_RBUTTONUP:
       return 0;
+    case WM_MBUTTONDBLCLK:
     case WM_MBUTTONDOWN:
       /* While editing, middle click is the color step for both the mouse and
        * stylus Button 1.  It never accepts text or closes shape handles. */
@@ -2287,14 +2464,6 @@ static void text_accept_and_erase(Pt p)
 /* ------------------------------------------------------------------ */
 void app_start_right_press(Pt p)
 {
-  if (g.tool == TOOL_ERASER && g.paper == PAPER_NONE &&
-      g.edit == EDIT_NONE &&
-      !g.text_editor_active)
-    {
-      step_eraser_width(1);
-      g.right_short_done = 1;
-      return;
-    }
   if (g.text_editor_active)
     {
       g.ignore_next_right_up = 1;
@@ -2432,20 +2601,11 @@ static int shape_or_text_tool(Tool tool)
  * recolours it there instead of changing the brush size. */
 static void stylus_step(int dir, int colors_only)
 {
-  /* While text is being typed or a shape/text still shows its handles the
-   * first side button must always change the colour, never the thickness or
-   * the eraser width. */
-  if (editable_handles_active()) colors_only = 1;
   dlog("stylus step dir=%d colors=%d tool=%d", dir, colors_only,
        (int) g.tool);
-  if (colors_only)
-    {
-      if (g.tool == TOOL_BUCKET) step_fill_color(dir);
-      else step_line_color(dir);
-      return;
-    }
   if (g.tool == TOOL_ERASER) step_eraser_width(dir);
   else if (g.tool == TOOL_BUCKET) step_fill_color(dir);
+  else if (colors_only || editable_handles_active()) step_line_color(dir);
   else if (g.tool == TOOL_MARKER) step_line_color(dir);
   else if (g.stylus_mode == STYLUS_THICKNESS) step_pen_width(dir);
   else step_line_color(dir);
@@ -2508,7 +2668,7 @@ static void pen_barrel_end(void)
       /* Short press: one step of the selected first-button action.  While a
        * shape or text shows its handles, only the colour changes, exactly
        * like the mouse wheel. */
-      stylus_step(1, editable_handles_active());
+      stylus_step(1, 1);
     }
   g.pen_barrel_down = 0;
   g.pen_barrel_eraser = 0;
@@ -2526,6 +2686,13 @@ static void pen_barrel_end(void)
  * later presses look dead. */
 static void pen_first_press(Pt p, int source)
 {
+  /* Wait for release to distinguish a short step from the existing long-hold
+   * eraser action. Shared held state suppresses duplicate pointer/HID reports. */
+  if (g.paper == PAPER_NONE)
+    {
+      pen_barrel_begin(p);
+      return;
+    }
   /* With visible editing handles the first side button only recolours the
    * object, in Screen and Paper mode alike. */
   if (editable_handles_active() || g.tool == TOOL_BUCKET)
@@ -2558,15 +2725,7 @@ static void pen_first_press(Pt p, int source)
     }
   if (g.tool == TOOL_ERASER)
     {
-      /* The first side button holds the selected eraser, including while
-       * the pen is hovering above the tablet. */
-      g.pen_barrel_down = 1;
-      g.pen_barrel_eraser = 1;
-      pen_first_scroll_only = 0;
-      g.pen_first_begin = GetTickCount64();
-      g.pen_last = p;
-      g.suppress_mouse_until = GetTickCount64() + 600;
-      tools_erase_start(p);
+      pen_barrel_begin(p);
       return;
     }
   if (g.paper == PAPER_NONE)
@@ -2914,6 +3073,14 @@ static void pen_pointer_event(HWND hwnd, UINT msg, WPARAM wp)
           pen_barrel_end();
           return;
         }
+      if ((g.pen_first_source == 2 && !first_side &&
+           !(raw_pen_available && raw_barrel_prev)) ||
+          (g.pen_first_source == 3 &&
+           !(GetAsyncKeyState(VK_LBUTTON) & 0x8000)))
+        {
+          pen_barrel_end();
+          return;
+        }
       g.pen_last = p;
       if (g.pen_barrel_eraser) tools_erase_move(p);
       return;
@@ -2982,6 +3149,11 @@ static int pen_poll_state(void)
    * moving even when the driver does not send pointer updates during hover. */
   if (g.paper_panning)
     {
+      if (g.paper_pan_pen && !pointer_first)
+        {
+          paper_pan_finish();
+          return 1;
+        }
       if (g.paper_pan_pen) paper_pan_move(p);
       g.pen_last = p;
       return 1;
@@ -2999,6 +3171,18 @@ static int pen_poll_state(void)
         }
       dlog("poll first side down (pointer button)");
       pen_first_press(p, 2);
+      return 1;
+    }
+  if (g.pen_barrel_down && g.pen_first_source == 2 && !pointer_first &&
+      !(raw_pen_available && raw_barrel_prev))
+    {
+      pen_barrel_end();
+      return 1;
+    }
+  if (g.pen_barrel_down && g.pen_first_source == 3 &&
+      !(GetAsyncKeyState(VK_LBUTTON) & 0x8000))
+    {
+      pen_barrel_end();
       return 1;
     }
   if (!pointer_first && middle && !g.pen_barrel_down && !g.pen_second_down)
@@ -3060,9 +3244,6 @@ typedef struct
 } RawPenDevice;
 static RawPenDevice raw_pens[RAW_PEN_MAX];
 static int raw_pen_count;
-static int raw_barrel_prev;
-static int raw_second_prev;
-static int raw_tip_prev;
 static void app_register_raw_pen(void)
 {
   RAWINPUTDEVICE rid;
@@ -3284,6 +3465,13 @@ static void raw_pen_report(PRAWINPUTHEADER hdr, PRAWHID hid)
         {
           /* Movement reports may omit the button usage; keep panning until
            * the pen pointer itself reports its release. */
+          if (!barrel && raw_barrel_prev)
+            {
+              paper_pan_finish();
+              raw_barrel_prev = barrel;
+              raw_second_prev = second;
+              return;
+            }
           paper_pan_move(raw);
           raw_barrel_prev = barrel;
           raw_second_prev = second;
@@ -3297,6 +3485,14 @@ static void raw_pen_report(PRAWINPUTHEADER hdr, PRAWHID hid)
       }
       if (prepare) paper_prepare_point(&p);
       else paper_map_point(&p);
+    }
+  if (!barrel && raw_barrel_prev && g.pen_barrel_down &&
+      g.pen_first_source == 2)
+    {
+      pen_barrel_end();
+      raw_barrel_prev = barrel;
+      raw_second_prev = second;
+      return;
     }
   if (g.pen_barrel_down)
     {
@@ -3455,11 +3651,15 @@ static void paper_pan_end(void)
 
 static void paper_pan_finish(void)
 {
-  int step = g.paper_panning && g.paper != PAPER_NONE &&
-             g.tool == TOOL_ERASER && !paper_pan_moved &&
-             GetTickCount64() - paper_pan_started_at < 500;
+  ULONGLONG elapsed = GetTickCount64() - paper_pan_started_at;
+  int button_step = g.paper_panning && g.paper != PAPER_NONE &&
+                    g.paper_pan_pen && !paper_pan_moved && elapsed < 500;
+  int mouse_eraser_step = g.paper_panning && g.paper != PAPER_NONE &&
+                          !g.paper_pan_pen && g.tool == TOOL_ERASER &&
+                          !paper_pan_moved && elapsed < 500;
   paper_pan_end();
-  if (step) step_eraser_width(1);
+  if (button_step) stylus_step(1, 1);
+  else if (mouse_eraser_step) step_eraser_width(1);
 }
 
 static int paper_drag_started(Pt origin, Pt point)
@@ -3758,13 +3958,13 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
         }
       right_button_up(overlay_point_page(lp, 0));
       return 0;
+    case WM_MBUTTONDBLCLK:
     case WM_MBUTTONDOWN:
       if (ui_modal_outside_click(overlay_point(lp))) return 0;
       if (ui_is_modal()) return 0;
-      /* Bucket middle-click changes fill color. Defer that click in Paper
-       * mode so a middle drag can pan without changing the color. */
-      if (g.paper != PAPER_NONE &&
-          (g.tool == TOOL_BUCKET || g.tool == TOOL_ERASER) &&
+      /* Defer active-tool middle clicks in Paper mode so a held drag still
+       * pans, while a short click steps the selected tool setting. */
+      if (g.paper != PAPER_NONE && g.tool != TOOL_NONE &&
           !editable_handles_active() && !g.pen_id && !is_pen_mouse() &&
           !pen_input_recent())
         {
@@ -3775,6 +3975,15 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
           ClientToScreen(hwnd, &pt);
           paper_middle_origin = (Pt) { (double) pt.x, (double) pt.y };
           SetCapture(hwnd);
+          return 0;
+        }
+      if (g.paper == PAPER_NONE && g.tool != TOOL_NONE)
+        {
+          if (is_pen_mouse() || pen_input_recent() || pen_now_first_side())
+            {
+              if (!g.pen_barrel_down) pen_first_press(overlay_point_page(lp, 1), 1);
+            }
+          else stylus_step(1, 1);
           return 0;
         }
       if (g.tool == TOOL_BUCKET && !editable_handles_active())
@@ -3808,7 +4017,8 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
           if (!g.paper_panning)
             {
               paper_pan_begin(rp);
-              g.paper_pan_pen = 0;
+              g.paper_pan_pen = is_pen_mouse() || pen_input_recent() ||
+                                pen_now_first_side();
             }
           return 0;
         }
@@ -3842,15 +4052,9 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
         {
           paper_middle_pending = 0;
           if (GetCapture() == hwnd) ReleaseCapture();
-          if (g.tool == TOOL_BUCKET && g.paper != PAPER_NONE)
-            {
-              Pt p = paper_view_point(paper_middle_view, 1);
-              pen_scroll_tap(p, 1);
-              pen_barrel_end();
-            }
-          else if (g.tool == TOOL_ERASER && g.paper != PAPER_NONE &&
-                   GetTickCount64() - paper_middle_pressed_at < 500)
-            step_eraser_width(1);
+          if (g.paper != PAPER_NONE &&
+              GetTickCount64() - paper_middle_pressed_at < 500)
+            stylus_step(1, 1);
           return 0;
         }
       if (g.middle_erasing)
@@ -4250,6 +4454,9 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       }
       return TRUE;
     case WM_TIMER:
+      if ((UINT_PTR) wp >= TIMER_COMPANION &&
+          (UINT_PTR) wp < TIMER_COMPANION + COMPANION_COUNT)
+        { companion_poll((int) ((UINT_PTR) wp - TIMER_COMPANION)); return 0; }
       if (wp == TIMER_COUNTDOWN)
         {
           KillTimer(hwnd, TIMER_COUNTDOWN);
@@ -4546,6 +4753,9 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
           {
             app_save_and_quit();
           }
+        else if (id >= HK_COMPANION1 &&
+                 id < HK_COMPANION1 + COMPANION_COUNT)
+          companion_launch(id - HK_COMPANION1);
       }
       return 0;
     case WM_TRAY:
@@ -4784,13 +4994,15 @@ static void add_tray(void)
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
   g.nid.hIcon = g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.1");
+  wcscpy(g.nid.szTip, L"Screenator 8.2");
   if (Shell_NotifyIconW(NIM_ADD, &g.nid))
     g.tray_added = 1;
 }
 
 static int shortcut_hotkey_id(ShortcutId id)
 {
+  if (id >= SK_COMPANION1 && id <= SK_COMPANION7)
+    return HK_COMPANION1 + (int) (id - SK_COMPANION1);
   switch (id)
     {
     case SK_ARROW: return HK_ARROW;
@@ -4822,6 +5034,8 @@ static void unregister_managed_hotkeys(void)
     };
   for (int i = 0; i < (int) (sizeof(ids) / sizeof(ids[0])); i++)
     UnregisterHotKey(g.msgwin, ids[i]);
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    UnregisterHotKey(g.msgwin, HK_COMPANION1 + i);
 }
 
 static int register_shortcut(ShortcutId id, char *error, int error_size)
@@ -4854,6 +5068,10 @@ static int register_runtime_shortcuts(int check, char *error, int error_size)
     };
   for (int i = 0; i < (int) (sizeof(always) / sizeof(always[0])); i++)
     if (!register_shortcut(always[i], error, error_size) && check)
+      return 0;
+  for (int i = 0; i < COMPANION_COUNT; i++)
+    if (!register_shortcut((ShortcutId) (SK_COMPANION1 + i), error,
+                           error_size) && check)
       return 0;
   RegisterHotKey(g.msgwin, HK_QUICK, MOD_CONTROL | MOD_NOREPEAT, VK_F10);
   if (g.text_editor_active) return 1;
@@ -5941,7 +6159,7 @@ static int run_selftest(void)
   /* Text through pango. */
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.1");
+  fs.text = _strdup("Screenator 8.2");
   fs.font = _strdup("Arial Bold 34");
   fs.font_size = 34;
   fs.color = color_from_hex("#202020", NULL);
@@ -6127,7 +6345,7 @@ static void demo_draw(void)
   draw_line_shape(cr, &ln, 6, color_from_hex("#1040C0", NULL));
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.1 for Windows");
+  fs.text = _strdup("Screenator 8.2 for Windows");
   fs.font = _strdup("Arial Bold 40");
   fs.font_size = 40;
   fs.color = color_from_hex("#B00020", NULL);

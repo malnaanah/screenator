@@ -11,16 +11,16 @@ const unsigned g_delays[9] = { 0, 1, 2, 3, 4, 5, 7, 9, 11 };
 
 const NamedColor g_line_colors[8] =
 {
-  { "Red", "#FF0000" }, { "Green", "#00AA00" }, { "Blue", "#0000FF" },
-  { "Yellow", "#FFFF00" }, { "Black", "#000000" }, { "White", "#FFFFFF" },
-  { "Orange", "#FF8000" }, { "Gray", "#808080" }
+  { "Red", "#FF0000" }, { "Blue", "#0000FF" }, { "Green", "#00AA00" },
+  { "Black", "#000000" }, { "Orange", "#FF8000" }, { "Gray", "#808080" },
+  { "Yellow", "#FFFF00" }, { "White", "#FFFFFF" }
 };
 
 const NamedColor g_fill_colors[9] =
 {
-  { "None", "none" }, { "Green", "#00AA00" }, { "Blue", "#0000FF" },
-  { "Yellow", "#FFFF00" }, { "Black", "#000000" }, { "White", "#FFFFFF" },
-  { "Red", "#FF0000" }, { "Orange", "#FF8000" }, { "Gray", "#808080" }
+  { "Yellow", "#FFFF00" }, { "Orange", "#FF8000" }, { "Gray", "#808080" },
+  { "White", "#FFFFFF" }, { "Green", "#00AA00" }, { "Red", "#FF0000" },
+  { "Blue", "#0000FF" }, { "Black", "#000000" }, { "None", "none" }
 };
 
 static double angle0;
@@ -50,13 +50,13 @@ int line_color_index(void)
 
 int fill_color_index(void)
 {
-  if (!g.fill_enabled) return 0;
-  for (int i = 1; i < 9; i++)
+  if (!g.fill_enabled) return 9;
+  for (int i = 0; i < 8; i++)
     {
       Color c = color_from_hex(g_fill_colors[i].hex, NULL);
       if (same_rgb(c, g.fill_color)) return i;
     }
-  return 9;                     /* custom */
+  return 8;                     /* custom */
 }
 
 static void refresh_all(void)
@@ -78,15 +78,15 @@ void apply_line_color_index(int i)
 
 void apply_fill_color_index(int i)
 {
-  if (i == 0)
+  if (i == 9)
     {
       g.fill_enabled = 0;
     }
   else
     {
       g.fill_enabled = 1;
-      g.fill_color = (i <= 8) ? color_from_hex(g_fill_colors[i].hex, NULL)
-                              : g.custom_fill_color;
+      g.fill_color = (i < 8) ? color_from_hex(g_fill_colors[i].hex, NULL)
+                             : g.custom_fill_color;
       g.fill_color.a = 1.0;
     }
   refresh_all();
@@ -1877,9 +1877,7 @@ void tools_right_short(Pt p)
 
 void tools_wheel(int delta)
 {
-  /* Screen-mode wheel input only recolours active edits, handled by the
-   * caller before reaching the normal tool settings. */
-  if (g.paper == PAPER_NONE || g.tool == TOOL_NONE) return;
+  if (g.tool == TOOL_NONE) return;
   int dir = delta > 0 ? 1 : -1;
 
   if (g.tool == TOOL_ERASER)
@@ -1887,6 +1885,8 @@ void tools_wheel(int delta)
   else if (g.tool == TOOL_BUCKET)
     step_fill_color(dir);
   else if (g.tool == TOOL_MARKER)
+    step_line_color(dir);
+  else if (g.paper == PAPER_NONE)
     step_line_color(dir);
   else if (g.wheel_mode == WHEEL_THICKNESS)
     step_pen_width(dir);
@@ -2053,7 +2053,7 @@ void bucket_fill(Pt p)
           if (b > 255) b = 255;
         }
       int known = 0;
-      for (int i = 1; i < 9; i++)
+      for (int i = 0; i < 8; i++)
         {
           Color c = color_from_hex(g_fill_colors[i].hex, NULL);
           if (abs((int) (c.r * 255 + 0.5) - r) < 3 &&
