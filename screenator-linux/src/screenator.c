@@ -37,9 +37,9 @@
 #include "screenator.h"
 #include "build-config.h"
 
-#include "../assets/paint_cursor.xpm"
-#include "../assets/text_cursor.xpm"
-#include "../assets/bucket_cursor.xpm"
+#include "../../assets/linux/paint_cursor.xpm"
+#include "../../assets/linux/text_cursor.xpm"
+#include "../../assets/bucket_cursor.xpm"
 
 static cairo_t *paper_vector_context (ScreenatorData *data,
 				      ScreenatorPaperDocument *doc,

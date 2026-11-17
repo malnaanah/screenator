@@ -120,6 +120,7 @@ static void paper_finish_temporary_eraser (ScreenatorData *data);
 static void screenator_timer_cancel (ScreenatorData *data);
 static void paper_top_bar_rebuild (ScreenatorData *data);
 static void paper_apply_size_settings (ScreenatorData *data);
+static GdkPixbuf *load_menu_icon_at_size (const gchar *name, gint size);
 static GdkPixbuf *companion_app_icon_pixbuf (ScreenatorData *data,
 					      guint slot, gint size);
 
@@ -856,8 +857,7 @@ companion_app_icon_pixbuf (ScreenatorData *data, guint slot, gint size)
   GdkPixbuf *pixbuf = NULL;
 
   if (!app)
-    return gtk_icon_theme_load_icon (theme, "dialog-warning", size,
-				     GTK_ICON_LOOKUP_FORCE_SIZE, NULL);
+    return load_menu_icon_at_size ("app.png", size);
 
   if (!info)
     info = gtk_icon_theme_lookup_icon (theme, "application-x-executable",
@@ -8059,6 +8059,9 @@ screenator_cycle_active_setting (ScreenatorData *data)
   else if (bucket_tool_active (data))
     cycle_shape_fill_color (data, TRUE);
   else if (color_cycle_tool_active (data))
+    cycle_line_color (data, TRUE);
+  else if (data->paper != SCREENATOR_PAPER_NONE &&
+	   data->pen_tool == 0 && data->forced_context == NULL)
     cycle_line_color (data, TRUE);
 }
 

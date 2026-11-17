@@ -3,6 +3,8 @@ project(screenator VERSION 8.2 LANGUAGES C)
 include(GNUInstallDirs)
 
 set(target_name screenator)
+set(SHARED_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../assets")
+set(LINUX_ASSET_DIR "${SHARED_ASSET_DIR}/linux")
 
 set(CMAKE_C_FLAGS " ${CMAKE_C_FLAGS} -Wall -Wextra -Wno-unused-parameter")
 
@@ -57,10 +59,10 @@ set(sources
     src/config.h
     src/input.c
     src/input.h
-    assets/paint_cursor.xpm
-    assets/text_cursor.xpm
-    assets/erase_cursor.xpm
-    assets/bucket_cursor.xpm
+    ${LINUX_ASSET_DIR}/paint_cursor.xpm
+    ${LINUX_ASSET_DIR}/text_cursor.xpm
+    ${LINUX_ASSET_DIR}/erase_cursor.xpm
+    ${SHARED_ASSET_DIR}/bucket_cursor.xpm
 )
 
 add_executable(${target_name} ${sources})
@@ -77,53 +79,54 @@ target_link_libraries(${target_name}
 )
 
 install(TARGETS ${target_name} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES assets/screenator.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES assets/screenator.cfg DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/screenator)
+install(FILES ${LINUX_ASSET_DIR}/screenator.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES ${LINUX_ASSET_DIR}/screenator.cfg DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/screenator)
 install(FILES README.md AUTHORS DESTINATION ${CMAKE_INSTALL_DOCDIR})
 install(FILES screenator.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
-install(FILES assets/icons/screenator.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
-install(FILES assets/screenator.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
-install(FILES assets/screenator-active.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES ${SHARED_ASSET_DIR}/icons/screenator.png DESTINATION ${CMAKE_INSTALL_DATADIR}/pixmaps)
+install(FILES ${LINUX_ASSET_DIR}/screenator.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES ${LINUX_ASSET_DIR}/screenator-active.svg DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
 install(FILES
-    assets/icons/pen.png
-    assets/icons/arrow.png
-    assets/icons/timer.png
-    assets/icons/text.png
-    assets/icons/free-line.png
-    assets/icons/spline.png
-    assets/icons/polygon.png
-    assets/icons/triangle.png
-    assets/icons/bucket.png
-    assets/icons/math.png
-    assets/icons/bars.png
-    assets/icons/random-signal.png
-    assets/icons/ellipse.png
-    assets/icons/rounded-rectangle.png
-    assets/icons/marker.png
-    assets/icons/eraser.png
-    assets/icons/undo.png
-    assets/icons/redo.png
-    assets/icons/trash.png
-    assets/icons/reset-settings.png
-    assets/icons/eye-opened.png
-    assets/icons/eye-closed.png
-    assets/icons/hint.png
-    assets/icons/font-settings.png
-    assets/icons/settings.png
-    assets/icons/quit.png
-    assets/icons/switch_mode.png
-    assets/icons/shapes.png
-    assets/icons/paper.png
-    assets/icons/add_before.png
-    assets/icons/delete-page.png
-    assets/icons/add_after.png
-    assets/icons/goto-page.png
-    assets/icons/actions.png
-    assets/icons/save.png
-    assets/icons/screenshot.png
-    assets/icons/opacity.png
-    assets/icons/marker_opacity.png
-    assets/icons/cursor.png
+    ${SHARED_ASSET_DIR}/icons/pen.png
+    ${SHARED_ASSET_DIR}/icons/arrow.png
+    ${SHARED_ASSET_DIR}/icons/timer.png
+    ${SHARED_ASSET_DIR}/icons/text.png
+    ${SHARED_ASSET_DIR}/icons/free-line.png
+    ${SHARED_ASSET_DIR}/icons/spline.png
+    ${SHARED_ASSET_DIR}/icons/polygon.png
+    ${SHARED_ASSET_DIR}/icons/triangle.png
+    ${SHARED_ASSET_DIR}/icons/bucket.png
+    ${SHARED_ASSET_DIR}/icons/math.png
+    ${SHARED_ASSET_DIR}/icons/bars.png
+    ${SHARED_ASSET_DIR}/icons/random-signal.png
+    ${SHARED_ASSET_DIR}/icons/ellipse.png
+    ${SHARED_ASSET_DIR}/icons/rounded-rectangle.png
+    ${SHARED_ASSET_DIR}/icons/marker.png
+    ${SHARED_ASSET_DIR}/icons/eraser.png
+    ${SHARED_ASSET_DIR}/icons/undo.png
+    ${SHARED_ASSET_DIR}/icons/redo.png
+    ${SHARED_ASSET_DIR}/icons/trash.png
+    ${SHARED_ASSET_DIR}/icons/reset-settings.png
+    ${SHARED_ASSET_DIR}/icons/eye-opened.png
+    ${SHARED_ASSET_DIR}/icons/eye-closed.png
+    ${SHARED_ASSET_DIR}/icons/hint.png
+    ${SHARED_ASSET_DIR}/icons/font-settings.png
+    ${SHARED_ASSET_DIR}/icons/settings.png
+    ${SHARED_ASSET_DIR}/icons/quit.png
+    ${SHARED_ASSET_DIR}/icons/switch_mode.png
+    ${SHARED_ASSET_DIR}/icons/shapes.png
+    ${SHARED_ASSET_DIR}/icons/paper.png
+    ${SHARED_ASSET_DIR}/icons/add_before.png
+    ${SHARED_ASSET_DIR}/icons/delete-page.png
+    ${SHARED_ASSET_DIR}/icons/add_after.png
+    ${SHARED_ASSET_DIR}/icons/goto-page.png
+    ${SHARED_ASSET_DIR}/icons/actions.png
+    ${SHARED_ASSET_DIR}/icons/save.png
+    ${SHARED_ASSET_DIR}/icons/screenshot.png
+    ${SHARED_ASSET_DIR}/icons/opacity.png
+    ${SHARED_ASSET_DIR}/icons/marker_opacity.png
+    ${SHARED_ASSET_DIR}/icons/cursor.png
+    ${SHARED_ASSET_DIR}/icons/app.png
     DESTINATION ${CMAKE_INSTALL_DATADIR}/screenator/icons)
-install(FILES assets/hints.html DESTINATION ${CMAKE_INSTALL_DATADIR}/screenator)
-install(FILES assets/screenator.appdata.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(FILES ${SHARED_ASSET_DIR}/hints.html DESTINATION ${CMAKE_INSTALL_DATADIR}/screenator)
+install(FILES ${LINUX_ASSET_DIR}/screenator.appdata.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)

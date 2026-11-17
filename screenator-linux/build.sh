@@ -13,6 +13,8 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
+SHARED_ASSETS="$ROOT/../assets"
+LINUX_ASSETS="$SHARED_ASSETS/linux"
 BUILD="$ROOT/../build-linux"
 DEB="$BUILD/screenator_8.2_amd64.deb"
 RPM="$BUILD/screenator-8.2-1.x86_64.rpm"
@@ -137,26 +139,26 @@ mkdir -p "$PKROOT"/DEBIAN "$PKROOT"/usr/bin \
          "$PKROOT"/usr/share/doc/screenator
 
 install -m 0755 "$CBUILD/screenator" "$PKROOT"/usr/bin/screenator
-install -m 0644 "$SRC"/assets/screenator.desktop \
+install -m 0644 "$LINUX_ASSETS"/screenator.desktop \
    "$PKROOT"/usr/share/applications/
-install -m 0644 "$SRC"/assets/icons/screenator.png \
+install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
    "$PKROOT"/usr/share/pixmaps/screenator.png
-install -m 0644 "$SRC"/assets/icons/screenator.png \
+install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
    "$PKROOT"/usr/share/icons/hicolor/256x256/apps/screenator.png
-install -m 0644 "$SRC"/assets/screenator.svg \
+install -m 0644 "$LINUX_ASSETS"/screenator.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator.svg
-install -m 0644 "$SRC"/assets/screenator-active.svg \
+install -m 0644 "$LINUX_ASSETS"/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor; do
-  install -m 0644 "$SRC"/assets/icons/$icon.png "$PKROOT"/usr/share/screenator/icons/$icon.png
+            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
+  install -m 0644 "$SHARED_ASSETS"/icons/$icon.png "$PKROOT"/usr/share/screenator/icons/$icon.png
 done
-install -m 0644 "$SRC"/assets/hints.html "$PKROOT"/usr/share/screenator/hints.html
+install -m 0644 "$SHARED_ASSETS"/hints.html "$PKROOT"/usr/share/screenator/hints.html
 gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
-install -m 0644 "$SRC"/assets/screenator.appdata.xml \
+install -m 0644 "$LINUX_ASSETS"/screenator.appdata.xml \
    "$PKROOT"/usr/share/metainfo/
-install -m 0644 "$SRC"/assets/screenator.cfg "$PKROOT"/etc/screenator/screenator.cfg
+install -m 0644 "$LINUX_ASSETS"/screenator.cfg "$PKROOT"/etc/screenator/screenator.cfg
 install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
    "$PKROOT"/usr/share/doc/screenator/
 
@@ -362,26 +364,26 @@ mkdir -p "$APPDIR"/usr/bin \
          "$APPDIR"/usr/share/screenator/icons
 
 install -m 0755 "$CBUILD/screenator" "$APPDIR"/usr/bin/screenator
-install -m 0644 "$SRC"/assets/screenator.desktop \
+install -m 0644 "$LINUX_ASSETS"/screenator.desktop \
    "$APPDIR"/usr/share/applications/screenator.desktop
-install -m 0644 "$SRC"/assets/screenator.svg \
+install -m 0644 "$LINUX_ASSETS"/screenator.svg \
    "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator.svg
-install -m 0644 "$SRC"/assets/screenator-active.svg \
+install -m 0644 "$LINUX_ASSETS"/screenator-active.svg \
    "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
-install -m 0644 "$SRC"/assets/icons/screenator.png \
+install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
    "$APPDIR"/usr/share/icons/hicolor/256x256/apps/screenator.png
-install -m 0644 "$SRC"/assets/icons/screenator.png \
+install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
    "$APPDIR"/usr/share/pixmaps/screenator.png
-install -m 0644 "$SRC"/assets/screenator.appdata.xml \
+install -m 0644 "$LINUX_ASSETS"/screenator.appdata.xml \
    "$APPDIR"/usr/share/metainfo/screenator.appdata.xml
-install -m 0644 "$SRC"/assets/screenator.cfg \
+install -m 0644 "$LINUX_ASSETS"/screenator.cfg \
    "$APPDIR"/usr/share/screenator/screenator.cfg
-install -m 0644 "$SRC"/assets/hints.html \
+install -m 0644 "$SHARED_ASSETS"/hints.html \
    "$APPDIR"/usr/share/screenator/hints.html
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor; do
-  install -m 0644 "$SRC"/assets/icons/$icon.png "$APPDIR"/usr/share/screenator/icons/$icon.png
+            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
+  install -m 0644 "$SHARED_ASSETS"/icons/$icon.png "$APPDIR"/usr/share/screenator/icons/$icon.png
 done
 
 export ARCH=x86_64

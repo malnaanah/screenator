@@ -227,7 +227,7 @@ const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
   "Exit Paper mode",
   "Quit",
   "Cancel / Escape",
-  "Cycle active tool setting"
+  "Change color or eraser size"
 };
 
 const ScreenatorShortcutScope screenator_shortcut_scopes[
