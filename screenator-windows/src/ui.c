@@ -1441,12 +1441,10 @@ void ui_apply_pen(void)
 
 void ui_reset_settings(void)
 {
-  int keep_hints = g.hide_hints;
   tools_commit(0);
   if (g.tool != TOOL_NONE) tools_exit();
 
   config_defaults();
-  g.hide_hints = keep_hints;
   g.pen_color.a = g.opacity;
   g.fill_color.a = 1.0;
   g.marker_saved_valid = 0;
