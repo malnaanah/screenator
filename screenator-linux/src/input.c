@@ -1297,7 +1297,6 @@ screenator_refresh_clear_shortcut (ScreenatorData *data)
 	  active);
 }
 
-
 /* Parse one shortcut such as "Ctrl+Shift+Z" into a key value and modifier
  * mask.  The last "+"-separated part is the key. */
 void
@@ -1772,6 +1771,36 @@ window_mode_shortcut_may_grab (ScreenatorData *data, guint index)
      (GDK_CONTROL_MASK | GDK_MOD1_MASK)) == 0;
 }
 
+static gboolean
+shortcut_tool_is_active (ScreenatorData *data)
+{
+  return data->paper == SCREENATOR_PAPER_NONE && data->pen_tool != 0 &&
+    (data->forced_context != NULL || screenator_any_grabbed (data));
+}
+
+void
+screenator_refresh_cycle_setting_shortcut (ScreenatorData *data)
+{
+  gboolean active;
+
+  if (!data)
+    return;
+
+  active = data->paper != SCREENATOR_PAPER_NONE ||
+    shortcut_tool_is_active (data);
+  if (!window_mode_shortcut_may_grab (
+	data, SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING))
+    active = FALSE;
+  if (paper_shortcut_suppressed_by_companion (
+	data, SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING))
+    active = FALSE;
+
+  grab_paper_key (
+    data, data->shortcuts[SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING].keycode,
+    data->shortcuts[SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING].modifier,
+    active);
+}
+
 /* Replace the configured shortcuts, ungrab the old keys and grab the new
  * ones according to their current scope. */
 void
@@ -1808,6 +1837,9 @@ screenator_apply_shortcuts (ScreenatorData *data, gchar * const *new_texts)
       else if (screenator_shortcut_scopes[i] ==
 	       SCREENATOR_SHORTCUT_PAINTING_OR_PAPER)
 	grab = painting || paper;
+      else if (screenator_shortcut_scopes[i] ==
+	       SCREENATOR_SHORTCUT_TOOL_OR_PAPER)
+	grab = paper || shortcut_tool_is_active (data);
 
       if (!window_mode_shortcut_may_grab (data, i))
 	grab = FALSE;
@@ -1867,7 +1899,10 @@ screenator_paper_shortcuts_focus (ScreenatorData *data, gboolean focused)
 	 (screenator_shortcut_scopes[i] == SCREENATOR_SHORTCUT_PAINTING &&
 	  painting) ||
 	 (screenator_shortcut_scopes[i] ==
-	  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER && (paper || painting)));
+	  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER && (paper || painting)) ||
+	 (screenator_shortcut_scopes[i] ==
+	  SCREENATOR_SHORTCUT_TOOL_OR_PAPER &&
+	  (paper || shortcut_tool_is_active (data))));
       if (paper_shortcut_suppressed_by_companion (data, i))
 	grab = FALSE;
 
@@ -2025,6 +2060,9 @@ update_paper_shortcuts (ScreenatorData *data, gboolean grab)
 	on = grab ||
 	  (data->paper == SCREENATOR_PAPER_NONE &&
 	   (data->forced_context != NULL || screenator_any_grabbed (data)));
+      else if (screenator_shortcut_scopes[i] ==
+	       SCREENATOR_SHORTCUT_TOOL_OR_PAPER)
+	on = grab || shortcut_tool_is_active (data);
 
       if (!window_mode_shortcut_may_grab (data, i))
 	on = FALSE;
@@ -2069,6 +2107,9 @@ screenator_suspend_shortcuts (ScreenatorData *data, gboolean suspend)
 	  else if (screenator_shortcut_scopes[i] ==
 		   SCREENATOR_SHORTCUT_PAINTING_OR_PAPER)
 	    grab = painting || paper;
+	  else if (screenator_shortcut_scopes[i] ==
+		   SCREENATOR_SHORTCUT_TOOL_OR_PAPER)
+	    grab = paper || shortcut_tool_is_active (data);
 	  if (paper_shortcut_suppressed_by_companion (data, i))
 	    grab = FALSE;
 
@@ -2159,6 +2200,7 @@ void release_grab (ScreenatorData *data,
       grab_escape_shortcut (data, FALSE);
       screenator_refresh_visibility_shortcut (data);
       screenator_refresh_clear_shortcut (data);
+      screenator_refresh_cycle_setting_shortcut (data);
 
       /* Keep the selected tool cursor on the overlay window even when no
        * device is grabbed; use the normal pointer only when no tool is
@@ -2224,6 +2266,7 @@ void release_grab (ScreenatorData *data,
 
       screenator_refresh_visibility_shortcut (data);
       screenator_refresh_clear_shortcut (data);
+      screenator_refresh_cycle_setting_shortcut (data);
     }
 
   /* Paper Drawing keeps the annotation window visible. */
@@ -2330,6 +2373,7 @@ void acquire_grab (ScreenatorData *data,
       grab_escape_shortcut (data, TRUE);
       screenator_refresh_visibility_shortcut (data);
       screenator_refresh_clear_shortcut (data);
+      screenator_refresh_cycle_setting_shortcut (data);
       screenator_raw_input_disable (data);
 
       return;
@@ -2376,6 +2420,7 @@ void acquire_grab (ScreenatorData *data,
       grab_escape_shortcut (data, TRUE);
       screenator_refresh_visibility_shortcut (data);
       screenator_refresh_clear_shortcut (data);
+      screenator_refresh_cycle_setting_shortcut (data);
 
     }
 
@@ -2462,6 +2507,18 @@ gint snoop_key_press(GtkWidget   *grab_widget,
 	screenator_redo (data);
       else
 	screenator_undo (data);
+      return TRUE;
+    }
+
+  /* Ctrl+C cycles the active tool's setting.  It remains available in Paper
+   * mode even when no drawing tool is selected, and follows the selected
+   * tool in Screen mode. */
+  if ((data->paper != SCREENATOR_PAPER_NONE ||
+       shortcut_tool_is_active (data)) &&
+      screenator_shortcut_matches (
+	data, SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING, event))
+    {
+      screenator_cycle_active_setting (data);
       return TRUE;
     }
 

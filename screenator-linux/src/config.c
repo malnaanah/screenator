@@ -195,7 +195,8 @@ const gchar * const screenator_shortcut_defaults[SCREENATOR_SHORTCUT_COUNT] =
   "Ctrl+T",      /* toggle visibility */
   "Ctrl+Q",      /* exit paper */
   "Alt+F4",      /* quit */
-  "Escape"       /* escape / cancel */
+  "Escape",      /* escape / cancel */
+  "Ctrl+C"       /* cycle active tool setting */
 };
 
 const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
@@ -225,7 +226,8 @@ const gchar * const screenator_shortcut_labels[SCREENATOR_SHORTCUT_COUNT] =
   "Toggle drawings visibility",
   "Exit Paper mode",
   "Quit",
-  "Cancel / Escape"
+  "Cancel / Escape",
+  "Cycle active tool setting"
 };
 
 const ScreenatorShortcutScope screenator_shortcut_scopes[
@@ -256,7 +258,8 @@ const ScreenatorShortcutScope screenator_shortcut_scopes[
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_PAPER,
   SCREENATOR_SHORTCUT_ALWAYS,
-  SCREENATOR_SHORTCUT_ALWAYS
+  SCREENATOR_SHORTCUT_ALWAYS,
+  SCREENATOR_SHORTCUT_TOOL_OR_PAPER
 };
 
 static gpointer HOTKEY_SYMBOL_VALUE  = (gpointer) 3;
@@ -895,6 +898,8 @@ void read_keyfile(ScreenatorData *data)
     data->pen_width = KEY_DFLT_PEN_WIDTH;
     data->eraser_width = KEY_DFLT_ERASER_WIDTH;
     data->cursor_dot_size = 8;
+    data->show_cursor_dot = TRUE;
+    data->cycle_mode = SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE;
     gdk_rgba_parse (&data->pen_color, KEY_DFLT_PEN_COLOR);
     gdk_rgba_parse (&data->custom_line_color, "#FF00FF");
     data->custom_line_color.alpha = 1.0;
@@ -1055,6 +1060,19 @@ void read_keyfile(ScreenatorData *data)
 					       "CursorDotSize", NULL);
 	    if (size >= 1 && size <= 24)
 		data->cursor_dot_size = (guint) size;
+	}
+
+    if (g_key_file_has_key (key_file, "Drawing", "ShowCursorDot", NULL))
+	data->show_cursor_dot = g_key_file_get_boolean (
+	    key_file, "Drawing", "ShowCursorDot", NULL);
+
+    if (g_key_file_has_key (key_file, "Drawing", "CycleInputMode", NULL))
+	{
+	    gint mode = g_key_file_get_integer (
+		key_file, "Drawing", "CycleInputMode", NULL);
+	    if (mode >= SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE &&
+		mode <= SCREENATOR_CYCLE_NEVER)
+		data->cycle_mode = (ScreenatorCycleMode) mode;
 	}
 
     read_pen_color (key_file, &data->pen_color);
@@ -1460,7 +1478,7 @@ void read_keyfile(ScreenatorData *data)
 	  "CompanionApp6", "CompanionApp7",
 	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
 	  "ToggleVisibility", "ExitPaper",
-	  "Quit", "Escape"
+	  "Quit", "Escape", "CycleActiveSetting"
 	};
       guint i;
 
@@ -1532,6 +1550,10 @@ void write_keyfile(ScreenatorData *data)
 			    data->eraser_width);
     g_key_file_set_integer (key_file, "Drawing", "CursorDotSize",
 			    data->cursor_dot_size);
+    g_key_file_set_boolean (key_file, "Drawing", "ShowCursorDot",
+			    data->show_cursor_dot);
+    g_key_file_set_integer (key_file, "Drawing", "CycleInputMode",
+			    (gint) data->cycle_mode);
     g_key_file_set_string (key_file, "Drawing", "PenColor", color);
     g_key_file_set_integer (key_file, "Drawing", "IconSize", data->icon_size);
     g_key_file_set_integer (key_file, "Drawing", "IconPosition",
@@ -1649,7 +1671,7 @@ void write_keyfile(ScreenatorData *data)
 	  "CompanionApp6", "CompanionApp7",
 	  "InsertBefore", "InsertAfter", "ClearScreen", "DeletePage",
 	  "ToggleVisibility", "ExitPaper",
-	  "Quit", "Escape"
+	  "Quit", "Escape", "CycleActiveSetting"
 	};
       guint i;
 

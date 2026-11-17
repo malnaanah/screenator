@@ -217,6 +217,13 @@ typedef enum
   SCREENATOR_WHEEL_THICKNESS
 } ScreenatorWheelMode;
 
+typedef enum
+{
+  SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE = 0,
+  SCREENATOR_CYCLE_WHILE_EDITING,
+  SCREENATOR_CYCLE_NEVER
+} ScreenatorCycleMode;
+
 /* Corner where the floating icon is placed. */
 typedef enum
 {
@@ -254,6 +261,7 @@ typedef enum
   SCREENATOR_SHORTCUT_EXIT_PAPER,
   SCREENATOR_SHORTCUT_QUIT,
   SCREENATOR_SHORTCUT_ESCAPE,
+  SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING,
   SCREENATOR_SHORTCUT_COUNT
 } ScreenatorShortcutId;
 
@@ -262,7 +270,8 @@ typedef enum
   SCREENATOR_SHORTCUT_ALWAYS = 0,
   SCREENATOR_SHORTCUT_PAINTING,
   SCREENATOR_SHORTCUT_PAPER,
-  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER
+  SCREENATOR_SHORTCUT_PAINTING_OR_PAPER,
+  SCREENATOR_SHORTCUT_TOOL_OR_PAPER
 } ScreenatorShortcutScope;
 
 typedef struct
@@ -598,6 +607,7 @@ typedef struct
   GtkWidget   *quick_menu;
   ScreenatorStylusMode stylus_mode;
   ScreenatorWheelMode  wheel_mode;
+  ScreenatorCycleMode  cycle_mode;
   gboolean     hide_hints;
   gboolean     hints_shown;
   guint        hints_id;
@@ -673,6 +683,7 @@ typedef struct
   guint        pen_width;
   guint        eraser_width;
   guint        cursor_dot_size;
+  gboolean     show_cursor_dot;
   GdkRGBA      pen_color;
   GdkRGBA      custom_line_color;
   GdkRGBA      marker_color; /* line colour with marker_opacity for the Marker */
@@ -840,6 +851,8 @@ typedef struct
 
   /* Middle-button / stylus-pen panning in Paper Drawing. */
   gboolean     paper_panning;
+  GdkDevice   *paper_pan_device;
+  gboolean     paper_pan_stylus_button1;
   gint         paper_pan_x;
   gint         paper_pan_y;
   guint        paper_pan_button;
@@ -847,6 +860,17 @@ typedef struct
   gboolean     paper_pan_moved;
   gboolean     paper_pan_color_cycle;
   gboolean     mouse_middle_color_pending;
+  gboolean     screen_middle_eraser_active;
+  gboolean     screen_middle_eraser_pending;
+  guint        screen_middle_eraser_timeout_id;
+  gboolean     screen_middle_eraser_cycle_on_click;
+  guint        screen_middle_eraser_button;
+  GdkDevice   *screen_middle_eraser_device;
+  gdouble      screen_middle_eraser_x;
+  gdouble      screen_middle_eraser_y;
+  gboolean     screen_middle_eraser_stylus;
+  GdkDevice   *screen_suppress_release_device;
+  guint        screen_suppress_release_button;
 
   /* Temporary eraser while the right mouse button or stylus side button 2
    * is pressed in Paper Drawing. */
@@ -977,6 +1001,7 @@ void screenator_paper_shortcuts_focus (ScreenatorData *data,
 				       gboolean focused);
 void screenator_refresh_visibility_shortcut (ScreenatorData *data);
 void screenator_refresh_clear_shortcut (ScreenatorData *data);
+void screenator_refresh_cycle_setting_shortcut (ScreenatorData *data);
 void screenator_use_paper_window (ScreenatorData *data, gboolean use);
 void screenator_window_mode_enter (ScreenatorData *data);
 void screenator_window_mode_leave (ScreenatorData *data);
@@ -1111,6 +1136,7 @@ gboolean screenator_shortcut_matches (ScreenatorData *data,
 				      GdkEventKey *event);
 void screenator_apply_shortcuts (ScreenatorData *data,
 				 gchar * const *new_texts);
+void screenator_cycle_active_setting (ScreenatorData *data);
 
 void devdata_free (ScreenatorDeviceData *devdata);
 void stroke_begin (ScreenatorData *data, GdkDevice *dev);

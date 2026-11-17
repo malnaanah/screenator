@@ -28,7 +28,8 @@ kept.
   and suspends drawing.
   **Settings**
   opens a tabbed dialog with a **General** tab (save annotations, screenshot and
-  PDF save messages, font, timer delay, reset settings, open configuration folder),
+  PDF save messages, cursor dot, mouse and stylus cycling behavior, font, timer
+  delay, reset settings, open configuration folder),
   a **Paper** tab
   (continuous scrolling and paper size), a **Toolbar** tab (direction, icon
   size, position locking, and each icon's visibility and order, changed by
@@ -76,19 +77,27 @@ kept.
 - The Pen, shape and Text cursors show the current line colour at their
   centre. The Paint Bucket cursor shows the current fill colour, or an X when
   Shapes Fill Color is None. Set the dot
-  size from 1 to 24 pixels in **Settings > General**; it defaults to 8.
+  size from 1 to 24 pixels in **Settings > General**; it defaults to 8. The
+  **Show the dot on the cursor** checkbox controls whether the colored dot is
+  drawn.
 - In Screen mode, the mouse wheel changes the line colour, or the fill colour
   with Paint Bucket selected. A short middle click or stylus side button 1
   changes the active colour when no text or shape handles are being edited;
-  with Eraser selected, it changes eraser size. The stylus button also changes
-  Paint Bucket fill colour. In Paper mode the wheel scrolls pages,
-  and a middle-button press held for 200 ms or dragged pans the page. A short
-  middle click changes the active colour; the wheel changes colour only while
-  text or shape handles are being edited.
+  with Eraser selected, a short click changes eraser size. Holding or dragging
+  middle mouse or stylus button 1 erases while the Eraser tool is selected.
+  **Settings > General > Change colors or eraser size...** chooses whether
+  cycling works with an active tool, while editing shape and text, or never.
+  With Paint Bucket selected, a short middle click or stylus button 1 click
+  changes the fill colour in Screen or Paper mode when cycling is enabled.
+  In Paper mode the wheel scrolls pages, and holding or dragging the middle
+  mouse button or stylus button 1 pans the page after the 200 ms delay. A
+  short middle click changes the active colour; the wheel changes colour only
+  while text or shape handles are being edited.
   Line colour defaults to red and cycles Red, Blue, Green, Black, Orange,
   Yellow, Gray, White, then Custom.
   With Paint Bucket selected, a middle click changes the fill colour; with
-  Eraser selected, it changes the eraser size. Middle clicks do not erase.
+  Eraser selected, a short middle click changes the eraser size. Holding the
+  middle button erases with Eraser selected.
   Right click accepts typed text first, then commits
   visible handles on another click; a later right click starts erasing without
   exiting the selected tool.
@@ -342,7 +351,8 @@ kept.
   current tool and is available in both modes. In **Paper** mode, when no tool
   is active, the middle mouse button or stylus side button 1 pans the page,
   the wheel scrolls it and the right button or stylus side button 2 erases.
-  Middle click never erases; with Eraser selected, stylus side button 1 erases.
+  Middle click pans in Paper mode; holding the first stylus side button also
+  pans.
   Drag any icon
   or the gaps between them to move the bar; a short click still selects the
   tool. The bar stays open when a tool or a menu entry is chosen, the selected
@@ -412,7 +422,7 @@ kept.
   width; pen pressure is ignored so it behaves exactly like the mouse. With
   Eraser selected, pressing and holding the tip button while hovering erases.
   A short middle click or first side button click changes eraser size; holding
-  or dragging it pans in Paper mode.
+  either erases in Screen mode and pans in Paper mode.
   While a text or shape still shows its
   handles, the first side button changes its colour instead. The second side
   button acts like right click: it accepts text, then commits visible handles

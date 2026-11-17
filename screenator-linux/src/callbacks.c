@@ -608,8 +608,15 @@ static gboolean stylus_color_step_is_duplicate (ScreenatorDeviceData *devdata,
 							gdouble x, gdouble y);
 static void apply_scroll_step (ScreenatorData *data, gboolean down,
 			       gboolean colors_only);
+static void cycle_eraser_size (ScreenatorData *data, gboolean down);
 static gboolean mouse_middle_click_apply_active_setting (gpointer user_data);
 static gboolean editable_handles_active (ScreenatorData *data);
+static gboolean cycle_input_allowed (ScreenatorData *data);
+static gboolean screen_middle_eraser_timeout (gpointer user_data);
+static void screen_middle_eraser_begin (ScreenatorData *data);
+static void screen_middle_eraser_finish (ScreenatorData *data);
+static void screen_suppress_release (ScreenatorData *data,
+				     GdkEventButton *ev);
 static void apply_stylus_step (ScreenatorData *data, gboolean down);
 static void paper_cycle_setting (ScreenatorData *data, gboolean down);
 static void show_hints_dialog (ScreenatorData *data, gboolean startup);
@@ -5104,6 +5111,7 @@ screenator_activate_cursor_state (ScreenatorData *data)
   data->pen_tool = 0;
   screenator_refresh_visibility_shortcut (data);
   screenator_refresh_clear_shortcut (data);
+  screenator_refresh_cycle_setting_shortcut (data);
 
   /* Drop cached per-device tool contexts as well, otherwise re-grabbing the
    * pointer could show the previous tool's cursor while Cursor is active. */
@@ -5311,7 +5319,10 @@ gboolean on_buttonpress (GtkWidget *win,
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
   gdouble pressure = 1;
+  gdouble distance = 0;
   gboolean has_pressure = FALSE;
+  gboolean has_distance = FALSE;
+  gboolean stylus_button1;
 
   /* A dialog is modal: clicks outside it must not paint on the annotation
    * window that is visible behind it. */
@@ -5322,6 +5333,25 @@ gboolean on_buttonpress (GtkWidget *win,
     return TRUE;
 
   paper_window_transform_event (data, &ev->x, &ev->y);
+  has_pressure = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE,
+				     &pressure);
+  has_distance = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_DISTANCE,
+				     &distance);
+  stylus_button1 = event_source_is_stylus ((GdkEvent *) ev) &&
+    (ev->button == 2 ||
+     (ev->button == 1 &&
+      (!has_pressure || pressure <= 0.0 ||
+	(has_distance && distance > 0.0))));
+
+  /* Some tablet drivers report a stylus side-button release under a
+   * different button number. If that release was lost or remapped, don't let
+   * its suppression state swallow the next real pen-tip stroke. */
+  if (ev->button == 1 && !stylus_button1 &&
+      data->screen_suppress_release_device == ev->device)
+    {
+      data->screen_suppress_release_device = NULL;
+      data->screen_suppress_release_button = 0;
+    }
 
   /* A click on the drawing area outside the quick tool grid dismisses the
    * grid and is consumed. */
@@ -5358,7 +5388,7 @@ gboolean on_buttonpress (GtkWidget *win,
       GdkDevice *source = gdk_event_get_source_device ((GdkEvent *) ev);
 	 has_pressure = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE,
 					    &pressure);
-      g_printerr("DEBUG: Device '%s' (source '%s'): Button %i Down State %d "
+	      g_printerr("DEBUG: Device '%s' (source '%s'): Button %i Down State %d "
 		 "at (x,y)=(%.2f : %.2f), time=%u, pressure=%s%.3f\n",
 		 gdk_device_get_name(ev->device),
 		 source ? gdk_device_get_name (source) : "unknown",
@@ -5370,6 +5400,28 @@ gboolean on_buttonpress (GtkWidget *win,
    * hold or drag pans after the existing 200 ms threshold. */
   if (ev->button == 2 && !event_source_is_stylus ((GdkEvent *) ev) &&
       data->paper == SCREENATOR_PAPER_NONE &&
+      eraser_tool_active (data) && !editable_handles_active (data) &&
+      !data->text_editor)
+    {
+      data->screen_middle_eraser_pending = TRUE;
+      data->screen_middle_eraser_cycle_on_click =
+	cycle_input_allowed (data);
+      data->screen_middle_eraser_device = ev->device;
+      data->screen_middle_eraser_button = ev->button;
+      data->screen_middle_eraser_x = ev->x;
+      data->screen_middle_eraser_y = ev->y;
+      data->screen_middle_eraser_stylus = FALSE;
+      if (data->screen_middle_eraser_cycle_on_click)
+	data->screen_middle_eraser_timeout_id = g_timeout_add (
+	  200, screen_middle_eraser_timeout, data);
+      else
+	screen_middle_eraser_begin (data);
+      return TRUE;
+    }
+
+  if (ev->button == 2 && !event_source_is_stylus ((GdkEvent *) ev) &&
+      data->paper == SCREENATOR_PAPER_NONE &&
+      cycle_input_allowed (data) &&
       (color_cycle_tool_active (data) || eraser_tool_active (data)) &&
       !editable_handles_active (data) && !data->text_editor)
     {
@@ -5378,16 +5430,38 @@ gboolean on_buttonpress (GtkWidget *win,
       return TRUE;
     }
 
-  /* The stylus first side button steps the Eraser size in Screen mode.
-   * The right mouse button and stylus second side button remain erase
-   * gestures, including when the pen is hovering. */
+  /* A short stylus first-side-button click changes Eraser size; holding it
+   * erases. The right mouse button and second stylus side button also erase
+   * while held, including when the pen is hovering. */
   if (data->paper == SCREENATOR_PAPER_NONE &&
-      event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
-      eraser_tool_active (data))
+      stylus_button1 &&
+      eraser_tool_active (data) &&
+      !editable_handles_active (data) && !data->text_editor)
     {
-      if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
+      gboolean duplicate = stylus_color_step_is_duplicate (
+	devdata, ev->time, ev->x, ev->y);
+
+      /* The first press arms the Eraser gesture even if a preceding stylus
+	 * action happened at the same point. Only discard a duplicate while that
+	 * gesture is already pending, or a valid short click can be lost before
+	 * its release gets a chance to cycle the size. */
+      if (duplicate && data->screen_middle_eraser_pending &&
+	  data->screen_middle_eraser_stylus)
 	return TRUE;
-      apply_stylus_step (data, TRUE);
+
+      data->screen_middle_eraser_pending = TRUE;
+      data->screen_middle_eraser_cycle_on_click =
+	cycle_input_allowed (data);
+      data->screen_middle_eraser_device = ev->device;
+      data->screen_middle_eraser_button = ev->button;
+      data->screen_middle_eraser_x = ev->x;
+      data->screen_middle_eraser_y = ev->y;
+      data->screen_middle_eraser_stylus = TRUE;
+      if (data->screen_middle_eraser_cycle_on_click)
+	data->screen_middle_eraser_timeout_id = g_timeout_add (
+	  200, screen_middle_eraser_timeout, data);
+      else
+	screen_middle_eraser_begin (data);
       return TRUE;
     }
 
@@ -5398,14 +5472,19 @@ gboolean on_buttonpress (GtkWidget *win,
       !data->text_editor &&
       devdata && (devdata->cur_context == data->default_pen ||
 		  data->forced_context == data->default_pen))
-    return TRUE;
+    {
+      screen_suppress_release (data, ev);
+      return TRUE;
+    }
 
   /* Middle click and stylus button 1 change the typing colour. Right click
    * or stylus button 2 accepts the text and leaves its handles editable. */
   if (data->text_editor)
     {
-	if (ev->button == 2)
+	if (ev->button == 2 || stylus_button1)
 	  {
+	    if (!cycle_input_allowed (data))
+	      return TRUE;
 	    if (event_source_is_stylus ((GdkEvent *) ev) &&
 		stylus_color_step_is_duplicate (devdata, ev->time,
 						ev->x, ev->y))
@@ -5449,36 +5528,54 @@ gboolean on_buttonpress (GtkWidget *win,
    * drivers report it as button 1 while the pen is hovering, with zero
    * pressure, so accept that form too. Keep the threshold at zero so the
    * low-pressure start of a pen-tip stroke is not mistaken for this button. */
-  if (event_source_is_stylus ((GdkEvent *) ev) &&
-      (ev->button == 2 ||
-       (ev->button == 1 &&
-	gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE, &pressure) &&
-	pressure <= 0.0)) &&
+  if (stylus_button1 &&
       data->paper == SCREENATOR_PAPER_NONE &&
+      cycle_input_allowed (data) &&
       color_cycle_tool_active (data) && !eraser_tool_active (data) &&
       !editable_handles_active (data))
     {
 	if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
-	  return TRUE;
+	  {
+	    screen_suppress_release (data, ev);
+	    return TRUE;
+	  }
       if (data->debug)
 	g_printerr ("DEBUG: Stylus color step applied from button %u "
 		    "(pressure=%s%.3f)\n", ev->button,
 		    has_pressure ? "" : "n/a ", pressure);
       apply_scroll_step (data, TRUE, TRUE);
+      screen_suppress_release (data, ev);
       return TRUE;
     }
 
   /* While text or shape handles are active, the middle mouse button and
    * stylus side button 1 change colour without closing the edit. */
-  if (ev->button == 2 && editable_handles_active (data))
+  if ((ev->button == 2 || stylus_button1) &&
+      editable_handles_active (data) &&
+      cycle_input_allowed (data))
     {
 	if (event_source_is_stylus ((GdkEvent *) ev) &&
 	    stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
-	  return TRUE;
+	  {
+	    screen_suppress_release (data, ev);
+	    return TRUE;
+	  }
       if (data->debug && event_source_is_stylus ((GdkEvent *) ev))
 	g_printerr ("DEBUG: Stylus color step applied from button %u\n",
 		    ev->button);
       apply_scroll_step (data, TRUE, TRUE);
+      if (data->paper == SCREENATOR_PAPER_NONE)
+	screen_suppress_release (data, ev);
+      return TRUE;
+    }
+
+  /* Consume a middle-button or stylus-button-1 press that did not perform a
+   * configured color/size action so it can never fall through as a stroke. */
+  if (data->paper == SCREENATOR_PAPER_NONE &&
+      ((ev->button == 2 && !event_source_is_stylus ((GdkEvent *) ev)) ||
+       stylus_button1))
+    {
+      screen_suppress_release (data, ev);
       return TRUE;
     }
 
@@ -5487,16 +5584,20 @@ gboolean on_buttonpress (GtkWidget *win,
    * while held. With Eraser selected, a short button 1 click changes size. */
   if (data->paper != SCREENATOR_PAPER_NONE)
     {
-      if (ev->button == 2)
+	if (ev->button == 2 || stylus_button1)
 	{
 	  /* With a placed shape or text selected, the stylus first side
 	   * button recolours it instead of starting a pan. */
 	  if (event_source_is_stylus ((GdkEvent *) ev) &&
-	      editable_handles_active (data))
+	      editable_handles_active (data) &&
+	      cycle_input_allowed (data))
 	    {
 	      if (stylus_color_step_is_duplicate (devdata, ev->time,
 						  ev->x, ev->y))
-		return TRUE;
+		{
+		  screen_suppress_release (data, ev);
+		  return TRUE;
+		}
 	      apply_stylus_step (data, TRUE);
 	      return TRUE;
 	    }
@@ -5504,7 +5605,9 @@ gboolean on_buttonpress (GtkWidget *win,
 	  if (editable_handles_active (data))
 	    screenator_exit_tool (data);
 	  paper_commit_pending (data);
-	  screenator_paper_pan_start (data, 2, ev->x, ev->y);
+	  screenator_paper_pan_start (data, ev->button, ev->x, ev->y);
+	  data->paper_pan_device = ev->device;
+	  data->paper_pan_stylus_button1 = stylus_button1;
 	  return TRUE;
 	}
 
@@ -5566,11 +5669,16 @@ gboolean on_buttonpress (GtkWidget *win,
    * still shows its handles. */
   if (event_source_is_stylus ((GdkEvent *) ev) && ev->button == 2 &&
       data->paper == SCREENATOR_PAPER_NONE &&
-      editable_handles_active (data))
+      editable_handles_active (data) &&
+      cycle_input_allowed (data))
     {
 	if (stylus_color_step_is_duplicate (devdata, ev->time, ev->x, ev->y))
-	  return TRUE;
+	  {
+	    screen_suppress_release (data, ev);
+	    return TRUE;
+	  }
       apply_stylus_step (data, TRUE);
+      screen_suppress_release (data, ev);
       return TRUE;
     }
 
@@ -6079,6 +6187,75 @@ gboolean on_motion (GtkWidget *win,
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
   gboolean stylus = event_source_is_stylus ((GdkEvent *) ev);
+  gboolean eraser_gesture_device =
+    data->screen_middle_eraser_device == ev->device ||
+    (data->screen_middle_eraser_stylus &&
+     (stylus || (ev->state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK)) != 0));
+
+  if (data->screen_middle_eraser_pending &&
+      eraser_gesture_device &&
+      !data->screen_middle_eraser_stylus &&
+      (ABS ((gint) ev->x - (gint) data->screen_middle_eraser_x) >= 4 ||
+       ABS ((gint) ev->y - (gint) data->screen_middle_eraser_y) >= 4))
+    screen_middle_eraser_begin (data);
+
+  /* Draw the held Eraser gesture directly. Stylus drivers can deliver motion
+   * through a different master device than the side-button press, and their
+   * hover motion does not always carry a button mask or pressure value. */
+  if (data->screen_middle_eraser_active && eraser_gesture_device)
+    {
+      GdkDevice *eraser_device = data->screen_middle_eraser_device;
+      ScreenatorDeviceData *eraser_devdata = g_hash_table_lookup (
+	data->devdatatable, eraser_device);
+
+      if (eraser_devdata)
+	{
+	  data->maxwidth = data->default_eraser->width;
+	  draw_line (data, eraser_device,
+		     eraser_devdata->lastx, eraser_devdata->lasty,
+		     ev->x, ev->y);
+	  coord_list_prepend (data, eraser_device, ev->x, ev->y,
+			      data->maxwidth);
+	  eraser_devdata->lastx = ev->x;
+	  eraser_devdata->lasty = ev->y;
+	  eraser_devdata->motion_time = ev->time;
+	}
+      return TRUE;
+    }
+
+  /* Before a held middle/stylus-button press has become an Eraser gesture,
+   * its motion must not fall through as a Pen stroke. */
+  if (data->screen_middle_eraser_pending &&
+      eraser_gesture_device)
+    {
+      ScreenatorDeviceData *eraser_devdata = g_hash_table_lookup (
+	data->devdatatable, data->screen_middle_eraser_device);
+
+      if (eraser_devdata)
+	{
+	  eraser_devdata->lastx = ev->x;
+	  eraser_devdata->lasty = ev->y;
+	  eraser_devdata->motion_time = ev->time;
+	}
+      return TRUE;
+    }
+
+  if (data->mouse_middle_color_pending &&
+      (ev->state & GDK_BUTTON2_MASK) != 0)
+    {
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
+      return TRUE;
+    }
+
+  if (data->screen_suppress_release_device == ev->device)
+    {
+      devdata->lastx = ev->x;
+      devdata->lasty = ev->y;
+      devdata->motion_time = ev->time;
+      return TRUE;
+    }
 
   /* Leaving the toolbar can be reported only as a motion event over the
    * canvas.  Refresh the stale control-hover state here so the newly selected
@@ -6401,6 +6578,45 @@ gboolean on_buttonrelease (GtkWidget *win,
 
   devdata = g_hash_table_lookup(data->devdatatable, ev->device);
 
+  if ((data->screen_middle_eraser_pending ||
+       data->screen_middle_eraser_active) &&
+      (data->screen_middle_eraser_stylus ||
+	(data->screen_middle_eraser_device == ev->device &&
+	 data->screen_middle_eraser_button == ev->button)))
+    {
+      GdkDevice *eraser_device = data->screen_middle_eraser_device;
+      ScreenatorDeviceData *eraser_devdata = g_hash_table_lookup (
+	data->devdatatable, eraser_device);
+      gboolean was_pending = data->screen_middle_eraser_pending;
+      gboolean should_cycle = was_pending &&
+	data->screen_middle_eraser_cycle_on_click;
+
+
+      if (data->screen_middle_eraser_active && eraser_devdata &&
+	  (eraser_devdata->lastx != ev->x ||
+	   eraser_devdata->lasty != ev->y))
+	{
+	  data->maxwidth = data->default_eraser->width;
+	  draw_line (data, eraser_device,
+		     eraser_devdata->lastx, eraser_devdata->lasty,
+		     ev->x, ev->y);
+	  coord_list_prepend (data, eraser_device, ev->x, ev->y,
+			      data->maxwidth);
+	}
+
+      screen_middle_eraser_finish (data);
+      if (should_cycle)
+	cycle_eraser_size (data, TRUE);
+      return TRUE;
+    }
+
+  if (data->screen_suppress_release_device == ev->device)
+    {
+      data->screen_suppress_release_device = NULL;
+      data->screen_suppress_release_button = 0;
+      return TRUE;
+    }
+
   gfloat direction = 0;
   gint width = 0;
   if(devdata->cur_context)
@@ -6424,12 +6640,17 @@ gboolean on_buttonrelease (GtkWidget *win,
       return TRUE;
     }
 
-  if (data->paper_panning && ev->button == data->paper_pan_button)
+  if (data->paper_panning &&
+      (ev->button == data->paper_pan_button ||
+	(data->paper_pan_stylus_button1 &&
+	 data->paper_pan_device == ev->device)))
     {
       gboolean color_step = data->paper_pan_color_cycle &&
+        cycle_input_allowed (data) &&
         !data->paper_pan_moved &&
         g_get_monotonic_time () - data->paper_pan_started < 200000;
       gboolean step = eraser_tool_active (data) &&
+        cycle_input_allowed (data) &&
         !data->paper_pan_moved &&
         g_get_monotonic_time () - data->paper_pan_started < 200000;
       screenator_paper_pan_end (data);
@@ -7828,6 +8049,19 @@ eraser_tool_active (ScreenatorData *data)
 	 data->pen_tool == 3;
 }
 
+/* Ctrl+C cycles the setting owned by the selected tool.  Paper mode always
+ * accepts the shortcut; Screen mode only calls this while a tool is active. */
+void
+screenator_cycle_active_setting (ScreenatorData *data)
+{
+  if (eraser_tool_active (data))
+    cycle_eraser_size (data, TRUE);
+  else if (bucket_tool_active (data))
+    cycle_shape_fill_color (data, TRUE);
+  else if (color_cycle_tool_active (data))
+    cycle_line_color (data, TRUE);
+}
+
 /* TRUE while the Marker tool is the selected tool. */
 static gboolean
 marker_tool_active (ScreenatorData *data)
@@ -7863,6 +8097,125 @@ editable_handles_active (ScreenatorData *data)
   return FALSE;
 }
 
+static gboolean
+cycle_input_allowed (ScreenatorData *data)
+{
+  gboolean editing = data->text_editor || editable_handles_active (data);
+
+  if (data->cycle_mode == SCREENATOR_CYCLE_NEVER)
+    return FALSE;
+  if (editing)
+    return data->cycle_mode == SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE ||
+      data->cycle_mode == SCREENATOR_CYCLE_WHILE_EDITING;
+  return data->cycle_mode == SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE &&
+    (color_cycle_tool_active (data) || eraser_tool_active (data));
+}
+
+static void
+screen_suppress_release (ScreenatorData *data, GdkEventButton *ev)
+{
+  data->screen_suppress_release_device = ev->device;
+  data->screen_suppress_release_button = ev->button;
+}
+
+static void
+screen_middle_eraser_begin (ScreenatorData *data)
+{
+  ScreenatorDeviceData *devdata;
+
+  if (!data->screen_middle_eraser_pending ||
+      data->paper != SCREENATOR_PAPER_NONE ||
+      !data->screen_middle_eraser_device)
+    return;
+
+  devdata = g_hash_table_lookup (data->devdatatable,
+				 data->screen_middle_eraser_device);
+  if (!devdata || !eraser_tool_active (data))
+    return;
+
+  /* The screen grab can be reacquired between the button press and the hold
+   * timeout. Re-establish it here, then refresh the device record because a
+   * failed grab can rebuild the device table. */
+  if (!devdata->is_grabbed)
+    {
+      acquire_grab (data, data->screen_middle_eraser_device);
+      devdata = g_hash_table_lookup (data->devdatatable,
+				     data->screen_middle_eraser_device);
+    }
+  if (!devdata || !devdata->is_grabbed)
+    return;
+
+  /* A device can still have the previous tool cached if it was not grabbed
+   * when Eraser was selected. The active tool owns this gesture. */
+  if (!devdata->cur_context || devdata->cur_context != data->default_eraser)
+    {
+      devdata->cur_context = data->default_eraser;
+      set_device_cursor (data, devdata->device, data->default_eraser);
+    }
+
+  if (data->screen_middle_eraser_timeout_id)
+    {
+      g_source_remove (data->screen_middle_eraser_timeout_id);
+      data->screen_middle_eraser_timeout_id = 0;
+    }
+
+  data->screen_middle_eraser_pending = FALSE;
+  data->screen_middle_eraser_cycle_on_click = FALSE;
+  data->screen_middle_eraser_active = TRUE;
+  devdata->stylus_eraser_active = TRUE;
+  devdata->lastx = data->screen_middle_eraser_x;
+  devdata->lasty = data->screen_middle_eraser_y;
+  devdata->motion_time = gtk_get_current_event_time ();
+  data->maxwidth = devdata->cur_context->width;
+  stroke_begin (data, devdata->device);
+  draw_line (data, devdata->device, devdata->lastx, devdata->lasty,
+	     devdata->lastx, devdata->lasty);
+  coord_list_prepend (data, devdata->device, devdata->lastx, devdata->lasty,
+		      data->maxwidth);
+}
+
+static void
+screen_middle_eraser_finish (ScreenatorData *data)
+{
+  ScreenatorDeviceData *devdata;
+
+  if (data->screen_middle_eraser_timeout_id)
+    {
+      g_source_remove (data->screen_middle_eraser_timeout_id);
+      data->screen_middle_eraser_timeout_id = 0;
+    }
+  data->screen_middle_eraser_pending = FALSE;
+  data->screen_middle_eraser_cycle_on_click = FALSE;
+
+  if (data->screen_middle_eraser_active &&
+      data->screen_middle_eraser_device)
+    {
+      devdata = g_hash_table_lookup (data->devdatatable,
+				     data->screen_middle_eraser_device);
+      if (devdata)
+	{
+	  draw_line_finish (data, devdata->device);
+	  stroke_finish (data, devdata->device);
+	  coord_list_free (data, devdata->device);
+	  devdata->stylus_eraser_active = FALSE;
+	}
+    }
+  data->screen_middle_eraser_active = FALSE;
+  data->screen_middle_eraser_device = NULL;
+  data->screen_middle_eraser_button = 0;
+  data->screen_middle_eraser_stylus = FALSE;
+}
+
+static gboolean
+screen_middle_eraser_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->screen_middle_eraser_timeout_id = 0;
+  screen_middle_eraser_begin (data);
+  return G_SOURCE_REMOVE;
+}
+
 /* Apply one wheel notch to the setting that belongs to the active tool: the
  * eraser size for the eraser, the shape fill colour over the Paint Bucket and
  * the line colour for every other tool.  Shared by the mouse wheel and the
@@ -7887,6 +8240,8 @@ mouse_middle_click_apply_active_setting (gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
 
+  if (!cycle_input_allowed (data))
+    return G_SOURCE_REMOVE;
   if (eraser_tool_active (data))
     cycle_eraser_size (data, TRUE);
   else
@@ -7982,6 +8337,10 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
   if (data->quick_menu)
     return TRUE;
 
+  if ((data->text_editor_active || editable_handles_active (data)) &&
+      !cycle_input_allowed (data))
+    return TRUE;
+
   /* In Paper Drawing the wheel scrolls the pages.  Outside Paper Drawing it
    * keeps the old tool-only behaviour.  While text is being typed, the wheel
    * changes the text colour instead. */
@@ -8020,15 +8379,21 @@ on_scroll (GtkWidget *win, GdkEventScroll *ev, gpointer user_data)
     apply_scroll_step (data, down, TRUE);
   else if (data->paper != SCREENATOR_PAPER_NONE && bucket_tool_active (data))
     screenator_paper_scroll (data, down ? 1 : -1);
-  else if (data->paper == SCREENATOR_PAPER_NONE && bucket_tool_active (data))
+  else if (data->paper == SCREENATOR_PAPER_NONE &&
+           bucket_tool_active (data) &&
+           cycle_input_allowed (data))
     cycle_shape_fill_color (data, down);
   else if (data->paper == SCREENATOR_PAPER_NONE &&
-           editable_handles_active (data))
+           editable_handles_active (data) &&
+           cycle_input_allowed (data))
     apply_scroll_step (data, down, TRUE);
-  else if (data->paper == SCREENATOR_PAPER_NONE && eraser_tool_active (data))
+  else if (data->paper == SCREENATOR_PAPER_NONE &&
+           eraser_tool_active (data) &&
+           cycle_input_allowed (data))
     cycle_eraser_size (data, down);
   else if (data->paper == SCREENATOR_PAPER_NONE &&
-           color_cycle_tool_active (data))
+           color_cycle_tool_active (data) &&
+           cycle_input_allowed (data))
     apply_scroll_step (data, down, TRUE);
   else if (data->paper != SCREENATOR_PAPER_NONE)
     {
@@ -10796,6 +11161,8 @@ screenator_paper_pan_start (ScreenatorData *data, guint button, gint x, gint y)
     return;
 
   data->paper_panning = TRUE;
+  data->paper_pan_device = NULL;
+  data->paper_pan_stylus_button1 = FALSE;
   data->paper_pan_button = button;
   data->paper_pan_x = x;
   data->paper_pan_y = y;
@@ -10852,6 +11219,8 @@ screenator_paper_pan_end (ScreenatorData *data)
 
   data->paper_panning = FALSE;
   data->paper_pan_button = 0;
+  data->paper_pan_device = NULL;
+  data->paper_pan_stylus_button1 = FALSE;
   data->paper_pan_color_cycle = FALSE;
 
   if (was_panning)
@@ -13262,6 +13631,8 @@ typedef struct
   GtkWidget      *icon_position_radio[4];
   GtkWidget      *timer_delay_combo;
   GtkWidget      *cursor_dot_size_spin;
+  GtkWidget      *cursor_dot_check;
+  GtkWidget      *cycle_input_combo;
 
   GtkWidget      *continuous_check;
   GtkWidget      *toolbar_size_spin;
@@ -13840,6 +14211,20 @@ settings_collect_toolbar_items (SettingsDialog *sd, gchar **visible_out,
 }
 
 static GtkWidget *
+cycle_input_mode_combo (ScreenatorCycleMode mode)
+{
+  GtkWidget *combo = gtk_combo_box_text_new ();
+
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+				  "When a tool is active");
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo),
+				  "While editing shape and text");
+  gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (combo), "Never");
+  gtk_combo_box_set_active (GTK_COMBO_BOX (combo), mode);
+  return combo;
+}
+
+static GtkWidget *
 build_general_settings_page (SettingsDialog *sd)
 {
   ScreenatorData *data = sd->data;
@@ -13910,16 +14295,31 @@ build_general_settings_page (SettingsDialog *sd)
 			     data->cursor_dot_size);
   gtk_grid_attach (GTK_GRID (grid), sd->cursor_dot_size_spin, 1, 4, 1, 1);
 
+  sd->cursor_dot_check = gtk_check_button_new_with_label (
+    "Show the dot on the cursor");
+  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (sd->cursor_dot_check),
+				data->show_cursor_dot);
+  gtk_grid_attach (GTK_GRID (grid), sd->cursor_dot_check, 0, 5, 2, 1);
+
+  label = gtk_label_new (
+    "Change colors or eraser size using middle mouse button, mouse wheel, or stylus button 1");
+  gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+  gtk_label_set_line_wrap (GTK_LABEL (label), TRUE);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 6, 2, 1);
+
+  sd->cycle_input_combo = cycle_input_mode_combo (data->cycle_mode);
+  gtk_grid_attach (GTK_GRID (grid), sd->cycle_input_combo, 0, 7, 2, 1);
+
   label = gtk_label_new ("Text font");
   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
-  gtk_grid_attach (GTK_GRID (grid), label, 0, 5, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), label, 0, 8, 1, 1);
 
   row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 8);
   button = gtk_button_new_with_label ("Change Font...");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (settings_change_font), sd);
   gtk_box_pack_start (GTK_BOX (row), button, FALSE, FALSE, 0);
-  gtk_grid_attach (GTK_GRID (grid), row, 1, 5, 1, 1);
+  gtk_grid_attach (GTK_GRID (grid), row, 1, 8, 1, 1);
 
 
   gtk_box_pack_start (GTK_BOX (box), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL),
@@ -14679,6 +15079,10 @@ settings_apply_current (SettingsDialog *sd)
     ? timer_delays[timer_index] : data->tool_delay_seconds;
   guint new_cursor_dot_size = (guint) gtk_spin_button_get_value_as_int (
     GTK_SPIN_BUTTON (sd->cursor_dot_size_spin));
+  gboolean new_show_cursor_dot = gtk_toggle_button_get_active (
+    GTK_TOGGLE_BUTTON (sd->cursor_dot_check));
+  gint new_cycle_mode = gtk_combo_box_get_active (
+    GTK_COMBO_BOX (sd->cycle_input_combo));
   guint new_toolbar_size =
     (guint) gtk_spin_button_get_value_as_int (
       GTK_SPIN_BUTTON (sd->toolbar_size_spin));
@@ -14752,6 +15156,14 @@ settings_apply_current (SettingsDialog *sd)
 	  if (!data->top_dialog)
 	    paper_refresh_active_cursor (data);
 	}
+      if (new_show_cursor_dot != data->show_cursor_dot)
+	{
+	  data->show_cursor_dot = new_show_cursor_dot;
+	  screenator_update_tool_cursors (data);
+	}
+      if (new_cycle_mode >= SCREENATOR_CYCLE_WHEN_TOOL_ACTIVE &&
+	  new_cycle_mode <= SCREENATOR_CYCLE_NEVER)
+	data->cycle_mode = (ScreenatorCycleMode) new_cycle_mode;
       data->paper_toolbar_position_locked = new_toolbar_position_locked;
 
       if (new_toolbar_size != data->paper_toolbar_icon_size ||

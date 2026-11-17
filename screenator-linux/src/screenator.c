@@ -1494,6 +1494,12 @@ tool_cursor_with_color (ScreenatorData *data, const gchar **xpm,
   channels = gdk_pixbuf_get_n_channels (pixbuf);
   rowstride = gdk_pixbuf_get_rowstride (pixbuf);
   pixels = gdk_pixbuf_get_pixels (pixbuf);
+  if (!data->show_cursor_dot && !show_x)
+    {
+      cursor = gdk_cursor_new_from_pixbuf (data->display, pixbuf, hot_x, hot_y);
+      g_object_unref (pixbuf);
+      return cursor;
+    }
   center_x = width / 2;
   center_y = height / 2;
   radius = CLAMP (data->cursor_dot_size, 1, 24) / 2.0;
