@@ -58,7 +58,7 @@
 typedef enum
 {
   SK_ARROW = 0, SK_TEXT, SK_PEN, SK_ICON, SK_TOOLBAR, SK_SWITCH,
-  SK_SHOT, SK_TIMER, SK_UNDO, SK_REDO, SK_PAPER_Q, SK_PAPER_T,
+  SK_SHOT, SK_TIMER, SK_CYCLE, SK_UNDO, SK_REDO, SK_PAPER_Q, SK_PAPER_T,
   SK_CLEAR, SK_DELETE_PAGE, SK_QUIT,
   SK_COMPANION1, SK_COMPANION2, SK_COMPANION3, SK_COMPANION4,
   SK_COMPANION5, SK_COMPANION6, SK_COMPANION7, SK_COUNT
@@ -185,6 +185,12 @@ typedef enum { BARS_NONE = 0, BARS_TOP, BARS_BOTTOM, BARS_BOTH } BarsArrows;
 typedef enum { ICON_TR = 0, ICON_TL, ICON_BR, ICON_BL } IconPos;
 typedef enum { WHEEL_COLOR = 0, WHEEL_THICKNESS } WheelMode;
 typedef enum { STYLUS_COLOR = 0, STYLUS_THICKNESS } StylusMode;
+typedef enum
+{
+  SETTING_INPUT_TOOL_ACTIVE = 0,
+  SETTING_INPUT_EDITING,
+  SETTING_INPUT_NEVER
+} SettingInputMode;
 
 /* Spline node: an on-curve point and its two absolute control points. */
 typedef struct
@@ -345,7 +351,9 @@ typedef struct
   Pt paper_pan_last;
   WheelMode wheel_mode;
   StylusMode stylus_mode;
+  SettingInputMode setting_input_mode;
   unsigned cursor_dot_size;
+  int show_cursor_dot;
   int autostart;
 
   /* Config paths. */

@@ -285,6 +285,7 @@ below lists the defaults; menu labels show the currently configured keys.
 | Timer | `F12` |
 | Undo | `Ctrl+Z` |
 | Redo | `Ctrl+Shift+Z` |
+| Change color or eraser size | `Ctrl+C` by default (Paper mode, or Screen mode with a tool active) |
 | Leave Paper | `Ctrl+Q` |
 | Toggle Visibility | `Ctrl+T` |
 | Clear Screen (Screen mode with a tool active or Paper mode) | `Delete` |
@@ -293,6 +294,14 @@ below lists the defaults; menu labels show the currently configured keys.
 | Companion App 1–7 (Paper mode) | `Ctrl+1` through `Ctrl+7` |
 
 - `Ctrl+F10` remains the quick tool menu.
+- **Settings > General > Change colors or eraser size using middle mouse
+  button, mouse wheel, or stylus button 1** controls whether these inputs work
+  whenever a tool is active, only while editing shape or text, or never.
+- `Ctrl+C` changes color or eraser size in Paper mode and in Screen mode while
+  a tool is active. It also works while editing text or a shape.
+- With the Eraser selected in Screen mode, holding the middle mouse button or
+  stylus button 1 for 200 ms starts erasing; a shorter press changes eraser
+  size.
 - While painting: `Esc` closes shape handles, a further `Esc` exits to Cursor.
 - `Ctrl+T` shows or hides drawings in Screen and Paper modes. In Paper mode,
   visibility applies to annotations on every page. `Delete` clears drawings

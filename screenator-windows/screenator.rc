@@ -1,6 +1,6 @@
 #include <windows.h>
 
-1 ICON "assets/icon.ico"
+1 ICON "../assets/windows/icon.ico"
 1 RT_MANIFEST "src/app.manifest"
 
 VS_VERSION_INFO VERSIONINFO

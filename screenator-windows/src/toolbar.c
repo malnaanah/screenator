@@ -508,6 +508,30 @@ static void tb_companion_executable(int slot, wchar_t *path, size_t cap)
   wcsncpy(path, start, len); path[len] = 0;
 }
 
+static HICON tb_companion_icon(int slot)
+{
+  wchar_t exe[COMPANION_PATH_MAX];
+  SHFILEINFOW info;
+  HICON large = NULL, small = NULL;
+  tb_companion_executable(slot, exe, COMPANION_PATH_MAX);
+  if (!exe[0] || GetFileAttributesW(exe) == INVALID_FILE_ATTRIBUTES)
+    return NULL;
+  memset(&info, 0, sizeof(info));
+  if (SHGetFileInfoW(exe, 0, &info, sizeof(info),
+                     SHGFI_ICON | SHGFI_SMALLICON))
+    return info.hIcon;
+  if (ExtractIconExW(exe, 0, &large, &small, 1))
+    {
+      if (small)
+        {
+          if (large) DestroyIcon(large);
+          return small;
+        }
+      return large;
+    }
+  return NULL;
+}
+
 static int tb_active(int cmd)
 {
   if (cmd == CMD_CURSOR) return g.tool == TOOL_NONE;
@@ -831,20 +855,9 @@ static void tb_paint(HWND h)
               custom_slot = atoi(a->id + 9) - 1;
               if (custom_slot >= 0 && custom_slot < COMPANION_COUNT)
                 {
-                  wchar_t exe[COMPANION_PATH_MAX];
-                  tb_companion_executable(custom_slot, exe,
-                                          COMPANION_PATH_MAX);
-                  if (exe[0] && GetFileAttributesW(exe) != INVALID_FILE_ATTRIBUTES)
-                    {
-                      SHFILEINFOW info;
-                      if (SHGetFileInfoW(exe, 0, &info, sizeof(info),
-                                         SHGFI_ICON | SHGFI_SMALLICON))
-                        { custom_icon = info.hIcon; owns_custom_icon = 1; }
-                      else if (ExtractIconExW(exe, 0, NULL, &custom_icon, 1))
-                        owns_custom_icon = 1;
-                    }
-                  if (!custom_icon)
-                    custom_icon = LoadIconW(NULL, IDI_APPLICATION);
+                  icon_name = "app.png";
+                  custom_icon = tb_companion_icon(custom_slot);
+                  owns_custom_icon = custom_icon != NULL;
                 }
             }
           HBITMAP icon = custom_icon ? NULL : tb_icon(icon_name, tb_size);
@@ -1358,18 +1371,37 @@ static LRESULT CALLBACK tb_cfg_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         DeleteObject(br);
 
         {
-          HBITMAP icon = tb_icon(a->icon, 24);
-          if (icon)
+          int custom_slot = !strncmp(a->id, "companion", 9)
+                            ? atoi(a->id + 9) - 1 : -1;
+          HICON custom_icon = custom_slot >= 0 &&
+                              custom_slot < COMPANION_COUNT
+                              ? tb_companion_icon(custom_slot) : NULL;
+          if (custom_icon)
             {
-              HDC idc = CreateCompatibleDC(dis->hDC);
-              HGDIOBJ old = SelectObject(idc, icon);
               int iy = dis->rcItem.top +
                        (dis->rcItem.bottom - dis->rcItem.top - 24) / 2;
-              BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-              AlphaBlend(dis->hDC, dis->rcItem.left + 5, iy, 24, 24, idc,
-                         0, 0, 24, 24, bf);
-              SelectObject(idc, old);
-              DeleteDC(idc);
+              DrawIconEx(dis->hDC, dis->rcItem.left + 5, iy, custom_icon,
+                         24, 24, 0, NULL, DI_NORMAL);
+              DestroyIcon(custom_icon);
+            }
+          else
+            {
+              const char *icon_name = custom_slot >= 0 &&
+                                      custom_slot < COMPANION_COUNT
+                                      ? "app.png" : a->icon;
+              HBITMAP icon = tb_icon(icon_name, 24);
+              if (icon)
+                {
+                  HDC idc = CreateCompatibleDC(dis->hDC);
+                  HGDIOBJ old = SelectObject(idc, icon);
+                  int iy = dis->rcItem.top +
+                           (dis->rcItem.bottom - dis->rcItem.top - 24) / 2;
+                  BLENDFUNCTION bf = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+                  AlphaBlend(dis->hDC, dis->rcItem.left + 5, iy, 24, 24,
+                             idc, 0, 0, 24, 24, bf);
+                  SelectObject(idc, old);
+                  DeleteDC(idc);
+                }
             }
         }
 

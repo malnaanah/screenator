@@ -72,6 +72,9 @@ static const wchar_t *SETTINGS_CLASS = L"ScreenatorSettings";
 #define ID_SET_CURSOR_DOT 7237
 #define ID_SET_CURSOR_DOT_VALUE 7238
 #define ID_SET_CURSOR_DOT_LABEL 7239
+#define ID_SET_CURSOR_DOT_SHOW 7240
+#define ID_SET_CHANGE_INPUT_LABEL 7241
+#define ID_SET_CHANGE_INPUT_MODE 7242
 #define ID_SET_COMPANION_BASE 7300
 #define ID_COMPANION_LIST 7501
 #define ID_COMPANION_USE 7502
@@ -1809,6 +1812,10 @@ static void settings_sync(HWND h)
                  g.screenshot_saved_message ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(h, ID_SET_PDF_MESSAGE,
                  g.pdf_saved_message ? BST_CHECKED : BST_UNCHECKED);
+  CheckDlgButton(h, ID_SET_CURSOR_DOT_SHOW,
+                 g.show_cursor_dot ? BST_CHECKED : BST_UNCHECKED);
+  SendDlgItemMessageW(h, ID_SET_CHANGE_INPUT_MODE, CB_SETCURSEL,
+                      g.setting_input_mode, 0);
   CheckDlgButton(h, ID_SET_TOOLBAR_LOCK,
                  g.toolbar_locked ? BST_CHECKED : BST_UNCHECKED);
   CheckDlgButton(h, ID_SET_IND,
@@ -1901,6 +1908,9 @@ static void settings_show_tab(HWND h, int tab)
   settings_show(h, ID_SET_CURSOR_DOT, 0);
   settings_show(h, ID_SET_CURSOR_DOT_VALUE, 0);
   settings_show(h, ID_SET_CURSOR_DOT_LABEL, 0);
+  settings_show(h, ID_SET_CURSOR_DOT_SHOW, 0);
+  settings_show(h, ID_SET_CHANGE_INPUT_LABEL, 0);
+  settings_show(h, ID_SET_CHANGE_INPUT_MODE, 0);
   settings_show(h, ID_SET_PAPER_SIZE_LABEL, 0);
   settings_show(h, ID_SET_PAPER_SIZE, 0);
   settings_show(h, ID_SET_PAPER_W_LABEL, 0);
@@ -1921,6 +1931,9 @@ static void settings_show_tab(HWND h, int tab)
       settings_show(h, ID_SET_CURSOR_DOT, 1);
       settings_show(h, ID_SET_CURSOR_DOT_VALUE, 1);
       settings_show(h, ID_SET_CURSOR_DOT_LABEL, 1);
+      settings_show(h, ID_SET_CURSOR_DOT_SHOW, 1);
+      settings_show(h, ID_SET_CHANGE_INPUT_LABEL, 1);
+      settings_show(h, ID_SET_CHANGE_INPUT_MODE, 1);
     }
   else if (tab == 1)
     {
@@ -2294,6 +2307,20 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
                    175, 258, 190, 32, ID_SET_CURSOR_DOT);
       settings_ctl(h, 0, L"STATIC", L"8 px", SS_LEFT,
                    375, 265, 55, 22, ID_SET_CURSOR_DOT_VALUE);
+      settings_ctl(h, 0, L"BUTTON", L"Show dot on cursor",
+                   BS_AUTOCHECKBOX, 30, 294, 250, 24,
+                   ID_SET_CURSOR_DOT_SHOW);
+      settings_ctl(h, 0, L"STATIC",
+                   L"Change colors or eraser size using middle mouse button, mouse wheel, or stylus button 1",
+                   SS_LEFT, 30, 326, 420, 36, ID_SET_CHANGE_INPUT_LABEL);
+      {
+        HWND cb = settings_ctl(h, 0, L"COMBOBOX", L"",
+                               CBS_DROPDOWNLIST | WS_VSCROLL,
+                               30, 363, 410, 92, ID_SET_CHANGE_INPUT_MODE);
+        SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM) L"When a tool is active.");
+        SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM) L"While editing shape and text.");
+        SendMessageW(cb, CB_ADDSTRING, 0, (LPARAM) L"Never.");
+      }
 
       settings_ctl(h, 1, L"STATIC", L"Paper size", SS_LEFT,
                    30, 55, 90, 22, ID_SET_PAPER_SIZE_LABEL);
@@ -2376,7 +2403,7 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         }
 
       settings_ctl(h, 0, L"BUTTON", L"Close", BS_DEFPUSHBUTTON,
-                   350, 330, 105, 30, IDOK);
+                   350, 465, 105, 30, IDOK);
       settings_show_tab(h, 0);
       settings_sync(h);
       return 0;
@@ -2417,6 +2444,23 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       return 0;
 
     case WM_COMMAND:
+      if (LOWORD(wp) == ID_SET_CHANGE_INPUT_MODE)
+        {
+          if (HIWORD(wp) == CBN_SELCHANGE ||
+              HIWORD(wp) == CBN_SELENDOK || HIWORD(wp) == CBN_CLOSEUP)
+            {
+              LRESULT sel = SendDlgItemMessageW(
+                h, ID_SET_CHANGE_INPUT_MODE, CB_GETCURSEL, 0, 0);
+              if (sel >= SETTING_INPUT_TOOL_ACTIVE &&
+                  sel <= SETTING_INPUT_NEVER &&
+                  g.setting_input_mode != (SettingInputMode) sel)
+                {
+                  g.setting_input_mode = (SettingInputMode) sel;
+                  config_save();
+                }
+            }
+          return 0;
+        }
       if (settings_companion_command(h, wp)) { settings_sync(h); return 0; }
       switch (LOWORD(wp))
         {
@@ -2429,6 +2473,12 @@ static LRESULT CALLBACK settings_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         case ID_SET_PDF_MESSAGE:
           g.pdf_saved_message =
             IsDlgButtonChecked(h, ID_SET_PDF_MESSAGE) == BST_CHECKED;
+          config_save();
+          break;
+        case ID_SET_CURSOR_DOT_SHOW:
+          g.show_cursor_dot =
+            IsDlgButtonChecked(h, ID_SET_CURSOR_DOT_SHOW) == BST_CHECKED;
+          app_update_cursor();
           config_save();
           break;
         case ID_SET_TOOLBAR_LOCK:
@@ -2507,10 +2557,10 @@ void ui_show_settings(void)
 
   HWND h = CreateWindowExW(WS_EX_TOOLWINDOW, SETTINGS_CLASS,
                            L"Screenator Settings", WS_POPUP | WS_CAPTION |
-                           WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 480, 410,
+                           WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 480, 520,
                            g.modal_dialog ? g.modal_dialog : g.overlay,
                            NULL, g.hinst, NULL);
-  center_window(h, 480, 410);
+  center_window(h, 480, 520);
   run_modal(h, 0);
 }
 /* ------------------------------------------------------------------ */
@@ -4372,11 +4422,12 @@ int ui_dialog_selfcheck(void)
   if (h) DestroyWindow(h);
 
   h = CreateWindowExW(WS_EX_TOOLWINDOW, SETTINGS_CLASS,
-                      L"Screenator Settings", WS_POPUP, 0, 0, 480, 410,
+                      L"Screenator Settings", WS_POPUP, 0, 0, 480, 520,
                       g.overlay, NULL, g.hinst, NULL);
   if (!h || !GetDlgItem(h, ID_SET_TAB) ||
       !GetDlgItem(h, ID_SET_ICON_SIZE) ||
       !GetDlgItem(h, ID_SET_CONTINUOUS) ||
+      !GetDlgItem(h, ID_SET_CHANGE_INPUT_MODE) ||
       !GetDlgItem(h, ID_SET_SAVE)) ok = 0;
   if (h) DestroyWindow(h);
 

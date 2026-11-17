@@ -109,8 +109,8 @@ VIAddVersionKey "ProductVersion" "${APPVERSION}"
 VIAddVersionKey "CompanyName" "${PUBLISHER}"
 VIAddVersionKey "LegalCopyright" "GPL-2.0-or-later"
 
-!define MUI_ICON "..${SEP}assets${SEP}icon.ico"
-!define MUI_UNICON "..${SEP}assets${SEP}icon.ico"
+!define MUI_ICON "..${SEP}..${SEP}assets${SEP}windows${SEP}icon.ico"
+!define MUI_UNICON "..${SEP}..${SEP}assets${SEP}windows${SEP}icon.ico"
 !define MUI_ABORTWARNING
 
 !define MUI_WELCOMEPAGE_TITLE "${APPNAME} ${APPVERSION}"

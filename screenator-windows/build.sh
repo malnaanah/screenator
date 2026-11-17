@@ -21,7 +21,7 @@ rm -rf "$BUILD_DIR"
 rm -rf "$DIST_DIR/Screenator Data"
 mkdir -p "$BUILD_DIR" "$DIST_DIR/Screenator Data" "$OUTPUT_DIR/release"
 
-windres -I. -Iassets screenator.rc -O coff -o "$BUILD_DIR/screenator.res"
+windres -I. -I../assets/windows screenator.rc -O coff -o "$BUILD_DIR/screenator.res"
 
 gcc $CFLAGS src/*.c "$BUILD_DIR/screenator.res" -o "$BUILD_DIR/Screenator.exe" \
   -mwindows -s -static -static-libgcc -static-libstdc++ \
@@ -30,7 +30,7 @@ gcc $CFLAGS src/*.c "$BUILD_DIR/screenator.res" -o "$BUILD_DIR/Screenator.exe" \
 
 cp "$BUILD_DIR/Screenator.exe" "$DIST_DIR/"
 cp "$PDFIUM/bin/pdfium.dll" "$DIST_DIR/"
-cp -r assets "$DIST_DIR/Screenator Data/"
+cp -r ../assets "$DIST_DIR/Screenator Data/assets"
 cp README.md RELEASE_NOTES.md PORTING_STATUS.md COPYING AUTHORS "$DIST_DIR/Screenator Data/"
 cp installer/remove-pdf-association.ps1 "$DIST_DIR/Screenator Data/"
 cp "$PDFIUM/LICENSE" "$DIST_DIR/Screenator Data/PDFIUM_LICENSE.txt"

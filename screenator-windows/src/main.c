@@ -9,7 +9,7 @@
 #include <hidusage.h>
 #include <hidsdi.h>
 #include <hidpi.h>
-#include "../assets/bucket_cursor.xpm"
+#include "../../assets/bucket_cursor.xpm"
 App g;
 #define WM_TRAY          (WM_APP + 1)
 #define WM_START_HINTS   (WM_APP + 2)
@@ -33,6 +33,8 @@ static int tool_cursor_cache_valid;
 static int tool_cursor_owns_pen, tool_cursor_owns_text, tool_cursor_owns_bucket;
 static Color tool_cursor_line_color, tool_cursor_fill_color;
 static unsigned tool_cursor_dot_size;
+static int tool_cursor_show_dot;
+static int cursor_ctrl_c_down;
 static int tool_cursor_fill_enabled;
 static int old_vx, old_vy, old_vw, old_vh;
 static WNDPROC edit_old_proc;
@@ -47,7 +49,9 @@ static void app_paper_zorder(void);
 static Pt paper_map_move_point(Pt p);
 static void right_button_up(Pt p);
 static int editable_handles_active(void);
+static int setting_change_input_allowed(void);
 static void stylus_step(int dir, int colors_only);
+static void stylus_step_raw(int dir, int colors_only);
 static void pen_scroll_tap(Pt p, int source);
 static void pen_barrel_begin(Pt p);
 static void pen_barrel_end(void);
@@ -1069,7 +1073,7 @@ static HCURSOR build_crosshair_cursor(Color color, int size, int text)
       cairo_move_to(cr, 20, hot); cairo_line_to(cr, 30, hot);
     }
   cairo_stroke(cr);
-  cursor_color_mark(cr, hot, hot, size, color, 0);
+  if (g.show_cursor_dot) cursor_color_mark(cr, hot, hot, size, color, 0);
   cairo_surface_flush(surf);
   HBITMAP mask = CreateBitmap(dim, dim, 1, 1, NULL);
   ICONINFO ii;
@@ -1135,7 +1139,8 @@ static HCURSOR build_xpm_cursor(const char **xpm, int hot_x, int hot_y,
   cairo_surface_t *mark_surface = cairo_image_surface_create_for_data(
     (unsigned char *) pix, CAIRO_FORMAT_ARGB32, w, h, w * 4);
   cairo_t *mark_cr = cairo_create(mark_surface);
-  cursor_color_mark(mark_cr, 20, 13, dot_size, fill, fill_none);
+  if (g.show_cursor_dot)
+    cursor_color_mark(mark_cr, 20, 13, dot_size, fill, fill_none);
   cairo_destroy(mark_cr);
   cairo_surface_destroy(mark_surface);
   BITMAPINFO bi;
@@ -1346,7 +1351,8 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
           /* While text is being typed or shape/text handles are visible the
            * wheel recolours the object, in Screen and Paper mode, instead of
            * scrolling or changing the thickness. */
-          if (editable_handles_active())
+          if (editable_handles_active() &&
+              setting_change_input_allowed())
             {
               stylus_step(dir, 1);
               return 1;
@@ -1369,7 +1375,8 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
               else if (paper_next_page()) config_save();
               return 1;
             }
-          if (g.tool == TOOL_BUCKET && our_foreground())
+          if (g.tool == TOOL_BUCKET && our_foreground() &&
+              setting_change_input_allowed())
             {
               step_fill_color(dir);
               return 1;
@@ -1379,7 +1386,8 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wp, LPARAM lp)
               paper_scroll_step(-dir);
               return 1;
             }
-          if (g.paper != PAPER_NONE && g.tool != TOOL_NONE)
+          if (g.paper != PAPER_NONE && g.tool != TOOL_NONE &&
+              setting_change_input_allowed())
             {
               tools_wheel(GET_WHEEL_DELTA_WPARAM(m->mouseData));
               return 1;          /* the wheel only changes the tool setting */
@@ -1531,6 +1539,11 @@ static LRESULT CALLBACK key_hook_proc(int code, WPARAM wp, LPARAM lp)
   if (code == HC_ACTION)
     {
       KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *) lp;
+      UINT cycle_mods = 0, cycle_vk = 0;
+      shortcut_parse(g.shortcuts[SK_CYCLE], &cycle_mods, &cycle_vk);
+      if (cycle_vk && k->vkCode == cycle_vk &&
+          (wp == WM_KEYUP || wp == WM_SYSKEYUP))
+        cursor_ctrl_c_down = 0;
       dlog("t=%llu hook key vk=%02lx scan=%02lx flags=%08lx extra=%llx",
            (unsigned long long) GetTickCount64(),
            (unsigned long) k->vkCode, (unsigned long) k->scanCode,
@@ -1546,6 +1559,18 @@ static LRESULT CALLBACK key_hook_proc(int code, WPARAM wp, LPARAM lp)
           if (GetAsyncKeyState(VK_CONTROL) & 0x8000) have |= MOD_CONTROL;
           if (GetAsyncKeyState(VK_SHIFT) & 0x8000) have |= MOD_SHIFT;
           if (GetAsyncKeyState(VK_MENU) & 0x8000) have |= MOD_ALT;
+          if ((GetAsyncKeyState(VK_LWIN) & 0x8000) ||
+              (GetAsyncKeyState(VK_RWIN) & 0x8000)) have |= MOD_WIN;
+          if (cycle_vk && k->vkCode == cycle_vk && have == cycle_mods &&
+              (g.paper != PAPER_NONE || g.tool != TOOL_NONE))
+            {
+              if (!cursor_ctrl_c_down)
+                {
+                  cursor_ctrl_c_down = 1;
+                  stylus_step_raw(1, 1);
+                }
+              return 1;
+            }
           int win_down = (GetAsyncKeyState(VK_LWIN) & 0x8000) ||
                          (GetAsyncKeyState(VK_RWIN) & 0x8000);
 
@@ -1634,6 +1659,7 @@ void app_update_cursor(void)
     memcmp(&tool_cursor_line_color, &g.pen_color, sizeof(Color)) != 0 ||
     memcmp(&tool_cursor_fill_color, &g.fill_color, sizeof(Color)) != 0 ||
     tool_cursor_dot_size != g.cursor_dot_size ||
+    tool_cursor_show_dot != g.show_cursor_dot ||
     tool_cursor_fill_enabled != g.fill_enabled;
   if (changed)
     {
@@ -1654,6 +1680,7 @@ void app_update_cursor(void)
       tool_cursor_line_color = g.pen_color;
       tool_cursor_fill_color = g.fill_color;
       tool_cursor_dot_size = g.cursor_dot_size;
+      tool_cursor_show_dot = g.show_cursor_dot;
       tool_cursor_fill_enabled = g.fill_enabled;
       tool_cursor_cache_valid = 1;
     }
@@ -2596,10 +2623,18 @@ static int shape_or_text_tool(Tool tool)
     }
 }
 
+static int setting_change_input_allowed(void)
+{
+  if (g.setting_input_mode == SETTING_INPUT_NEVER) return 0;
+  if (g.setting_input_mode == SETTING_INPUT_EDITING)
+    return editable_handles_active();
+  return g.tool != TOOL_NONE || editable_handles_active();
+}
+
 /* One notch of the "mouse wheel" action for the stylus first side button.
  * colours_only is used while a shape or text shows its handles: the wheel
  * recolours it there instead of changing the brush size. */
-static void stylus_step(int dir, int colors_only)
+static void stylus_step_raw(int dir, int colors_only)
 {
   dlog("stylus step dir=%d colors=%d tool=%d", dir, colors_only,
        (int) g.tool);
@@ -2609,6 +2644,11 @@ static void stylus_step(int dir, int colors_only)
   else if (g.tool == TOOL_MARKER) step_line_color(dir);
   else if (g.stylus_mode == STYLUS_THICKNESS) step_pen_width(dir);
   else step_line_color(dir);
+}
+
+static void stylus_step(int dir, int colors_only)
+{
+  if (setting_change_input_allowed()) stylus_step_raw(dir, colors_only);
 }
 
 /* A first-side press while handles are visible is a colour step, not the
@@ -2645,6 +2685,13 @@ static void pen_barrel_begin(Pt p)
       KillTimer(g.msgwin, TIMER_LONG_PRESS);
       g.right_timer_active = 0;
       g.right_short_done = 1;
+    }
+  if (g.paper == PAPER_NONE && g.tool == TOOL_ERASER)
+    {
+      /* A brief click changes eraser size; a 200 ms hold starts a stroke. */
+      SetTimer(g.msgwin, TIMER_STYLUS_HOLD, 200, NULL);
+      dlog("eraser side button pending");
+      return;
     }
   SetTimer(g.msgwin, TIMER_STYLUS_HOLD, 500, NULL);
   dlog("pen barrel down");
@@ -3659,7 +3706,8 @@ static void paper_pan_finish(void)
                           !paper_pan_moved && elapsed < 500;
   paper_pan_end();
   if (button_step) stylus_step(1, 1);
-  else if (mouse_eraser_step) step_eraser_width(1);
+  else if (mouse_eraser_step && setting_change_input_allowed())
+    step_eraser_width(1);
 }
 
 static int paper_drag_started(Pt origin, Pt point)
@@ -3979,6 +4027,12 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
         }
       if (g.paper == PAPER_NONE && g.tool != TOOL_NONE)
         {
+          if (g.tool == TOOL_ERASER)
+            {
+              SetCapture(hwnd);
+              pen_first_press(overlay_point_page(lp, 1), 1);
+              return 0;
+            }
           if (is_pen_mouse() || pen_input_recent() || pen_now_first_side())
             {
               if (!g.pen_barrel_down) pen_first_press(overlay_point_page(lp, 1), 1);
@@ -4057,16 +4111,17 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
             stylus_step(1, 1);
           return 0;
         }
-      if (g.middle_erasing)
-        {
-          tools_erase_end();
-          if (GetCapture() == hwnd) ReleaseCapture();
-          return 0;
-        }
       if (g.pen_barrel_down)
         {
           pen_barrel_end();
           app_raise_icon();
+          if (GetCapture() == hwnd) ReleaseCapture();
+          return 0;
+        }
+      if (g.middle_erasing)
+        {
+          tools_erase_end();
+          if (GetCapture() == hwnd) ReleaseCapture();
           return 0;
         }
       if (g.pen_pointer_active || g.pen_eraser_down) return 0;
@@ -4171,7 +4226,7 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
         if (ui_is_modal()) return 0;
         /* While the text editor or shape handles are visible the wheel
          * recolours the object instead of scrolling the paper. */
-        if (editable_handles_active())
+        if (editable_handles_active() && setting_change_input_allowed())
           {
             stylus_step(dir, 1);
             return 0;
@@ -4183,7 +4238,7 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
             else if (paper_next_page()) config_save();
             return 0;
           }
-        if (g.tool == TOOL_BUCKET)
+        if (g.tool == TOOL_BUCKET && setting_change_input_allowed())
           {
             step_fill_color(dir);
             return 0;
@@ -4193,12 +4248,14 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
             paper_scroll_step(-dir);
             return 0;
           }
-        if (g.paper == PAPER_NONE && g.tool == TOOL_ERASER)
+        if (g.paper == PAPER_NONE && g.tool == TOOL_ERASER &&
+            setting_change_input_allowed())
           {
             step_eraser_width(dir);
             return 0;
           }
-        tools_wheel(GET_WHEEL_DELTA_WPARAM(wp));
+        if (setting_change_input_allowed())
+          tools_wheel(GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
       }
     case WM_KEYDOWN:
@@ -4372,7 +4429,7 @@ static LRESULT CALLBACK icon_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_MOUSEWHEEL:
       {
         int dir = GET_WHEEL_DELTA_WPARAM(wp) > 0 ? 1 : -1;
-        if (editable_handles_active())
+        if (editable_handles_active() && setting_change_input_allowed())
           {
             stylus_step(dir, 1);
             return 0;
@@ -4384,7 +4441,7 @@ static LRESULT CALLBACK icon_proc(HWND hwnd, UINT msg, WPARAM wp,
             else if (paper_next_page()) config_save();
             return 0;
           }
-        if (g.tool == TOOL_BUCKET)
+        if (g.tool == TOOL_BUCKET && setting_change_input_allowed())
           {
             step_fill_color(dir);
             return 0;
@@ -4394,7 +4451,8 @@ static LRESULT CALLBACK icon_proc(HWND hwnd, UINT msg, WPARAM wp,
             paper_scroll_step(-dir);
             return 0;
           }
-        tools_wheel(GET_WHEEL_DELTA_WPARAM(wp));
+        if (setting_change_input_allowed())
+          tools_wheel(GET_WHEEL_DELTA_WPARAM(wp));
         return 0;
       }
     case WM_SETCURSOR:
@@ -4624,7 +4682,7 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             {
               g.pen_barrel_eraser = 1;
               tools_erase_start(g.pen_last);
-              dlog("pen barrel long -> eraser");
+              dlog("pen barrel hold -> eraser");
             }
         }
       else if (wp == TIMER_PEN_POLL)
@@ -4927,14 +4985,14 @@ static void register_classes(void)
 static void load_icons(void)
 {
   wchar_t path[MAX_PATH];
-  app_asset_path(path, MAX_PATH, L"icon.ico");
+  app_asset_path(path, MAX_PATH, L"windows\\icon.ico");
   g.hicon_normal = (HICON) LoadImageW(NULL, path, IMAGE_ICON, 32, 32,
                                       LR_LOADFROMFILE);
   g.hicon_active = g.hicon_normal;
   if (!g.hicon_normal)
     g.hicon_normal = LoadIconW(NULL, IDI_APPLICATION);
-  asset_icon_normal = load_png_asset(L"icon-normal.png");
-  asset_icon_active = load_png_asset(L"icon-active.png");
+  asset_icon_normal = load_png_asset(L"windows\\icon-normal.png");
+  asset_icon_active = load_png_asset(L"windows\\icon-active.png");
   if (!asset_icon_active) asset_icon_active = asset_icon_normal;
   /* A red active tray icon, rendered from the same SVG-derived PNG. */
   if (asset_icon_active)
@@ -6283,7 +6341,7 @@ static int run_selftest(void)
   /* Asset icons. */
   {
     wchar_t p[MAX_PATH];
-    app_asset_path(p, MAX_PATH, L"icon-normal.png");
+    app_asset_path(p, MAX_PATH, L"windows\\icon-normal.png");
     WideCharToMultiByte(CP_UTF8, 0, p, -1, path, sizeof(path), NULL, NULL);
     cairo_surface_t *i = cairo_image_surface_create_from_png(path);
     if (cairo_surface_status(i) != CAIRO_STATUS_SUCCESS)

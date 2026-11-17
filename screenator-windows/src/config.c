@@ -150,7 +150,7 @@ static void companion_find_calculator(void)
 const char *g_shortcut_keys[SK_COUNT] =
 {
   "arrow", "text", "pen", "floating_icon", "toolbar", "switch_mode",
-  "screenshot", "timer", "undo", "redo", "leave_paper",
+  "screenshot", "timer", "cycle_setting", "undo", "redo", "leave_paper",
   "toggle_visibility", "clear_screen", "delete_page", "quit",
   "companion_app_1", "companion_app_2", "companion_app_3",
   "companion_app_4", "companion_app_5", "companion_app_6",
@@ -160,14 +160,14 @@ const char *g_shortcut_keys[SK_COUNT] =
 const char *g_shortcut_defaults[SK_COUNT] =
 {
   "F6", "F7", "F8", "F9", "F10", "F3", "F4", "F12",
-  "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Delete", "Ctrl+X", "Alt+F4",
+  "Ctrl+C", "Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Q", "Ctrl+T", "Delete", "Ctrl+X", "Alt+F4",
   "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+4", "Ctrl+5", "Ctrl+6", "Ctrl+7"
 };
 
 const char *g_shortcut_labels[SK_COUNT] =
 {
   "Arrow", "Text", "Pen", "Floating Icon", "Toolbar", "Switch Mode",
-  "Screenshot", "Timer", "Undo", "Redo", "Leave Paper",
+  "Screenshot", "Timer", "Change color or eraser size", "Undo", "Redo", "Leave Paper",
   "Toggle Visibility", "Clear Screen", "Delete Page", "Quit",
   "Companion App 1", "Companion App 2", "Companion App 3",
   "Companion App 4", "Companion App 5", "Companion App 6",
@@ -514,7 +514,9 @@ void config_defaults(void)
   g.hide_hints = 0;
   g.wheel_mode = WHEEL_COLOR;
   g.stylus_mode = STYLUS_COLOR;
+  g.setting_input_mode = SETTING_INPUT_TOOL_ACTIVE;
   g.cursor_dot_size = 8;
+  g.show_cursor_dot = 1;
   g.tool = TOOL_NONE;
   g.pending_tool = TOOL_NONE;
   g.tool_delay_seconds = 0;
@@ -702,7 +704,13 @@ void config_load_from(const wchar_t *path)
   g.hide_hints = (int) get_int(path, L"hide_hints", 0);
   g.wheel_mode = (WheelMode) get_int(path, L"wheel_mode", 0);
   g.stylus_mode = (StylusMode) get_int(path, L"stylus_mode", 0);
+  g.setting_input_mode =
+    (SettingInputMode) get_int(path, L"setting_input_mode", 0);
+  if (g.setting_input_mode < SETTING_INPUT_TOOL_ACTIVE ||
+      g.setting_input_mode > SETTING_INPUT_NEVER)
+    g.setting_input_mode = SETTING_INPUT_TOOL_ACTIVE;
   g.cursor_dot_size = get_int(path, L"cursor_dot_size", 8);
+  g.show_cursor_dot = get_int(path, L"show_cursor_dot", 1);
   if (g.cursor_dot_size < 1) g.cursor_dot_size = 1;
   if (g.cursor_dot_size > 24) g.cursor_dot_size = 24;
   if (g.wheel_mode > WHEEL_THICKNESS) g.wheel_mode = WHEEL_COLOR;
@@ -808,8 +816,14 @@ void config_save(void)
     WritePrivateProfileStringW(L"screenator", L"wheel_mode", num, g.config_path);
     _snwprintf(num, 32, L"%d", (int) g.stylus_mode);
     WritePrivateProfileStringW(L"screenator", L"stylus_mode", num, g.config_path);
+    _snwprintf(num, 32, L"%d", (int) g.setting_input_mode);
+    WritePrivateProfileStringW(L"screenator", L"setting_input_mode", num,
+                               g.config_path);
     _snwprintf(num, 32, L"%u", g.cursor_dot_size);
     WritePrivateProfileStringW(L"screenator", L"cursor_dot_size", num,
+                               g.config_path);
+    _snwprintf(num, 32, L"%d", g.show_cursor_dot);
+    WritePrivateProfileStringW(L"screenator", L"show_cursor_dot", num,
                                g.config_path);
   }
 
