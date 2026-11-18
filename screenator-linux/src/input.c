@@ -2245,11 +2245,6 @@ void release_grab (ScreenatorData *data,
 				   : NULL);
 	}
 
-      /* Paper Drawing keeps the annotation window visible. */
-      if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
-	  !data->screenshot_paper)
-	  hide_window (data);
-
       return;
     }
 
@@ -2296,10 +2291,6 @@ void release_grab (ScreenatorData *data,
       screenator_refresh_cycle_setting_shortcut (data);
     }
 
-  /* Paper Drawing keeps the annotation window visible. */
-  if (!data->painted && data->paper == SCREENATOR_PAPER_NONE &&
-      !data->screenshot_paper)
-    hide_window (data);
 }
 
 

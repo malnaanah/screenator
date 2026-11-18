@@ -12365,7 +12365,6 @@ screenator_enter_paper_drawing (ScreenatorData *data,
 
   data->paper = paper;
   data->paper_selected = paper;
-  data->hide_drawings = FALSE;
 
   if (data->paper_continuous_scroll)
     {
@@ -12464,7 +12463,6 @@ screenator_exit_paper_drawing (ScreenatorData *data)
       screenator_paper_companion_active (data, i, FALSE);
   }
   paper_background_cache_free (data);
-  data->hide_drawings = FALSE;
   data->paper_hand_tool = FALSE;
   paper_top_bar_update_active_tool (data);
   paper_finish_temporary_eraser (data);
@@ -12480,9 +12478,6 @@ screenator_exit_paper_drawing (ScreenatorData *data)
   paper_restore_focus (data);
   paper_refresh_active_cursor (data);
   paper_repaint (data);
-
-  if (!data->painted && !screenator_any_grabbed (data))
-    hide_window (data);
 
   write_keyfile (data);
   schedule_tray_menu_refresh (data);
@@ -16779,8 +16774,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
 				   gtk_image_new_from_pixbuf (
 				     load_menu_icon (
-				       (data->paper == SCREENATOR_PAPER_NONE
-					? data->hidden : data->hide_drawings)
+				       data->hide_drawings
 				       ? "eye-closed.svg" : "eye-opened.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate",
@@ -20171,8 +20165,7 @@ screenator_refresh_visibility_icon (ScreenatorData *data)
   if (!image || !GTK_IS_IMAGE (image))
     return;
 
-  visible = data->paper == SCREENATOR_PAPER_NONE
-    ? !data->hidden : !data->hide_drawings;
+  visible = !data->hide_drawings;
   pixbuf = load_menu_icon_at_size (visible ? "eye-opened.svg"
 					       : "eye-closed.svg",
 				  paper_top_bar_icon_size (data));
@@ -20424,7 +20417,7 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   button = paper_top_bar_icon_button (
-    data, data->hidden ? "eye-closed.svg" : "eye-opened.svg",
+    data, data->hide_drawings ? "eye-closed.svg" : "eye-opened.svg",
     "Toggle Visibility");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "visibility");

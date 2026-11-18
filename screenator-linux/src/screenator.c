@@ -1035,33 +1035,23 @@ void show_window (ScreenatorData *data)
 
 void toggle_visibility (ScreenatorData *data)
 {
-  if (data->hidden)
-    show_window (data);
-  else
-    hide_window (data);
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+
+  data->hide_drawings = !data->hide_drawings;
+  screenator_refresh_visibility_icon (data);
+
+  if (window)
+    {
+      GdkRectangle rect = { 0, 0, data->width,
+                            cairo_image_surface_get_height (data->backbuffer) };
+      screenator_invalidate_rect (data, &rect);
+    }
 }
 
-/* Toggle Visibility hides annotations in Screen mode and hides annotation
- * drawing on every page while Paper mode keeps its paper visible. */
+/* Keep the menu, shortcut and toolbar actions on the same visibility state. */
 void toggle_drawings_visibility (ScreenatorData *data)
 {
-  if (data->paper != SCREENATOR_PAPER_NONE)
-    {
-      GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
-
-      data->hide_drawings = !data->hide_drawings;
-      screenator_refresh_visibility_icon (data);
-
-      if (window)
-	{
-	  GdkRectangle rect = { 0, 0, data->width,
-				cairo_image_surface_get_height (data->backbuffer) };
-
-	  screenator_invalidate_rect (data, &rect);
-	}
-    }
-  else
-    toggle_visibility (data);
+  toggle_visibility (data);
 }
 
 

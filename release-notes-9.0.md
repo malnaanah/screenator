@@ -9,6 +9,8 @@ Updated: 2026-11-18
 
 - Screen-mode Ctrl shortcuts run only while a drawing tool is active.
 - Paper-mode shortcuts and Escape are scoped to the active Screenator window.
+- Toggle Visibility now behaves consistently across Screen and Paper modes and
+  remains unchanged when selecting tools.
 - Updated icons, defaults, drawing behavior, and package metadata.
 
 ## Windows
