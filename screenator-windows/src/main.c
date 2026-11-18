@@ -5149,7 +5149,8 @@ static int register_runtime_shortcuts(int check, char *error, int error_size)
   if (screen_shortcut_context_allowed(MOD_CONTROL))
     RegisterHotKey(g.msgwin, HK_QUICK, MOD_CONTROL | MOD_NOREPEAT, VK_F10);
   if (g.text_editor_active) return 1;
-  if (g.tool != TOOL_NONE)
+  if (g.tool != TOOL_NONE &&
+      (g.paper == PAPER_NONE || app_paper_on_top))
     RegisterHotKey(g.msgwin, HK_ESC, MOD_NOREPEAT, VK_ESCAPE);
   if (g.tool != TOOL_NONE || g.paper != PAPER_NONE)
     {
