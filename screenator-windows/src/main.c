@@ -1526,6 +1526,12 @@ static int paper_control_at_pointer(void)
   return GetCursorPos(&p) && paper_control_at_point(p);
 }
 
+static int screen_shortcut_context_allowed(UINT mods)
+{
+  return !(mods & MOD_CONTROL) || g.paper != PAPER_NONE ||
+         g.tool != TOOL_NONE;
+}
+
 void app_note_paper_control_action(void)
 {
   if (g.paper == PAPER_NONE) return;
@@ -1621,7 +1627,7 @@ static LRESULT CALLBACK key_hook_proc(int code, WPARAM wp, LPARAM lp)
               if (GetKeyState(VK_MENU) & 0x8000) have |= MOD_ALT;
               if ((GetKeyState(VK_LWIN) & 0x8000) ||
                   (GetKeyState(VK_RWIN) & 0x8000)) have |= MOD_WIN;
-              if (have == mods)
+              if (have == mods && screen_shortcut_context_allowed(mods))
                 {
                   PostMessageW(g.msgwin, WM_HOTKEY, HK_TIMER, 0);
                   return 1;
@@ -5101,6 +5107,7 @@ static int register_shortcut(ShortcutId id, char *error, int error_size)
   UINT mods = 0, vk = 0;
   if (!shortcut_parse(g.shortcuts[id], &mods, &vk)) return 0;
   if (!vk) return 1;
+  if (!screen_shortcut_context_allowed(mods)) return 1;
   if (!RegisterHotKey(g.msgwin, shortcut_hotkey_id(id),
                       mods | MOD_NOREPEAT, vk))
     {
@@ -5131,7 +5138,8 @@ static int register_runtime_shortcuts(int check, char *error, int error_size)
     if (!register_shortcut((ShortcutId) (SK_COMPANION1 + i), error,
                            error_size) && check)
       return 0;
-  RegisterHotKey(g.msgwin, HK_QUICK, MOD_CONTROL | MOD_NOREPEAT, VK_F10);
+  if (screen_shortcut_context_allowed(MOD_CONTROL))
+    RegisterHotKey(g.msgwin, HK_QUICK, MOD_CONTROL | MOD_NOREPEAT, VK_F10);
   if (g.text_editor_active) return 1;
   if (g.tool != TOOL_NONE)
     RegisterHotKey(g.msgwin, HK_ESC, MOD_NOREPEAT, VK_ESCAPE);
