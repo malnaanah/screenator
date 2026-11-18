@@ -1603,7 +1603,8 @@ static LRESULT CALLBACK key_hook_proc(int code, WPARAM wp, LPARAM lp)
                              k->vkCode == VK_RMENU ||
                              k->vkCode == VK_LWIN ||
                              k->vkCode == VK_RWIN;
-          if (g.paper != PAPER_NONE && !g.text_editor_active &&
+          if (g.paper != PAPER_NONE && app_paper_on_top &&
+              !g.text_editor_active &&
               !ui_is_modal() && !g.menu_open &&
               !paper_control_shortcuts_suspended &&
               (paper_control_shortcuts_pending || paper_control_at_pointer()))
@@ -4306,6 +4307,9 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       if (g.paper != PAPER_NONE)
         {
           app_paper_on_top = (LOWORD(wp) != WA_INACTIVE);
+          /* RegisterHotKey is global, so only keep non-function Paper
+           * shortcuts registered while the Paper window owns activation. */
+          app_hotkeys_refresh();
           app_paper_zorder();
           if (app_paper_on_top && !g.hide_drawings)
             app_set_click_through(0);
@@ -5107,6 +5111,10 @@ static int register_shortcut(ShortcutId id, char *error, int error_size)
   UINT mods = 0, vk = 0;
   if (!shortcut_parse(g.shortcuts[id], &mods, &vk)) return 0;
   if (!vk) return 1;
+  /* In Paper mode, non-function shortcuts belong to the paper window.  Keep
+   * function keys global for mode switching and other app-wide actions. */
+  if (g.paper != PAPER_NONE && !app_paper_on_top &&
+      (vk < VK_F1 || vk > VK_F24)) return 1;
   if (!screen_shortcut_context_allowed(mods)) return 1;
   if (!RegisterHotKey(g.msgwin, shortcut_hotkey_id(id),
                       mods | MOD_NOREPEAT, vk))

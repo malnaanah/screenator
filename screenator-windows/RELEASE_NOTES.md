@@ -5,6 +5,8 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 
 ## Windows 9.0 changes
 
+- In Paper mode, non-function shortcuts are captured only while the Paper
+  window is active; function-key shortcuts remain available globally.
 - Shapes Fill Color now starts at None, which is also the default for new or
   unset configurations.
 - Renamed the Windows icon directory to `assets/icons-windows`.
