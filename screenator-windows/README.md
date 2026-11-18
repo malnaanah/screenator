@@ -1,4 +1,4 @@
-# Screenator for Windows 8.2
+# Screenator for Windows 9.0
 
 A native Windows port of [Screenator 6.0](https://github.com/malnaanah/screenator),
 the screen annotation tool for X11. Draw over any running application with a
@@ -8,9 +8,10 @@ keeps running underneath.
 This port keeps Screenator's cairo-based drawing and tool behaviour and
 replaces the X11/GTK platform layer with Win32: a per-pixel layered overlay,
 native menus and dialogs, a tray icon, global hotkeys and a floating icon with
-the settings ring. It now includes the applicable Linux 8.0 behaviour; the
-version 8.2 adds page navigation with the wheel and Up/Down arrows when
-continuous page scrolling is disabled.
+the settings ring. It includes the applicable Linux 8.0 behaviour and adds
+page navigation with the wheel and Up/Down arrows when continuous page
+scrolling is disabled. Version 9.0 makes None the default Shapes Fill Color
+and uses the `assets/icons-windows` icon directory.
 
 ## Features
 
@@ -358,9 +359,9 @@ the portable package in `dist/`:
       AUTHORS
       PDFIUM_LICENSE.txt
   release/
-    Screenator-8.2-win64/       portable package folder
-    Screenator-8.2-win64.zip
-    Screenator-8.2-win64-setup.exe
+    Screenator-9.0-win64/       portable package folder
+    Screenator-9.0-win64.zip
+    Screenator-9.0-win64-setup.exe
 ```
 
 Run `package.ps1` from PowerShell to copy `dist/` into the versioned portable
@@ -384,7 +385,7 @@ cd installer
 
 On Linux or macOS install `nsis` and run the same wrapper; it adds
 `-DPOSIX_BUILD` so the POSIX NSIS uses the right path separators. The result is
-`../build-windows/release/Screenator-8.2-win64-setup.exe`. The installer places
+`../build-windows/release/Screenator-9.0-win64-setup.exe`. The installer places
 the app in
 `%LOCALAPPDATA%\Programs\Screenator`, creates Start menu entries, and includes
 the **PDF Open with list** task, selected by default. That task registers

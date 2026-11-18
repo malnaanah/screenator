@@ -337,7 +337,7 @@ HBITMAP ui_load_icon_bitmap(const char *name, int size)
   wchar_t wname[128];
   MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 128);
   wchar_t rel[192];
-  _snwprintf(rel, 192, L"icons\\%s", wname);
+  _snwprintf(rel, 192, L"icons-windows\\%s", wname);
   wchar_t path[MAX_PATH];
   char utf8[MAX_PATH * 3];
   app_asset_path(path, MAX_PATH, rel);
@@ -563,17 +563,16 @@ static HMENU build_fill_color_menu(void)
   HMENU sub = CreatePopupMenu();
   int idx = fill_color_index();
 
-  for (int i = 0; i < 9; i++)
+  /* Keep the command IDs stable while presenting None first. */
+  add_radio(sub, CMD_FILL_BASE + 8, L"None", idx == 9);
+  menu_none_swatch(sub, CMD_FILL_BASE + 8);
+  for (int i = 0; i < 8; i++)
     {
       wchar_t wl[32];
       MultiByteToWideChar(CP_UTF8, 0, g_fill_colors[i].label, -1, wl, 32);
-      add_radio(sub, CMD_FILL_BASE + i, wl,
-                i == 8 ? idx == 9 : idx == i);
-      if (i == 8)
-        menu_none_swatch(sub, CMD_FILL_BASE + i);
-      else
-        menu_color_swatch(sub, CMD_FILL_BASE + i,
-                          color_from_hex(g_fill_colors[i].hex, NULL));
+      add_radio(sub, CMD_FILL_BASE + i, wl, idx == i);
+      menu_color_swatch(sub, CMD_FILL_BASE + i,
+                        color_from_hex(g_fill_colors[i].hex, NULL));
     }
   AppendMenuW(sub, MF_SEPARATOR, 0, NULL);
   add_radio(sub, CMD_FILL_CUSTOM, L"Custom...", idx == 8);

@@ -35,8 +35,8 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "8.2"
-#define APP_TITLE    "Screenator 8.2"
+#define APP_VERSION  "9.0"
+#define APP_TITLE    "Screenator 9.0"
 #define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
@@ -114,7 +114,7 @@ enum
   CMD_WIDTH_6, CMD_WIDTH_12, CMD_WIDTH_24, CMD_WIDTH_48,
   CMD_COLOR_BASE,              /* +8 presets */
   CMD_COLOR_CUSTOM = CMD_COLOR_BASE + 8,
-  CMD_FILL_BASE,               /* +9 presets, None is last */
+  CMD_FILL_BASE,               /* +8 colors, None is +8 */
   CMD_FILL_CUSTOM = CMD_FILL_BASE + 9,
   CMD_PAPER_NONE, CMD_PAPER_PLAIN, CMD_PAPER_RULED, CMD_PAPER_GRAPH,
   CMD_PAPER_PDF,

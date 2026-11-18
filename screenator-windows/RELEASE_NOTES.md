@@ -1,13 +1,18 @@
-# Screenator for Windows 8.2
-
-- In Paper mode with continuous page scrolling disabled, the mouse wheel and
-  Up/Down arrows change pages.
+# Screenator for Windows 9.0
 
 A portable 64-bit Windows release of the Screenator screen annotation tool,
 based on Screenator 6.0 by Mahmoud Alnaanah.
 
+## Windows 9.0 changes
+
+- Shapes Fill Color now starts at None, which is also the default for new or
+  unset configurations.
+- Renamed the Windows icon directory to `assets/icons-windows`.
+
 ## Windows 8.2 changes
 
+- In Paper mode with continuous page scrolling disabled, the mouse wheel and
+  Up/Down arrows change pages.
 - Added configurable companion applications to the toolbar, with per-slot shortcuts.
 - Updated drawing, eraser, cursor and color-selection behavior across Screen and Paper modes.
 

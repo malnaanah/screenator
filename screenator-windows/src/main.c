@@ -1878,7 +1878,7 @@ void app_update_tray_icon(void)
   if (!g.tray_added) return;
   g.nid.uFlags = NIF_ICON | NIF_TIP;
   g.nid.hIcon = (g.tool != TOOL_NONE) ? g.hicon_active : g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.2");
+  wcscpy(g.nid.szTip, L"Screenator 9.0");
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -5052,7 +5052,7 @@ static void add_tray(void)
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
   g.nid.hIcon = g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 8.2");
+  wcscpy(g.nid.szTip, L"Screenator 9.0");
   if (Shell_NotifyIconW(NIM_ADD, &g.nid))
     g.tray_added = 1;
 }
@@ -6217,7 +6217,7 @@ static int run_selftest(void)
   /* Text through pango. */
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.2");
+  fs.text = _strdup("Screenator 9.0");
   fs.font = _strdup("Arial Bold 34");
   fs.font_size = 34;
   fs.color = color_from_hex("#202020", NULL);
@@ -6403,7 +6403,7 @@ static void demo_draw(void)
   draw_line_shape(cr, &ln, 6, color_from_hex("#1040C0", NULL));
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 8.2 for Windows");
+  fs.text = _strdup("Screenator 9.0 for Windows");
   fs.font = _strdup("Arial Bold 40");
   fs.font_size = 40;
   fs.color = color_from_hex("#B00020", NULL);

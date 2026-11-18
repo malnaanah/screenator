@@ -477,7 +477,7 @@ void config_defaults(void)
   g.custom_line_color = color_from_hex("#FF00FF", NULL);
   g.fill_color = color_from_hex("#FFFF00", NULL);
   g.custom_fill_color = color_from_hex("#FF00FF", NULL);
-  g.fill_enabled = 1;
+  g.fill_enabled = 0;
   g.marker_opacity = 0.4;
   g.marker_saved_valid = 0;
   strcpy(g.font, "Segoe Print Bold 24");
@@ -600,7 +600,7 @@ void config_load_from(const wchar_t *path)
   g.fill_color = get_color(path, L"fill_color", g.fill_color);
   g.custom_fill_color = get_color(path, L"custom_fill_color",
                                   g.custom_fill_color);
-  g.fill_enabled = (int) get_int(path, L"fill_enabled", 1);
+  g.fill_enabled = (int) get_int(path, L"fill_enabled", 0);
   g.marker_opacity = get_double(path, L"marker_opacity", 0.4);
   if (g.marker_opacity < 0.1 || g.marker_opacity > 1.0) g.marker_opacity = 0.4;
 

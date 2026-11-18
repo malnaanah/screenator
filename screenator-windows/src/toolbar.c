@@ -411,7 +411,7 @@ static HBITMAP tb_icon(const char *name, int size)
   wchar_t wname[128];
   MultiByteToWideChar(CP_UTF8, 0, name, -1, wname, 128);
   wchar_t rel[192];
-  _snwprintf(rel, 192, L"icons\\%s", wname);
+  _snwprintf(rel, 192, L"icons-windows\\%s", wname);
   wchar_t path[MAX_PATH];
   app_asset_path(path, MAX_PATH, rel);
   char utf8[MAX_PATH * 3];
