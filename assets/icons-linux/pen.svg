@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Orange Pen Tool</title>
+<desc id="desc">Original colorful vector icon concept for a pen tool.</desc>
+<defs><linearGradient id="barrel" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#ef741c" /><stop offset="1" stop-color="#ffbd55" /></linearGradient></defs>
+
+<g transform="matrix(1.08738 0 0 1.08738 -9.39806 -13.74757)"><g transform="matrix(.89 -.11 -.11 .89 14.08 14.08)">
+  <path d="M24 83 83 24q4-4 8 0l29 29q4 4 0 8l-58 58H24q-6 0-6-6z" fill="url(#barrel)" />
+  <path d="M24 83 58 117H24q-6 0-6-6v-8z" fill="#ffc15e" />
+  <path d="m76 31 7-7q4-4 8 0l29 29q4 4 0 8l-7 7z" fill="#60a5fa" />
+  <path d="M24 83 83 24q4-4 8 0l29 29q4 4 0 8l-58 58H24q-6 0-6-6z" fill="none" stroke="#253047" stroke-width="3.2" stroke-linejoin="round" />
+  <path d="m76 31 37 37" fill="none" stroke="#253047" stroke-width="3.2" stroke-linecap="round" />
+  <path d="m38 82 25 25" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".7" />
+  <path d="m58 57 9-9" stroke="#60a5fa" stroke-width="3" stroke-linecap="round" />
+  <path d="m29 95 17 17" stroke="#ef741c" stroke-width="3" opacity=".7" />
+</g>
+</g></svg>

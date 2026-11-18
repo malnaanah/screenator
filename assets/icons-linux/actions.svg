@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Blue Actions</title><desc id="desc">Original colorful vector Actions menu icon concept.</desc>
+<defs><linearGradient id="button" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#268fe0" /><stop offset="1" stop-color="#82c7ff" /></linearGradient></defs>
+<g transform="matrix(1.04673 0 0 1.04673 -3.51402 -3.51402)"><circle cx="64" cy="64" r="51" fill="url(#button)" stroke="#1d527f" stroke-width="4" />
+<path d="M48 34 89 57q7 4 0 8L48 89q-7 4-7-4V38q0-8 7-4Z" fill="#ffffff" />
+<path d="M30 44a39 39 0 0 1 29-19" fill="none" stroke="#82c7ff" stroke-width="4" stroke-linecap="round" />
+</g></svg>

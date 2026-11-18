@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Blue Camera</title>
+<desc id="desc">Original colorful vector screenshot icon concept.</desc>
+<g transform="matrix(1.05660 0 0 1.05660 -7.84906 -4.67925)"><path d="M17 42q0-7 7-7h20l8-14h28l9 14h22q7 0 7 7v59q0 7-7 7H24q-7 0-7-7z" fill="#397fca" stroke="#253c57" stroke-width="4" stroke-linejoin="round" />
+<circle cx="66" cy="69" r="26" fill="#f8fbff" stroke="#253c57" stroke-width="4" />
+<circle cx="66" cy="69" r="17" fill="#37a77a" />
+<circle cx="73" cy="62" r="7" fill="#ffd35b" />
+<rect x="30" y="43" width="12" height="6" rx="3" fill="#ffd35b" />
+</g></svg>

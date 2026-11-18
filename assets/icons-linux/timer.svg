@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Arctic Blue</title>
+<desc id="desc">Original blue-toned hourglass timer vector icon concept.</desc>
+<defs><linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#bcecff" /><stop offset="1" stop-color="#55b8ee" stop-opacity=".68" /></linearGradient></defs>
+<g transform="matrix(1.23077 0 0 1.23077 -15.38462 -15.38462)"><g transform="matrix(.72 0 0 1 17.92 0)">
+<path d="M27 20h74v11H27zM27 97h74v11H27z" fill="#223f59" stroke="#1d2c40" stroke-width="3" stroke-linejoin="round" />
+<path d="M34 31h60c-1 15-13 24-30 33 17 9 29 18 30 33H34c1-15 13-24 30-33-17-9-29-18-30-33z" fill="url(#glass)" stroke="#223f59" stroke-width="5" stroke-linejoin="round" /><path d="M43 38h42c-4 8-12 14-21 20-9-6-17-12-21-20z" fill="#55b8ee" /><path d="M43 90c4-8 12-14 21-20 9 6 17 12 21 20z" fill="#55b8ee" />
+<path d="M64 58v13" stroke="#55b8ee" stroke-width="4" stroke-linecap="round" />
+<circle cx="64" cy="66" r="2.8" fill="#55b8ee" />
+</g>
+</g></svg>

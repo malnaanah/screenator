@@ -1690,10 +1690,18 @@ screenator_raw_input_disable (ScreenatorData *data)
  * when the keyboard focus belongs to the application below the overlay.  It is
  * released again as soon as painting stops, so it keeps its normal meaning
  * everywhere else. */
+static gboolean
+escape_tool_active (ScreenatorData *data)
+{
+  return data && (data->forced_context != NULL || data->pen_tool != 0 ||
+                  data->timer_active || data->paper_hand_tool);
+}
+
 static void
 grab_escape_shortcut (ScreenatorData *data, gboolean grab)
 {
-  if (grab && screenator_paper_local_input (data))
+  if (grab && (!escape_tool_active (data) ||
+               screenator_paper_local_input (data)))
     grab = FALSE;
 
   grab_paper_key (data, data->shortcuts[SCREENATOR_SHORTCUT_ESCAPE].keycode,
@@ -1710,6 +1718,15 @@ grab_paper_key (ScreenatorData *data, guint keycode, guint modifier,
 
   if (!keycode || !GDK_IS_X11_DISPLAY (data->display))
     return;
+
+  /* Escape is listed as an always available shortcut so its event can be
+   * handled in every input path.  Only install the global grab while a tool
+   * is active, otherwise it would steal Escape from applications such as
+   * Okular's presentation mode while Cursor is selected. */
+  if (grab && keycode == data->shortcuts[SCREENATOR_SHORTCUT_ESCAPE].keycode &&
+      modifier == data->shortcuts[SCREENATOR_SHORTCUT_ESCAPE].modifier &&
+      (!escape_tool_active (data) || data->text_editor != NULL))
+    grab = FALSE;
 
   devices = gdk_device_manager_list_devices (
       gdk_display_get_device_manager (data->display), GDK_DEVICE_TYPE_MASTER);
@@ -1799,6 +1816,16 @@ screenator_refresh_cycle_setting_shortcut (ScreenatorData *data)
     data, data->shortcuts[SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING].keycode,
     data->shortcuts[SCREENATOR_SHORTCUT_CYCLE_ACTIVE_SETTING].modifier,
     active);
+}
+
+void
+screenator_refresh_escape_shortcut (ScreenatorData *data)
+{
+  if (!data)
+    return;
+
+  grab_escape_shortcut (data, escape_tool_active (data) &&
+                        data->text_editor == NULL);
 }
 
 /* Replace the configured shortcuts, ungrab the old keys and grab the new
@@ -2480,9 +2507,17 @@ gint snoop_key_press(GtkWidget   *grab_widget,
    * an unfinished shape is finished (or dropped for a spline) and painting
    * mode stops.  The inline text editor handles its own Escape, which
    * cancels the text instead of committing it. */
-  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_ESCAPE, event) &&
-      !data->text_editor_active)
-    return screenator_exit_tool (data);
+  if (screenator_shortcut_matches (data, SCREENATOR_SHORTCUT_ESCAPE, event))
+    {
+      if (data->text_editor)
+	{
+	  text_editor_cancel (data);
+	  return TRUE;
+	}
+
+      if (escape_tool_active (data))
+	return screenator_exit_tool (data);
+    }
 
   /* Switch between Screen and Paper modes from either mode. */
   if (!data->quick_menu &&

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Gold Triangle</title><desc id="desc">Original colorful vector triangle tool icon with editable vertices.</desc>
+<defs><linearGradient id="fill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#48d82d" /><stop offset="1" stop-color="#ffd86a" /></linearGradient></defs>
+<g transform="matrix(0.97391 0 0 0.97391 0.69565 1.18261)"><path d="M20 17 109 43 77 111Z" fill="url(#fill)" stroke="#1c2d23" stroke-width="5" stroke-linejoin="round" />
+<circle cx="20" cy="17" r="8" fill="#f12626" stroke="#1c2d23" stroke-width="4" /><circle cx="109" cy="43" r="8" fill="#f12626" stroke="#1c2d23" stroke-width="4" /><circle cx="77" cy="111" r="8" fill="#f12626" stroke="#1c2d23" stroke-width="4" />
+<path d="m37 25 51 15" stroke="#ffd86a" stroke-width="4" stroke-linecap="round" />
+</g></svg>

@@ -45,6 +45,11 @@
   </provides>
 
   <releases>
+    <release version="9.0" date="2026-11-18">
+      <description>
+        <p>Screenator 9.0 refreshes Linux icons and package metadata, delays the Paper mode hand cursor for quick middle-button and stylus clicks, and improves Escape handling for tools, text entry and applications behind the paper.</p>
+      </description>
+    </release>
     <release version="8.2" date="2026-11-16">
       <description>
         <p>Screenator 8.2 shows custom line and fill colors in the toolbar menu, updates only toolbar and floating-icon controls immediately while editing settings, and avoids capturing Delete in Screen mode when no drawing tool is active or Cursor is selected.</p>

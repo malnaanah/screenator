@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Orange Hint</title><desc id="desc">Original colorful vector hint icon concept.</desc>
+<g transform="matrix(0.97391 0 0 0.97391 -5.14783 5.07826)"><path d="M44 42c0-16 10-27 26-27 16 0 27 11 27 26 0 13-8 21-19 28-9 6-13 10-13 22" fill="none" stroke="#4a3c2d" stroke-width="24" stroke-linecap="round" />
+<path d="M44 42c0-16 10-27 26-27 16 0 27 11 27 26 0 13-8 21-19 28-9 6-13 10-13 22" fill="none" stroke="#ff9c00" stroke-width="15" stroke-linecap="round" />
+<circle cx="65" cy="105" r="12" fill="#4a3c2d" /><circle cx="65" cy="105" r="7" fill="#ffe044" />
+</g></svg>

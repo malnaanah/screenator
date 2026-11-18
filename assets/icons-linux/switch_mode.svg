@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Berry &amp; Sky</title>
+<desc id="desc">Original colorful vector concept for switching Screenator modes.</desc>
+<g transform="matrix(1.28736 0 0 1.28736 -19.03448 -20.32184)"><path d="M43 88V39" stroke="#bf3f78" stroke-width="16" stroke-linecap="round" />
+<path d="m21 51 22-27 22 27z" fill="#bf3f78" />
+<path d="M85 40v49" stroke="#268acb" stroke-width="16" stroke-linecap="round" />
+<path d="m63 77 22 29 22-29z" fill="#268acb" />
+</g></svg>

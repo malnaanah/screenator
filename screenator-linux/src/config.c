@@ -911,7 +911,7 @@ void read_keyfile(ScreenatorData *data)
     data->timer_active = FALSE;
     data->force_active_icon = FALSE;
     data->font = g_strdup (KEY_DFLT_FONT);
-    data->shape_fill_enabled = TRUE;
+    data->shape_fill_enabled = FALSE;
     gdk_rgba_parse (&data->shape_fill_color, KEY_DFLT_SHAPE_FILL_COLOR);
     data->shape_fill_color.alpha = 1.0;
     gdk_rgba_parse (&data->custom_fill_color, "#FF00FF");

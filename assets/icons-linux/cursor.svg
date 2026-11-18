@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Dark Blue Cursor</title>
+<desc id="desc">Original colorful vector cursor icon concept.</desc>
+<defs><linearGradient id="fill" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#102b5f" /><stop offset="1" stop-color="#315b9e" /></linearGradient></defs>
+<g transform="matrix(1.43590 0 0 1.43590 -23.58974 -14.97436)"><path d="M38 18 38 72 51 57 63 91 77 83 64 49 83 49Z" fill="url(#fill)" stroke="#0b1c3a" stroke-width="4" stroke-linejoin="round" />
+</g></svg>

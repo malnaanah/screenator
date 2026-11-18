@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Azure Companion App</title><desc id="desc">Original colorful vector companion app icon concept.</desc>
+<g transform="matrix(1.20430 0 0 1.20430 -6.45161 -10.06452)"><rect x="15" y="17" width="86" height="88" rx="13" fill="#d7efff" stroke="#29465d" stroke-width="4" />
+<path d="M15 41h86" stroke="#2483d0" stroke-width="10" />
+<circle cx="28" cy="29" r="3.5" fill="#80c4f3" /><circle cx="39" cy="29" r="3.5" fill="#80c4f3" />
+<path d="M53 70h42M80 57l15 13-15 13" fill="none" stroke="#2483d0" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+<path d="M28 56h11v33H28z" fill="#80c4f3" stroke="#29465d" stroke-width="3" />
+</g></svg>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Sky Paint Bucket</title>
+<desc id="desc">Original colorful vector paint bucket tool icon, based on the app's original bucket style.</desc>
+<path d="M81 14h24q12 0 12 12v16" fill="none" stroke="#3289c4" stroke-width="5" stroke-linecap="round"/>
+<path d="M19 61c-9 0-12 7-12 18v28q0 10 9 10 8 0 8-9V72" fill="none" stroke="#3289c4" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="m64 10 53 53-53 53-53-53z" fill="#dff3fb" stroke="#3289c4" stroke-width="5" stroke-linejoin="round"/>
+<path d="m64 10 53 53-16 16-53-53z" fill="#b9e2f5"/>
+<path d="M61 42h39" stroke="#3289c4" stroke-width="5" stroke-linecap="round"/>
+</svg>

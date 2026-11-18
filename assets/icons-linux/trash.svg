@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Orange Bin</title>
+<desc id="desc">Original colorful vector clear screen icon concept.</desc>
+<g transform="matrix(1.00901 0 0 1.00901 -1.08108 -1.08108)"><path d="M24 39h80l-7 72q-1 6-7 6H38q-6 0-7-6z" fill="#ef7d18" stroke="#503a25" stroke-width="4" stroke-linejoin="round" />
+<path d="M18 27h92v12H18z" fill="#ffb84d" stroke="#503a25" stroke-width="4" stroke-linejoin="round" />
+<path d="M45 27V18q0-6 6-6h26q6 0 6 6v9" fill="none" stroke="#503a25" stroke-width="6" stroke-linecap="round" />
+<path d="M48 54v43M80 54v43" stroke="#fff0c2" stroke-width="7" stroke-linecap="round" />
+</g></svg>

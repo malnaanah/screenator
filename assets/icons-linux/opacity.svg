@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Blue &amp; Teal Opacity</title><desc id="desc">Original colorful vector opacity icon.</desc>
+<g transform="matrix(1.04673 0 0 1.04673 -3.51402 -3.51402)"><circle cx="64" cy="64" r="51" fill="#bfe2f5" stroke="#2d4655" stroke-width="4" />
+<path d="M64 13a51 51 0 0 0 0 102z" fill="#10a2ae" />
+<path d="M64 13a51 51 0 0 1 0 102z" fill="#62afe8" />
+</g></svg>

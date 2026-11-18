@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Sunrise Caret</title>
+<desc id="desc">Original colorful vector concept for Screenator's text tool.</desc>
+<g transform="matrix(1.36585 0 0 1.36585 -27.51220 -22.04878)"><path d="M27 93 49 34h15l22 59H69l-4-13H47l-5 13zM51 67h10l-5-15z" fill="#ef7950" stroke="#26334a" stroke-width="3" stroke-linejoin="round" />
+<path d="M94 28v68" stroke="#4775cf" stroke-width="9" stroke-linecap="round" />
+<path d="M85 28h18M85 96h18" stroke="#4775cf" stroke-width="7" stroke-linecap="round" />
+<circle cx="94" cy="62" r="5" fill="#ffd2a1" />
+</g></svg>

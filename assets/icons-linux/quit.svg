@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Crimson Quit</title><desc id="desc">Original colorful vector quit or power icon concept.</desc>
+<defs><linearGradient id="badge" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ed1741" /><stop offset="1" stop-color="#ff748d" /></linearGradient></defs>
+<g transform="matrix(1.06667 0 0 1.06667 -4.80000 -4.80000)"><circle cx="64" cy="64" r="51" fill="url(#badge)" stroke="#8c1832" stroke-width="3" />
+<path d="M64 23v37" stroke="#ffffff" stroke-width="10" stroke-linecap="round" />
+<path d="M43 39a30 30 0 1 0 42 0" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round" />
+<path d="M23 42a45 45 0 0 1 68-16" fill="none" stroke="#ff748d" stroke-width="3" stroke-linecap="round" opacity=".9" />
+</g></svg>

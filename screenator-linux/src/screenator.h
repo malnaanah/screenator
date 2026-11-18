@@ -859,6 +859,7 @@ typedef struct
   gint64       paper_pan_started;
   gboolean     paper_pan_moved;
   gboolean     paper_pan_color_cycle;
+  guint        paper_pan_cursor_timeout_id;
   gboolean     mouse_middle_color_pending;
   gboolean     screen_middle_eraser_active;
   gboolean     screen_middle_eraser_pending;
@@ -1002,6 +1003,7 @@ void screenator_paper_shortcuts_focus (ScreenatorData *data,
 void screenator_refresh_visibility_shortcut (ScreenatorData *data);
 void screenator_refresh_clear_shortcut (ScreenatorData *data);
 void screenator_refresh_cycle_setting_shortcut (ScreenatorData *data);
+void screenator_refresh_escape_shortcut (ScreenatorData *data);
 void screenator_use_paper_window (ScreenatorData *data, gboolean use);
 void screenator_window_mode_enter (ScreenatorData *data);
 void screenator_window_mode_leave (ScreenatorData *data);
@@ -1123,6 +1125,7 @@ void frame_local_to_screen (const ScreenatorFrame *frame, gdouble lx, gdouble ly
 void frame_finish (ScreenatorData *data, ScreenatorDeviceData *devdata);
 void frame_finish_all (ScreenatorData *data);
 void text_editor_finish (ScreenatorData *data);
+void text_editor_cancel (ScreenatorData *data);
 gboolean math_expression_is_valid (const gchar *expression, gchar **error);
 gboolean fill_bucket (ScreenatorData *data, gint x, gint y);
 void clear_screen (ScreenatorData *data);

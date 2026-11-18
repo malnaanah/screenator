@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc"><title id="title">Marker Opacity</title><desc id="desc">A marker layered over a split-color opacity circle.</desc><g transform="matrix(.86 0 0 .86 8.96 8.96)"><g transform="matrix(1.04673 0 0 1.04673 -3.51402 -3.51402)"><circle cx="64" cy="64" r="51" fill="#bfe2f5" stroke="#2d4655" stroke-width="4" />
+<path d="M64 13a51 51 0 0 0 0 102z" fill="#10a2ae" />
+<path d="M64 13a51 51 0 0 1 0 102z" fill="#62afe8" />
+</g></g><g transform="matrix(.84 0 0 .84 3.08 17.4)"><g transform="matrix(.925 -.075 -.075 .925 9.6 9.6)"><g transform="matrix(.9 -.1 -.1 .9 12.8 12.8)"><g transform="matrix(1.25843 0 0 1.25843 -13.39326 -28.49438)"><path d="M26 77 72 31 103 62 57 108Z" fill="#f4b525" stroke="#31445b" stroke-width="4" stroke-linejoin="round" />
+<path d="m26 77 31 31-18 7-20-20z" fill="#4384c2" stroke="#31445b" stroke-width="3.5" stroke-linejoin="round" />
+<path d="m72 31 31 31-13 13-31-31z" fill="#fff0a0" stroke="#31445b" stroke-width="3.5" stroke-linejoin="round" />
+<path d="m37 77 22 22" stroke="#fff" stroke-width="4" stroke-linecap="round" opacity=".8" />
+</g></g></g></g></svg>

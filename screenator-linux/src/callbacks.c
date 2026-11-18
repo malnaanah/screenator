@@ -708,18 +708,18 @@ typedef struct
 
 static const ToolbarItemInfo toolbar_item_info[] =
 {
-  { "switch_mode",   "Switch Mode",         "switch_mode.png" },
-  { "cursor",        "Cursor",              "cursor.png" },
-  { "pen",           "Pen",                 "pen.png" },
-  { "text",          "Text",                "text.png" },
-  { "eraser",        "Eraser",              "eraser.png" },
-  { "arrow",         "Arrow",               "arrow.png" },
-  { "timer",         "Timer",               "timer.png" },
-  { "shapes",        "Shapes",              "shapes.png" },
-  { "undo",          "Undo",                "undo.png" },
-  { "redo",          "Redo",                "redo.png" },
-  { "screenshot",    "Screenshot",          "screenshot.png" },
-  { "save",          "Save Paper",          "save.png" },
+  { "switch_mode",   "Switch Mode",         "switch_mode.svg" },
+  { "cursor",        "Cursor",              "cursor.svg" },
+  { "pen",           "Pen",                 "pen.svg" },
+  { "text",          "Text",                "text.svg" },
+  { "eraser",        "Eraser",              "eraser.svg" },
+  { "arrow",         "Arrow",               "arrow.svg" },
+  { "timer",         "Timer",               "timer.svg" },
+  { "shapes",        "Shapes",              "shapes.svg" },
+  { "undo",          "Undo",                "undo.svg" },
+  { "redo",          "Redo",                "redo.svg" },
+  { "screenshot",    "Screenshot",          "screenshot.svg" },
+  { "save",          "Save Paper",          "save.svg" },
   { "companion1",    "Companion App 1",     NULL },
   { "companion2",    "Companion App 2",     NULL },
   { "companion3",    "Companion App 3",     NULL },
@@ -727,23 +727,23 @@ static const ToolbarItemInfo toolbar_item_info[] =
   { "companion5",    "Companion App 5",     NULL },
   { "companion6",    "Companion App 6",     NULL },
   { "companion7",    "Companion App 7",     NULL },
-  { "paper",         "Paper Type",          "paper.png" },
-  { "insert_before", "Insert Page Before",  "add_before.png" },
-  { "delete_page",   "Delete Page",         "delete-page.png" },
-  { "insert_after",  "Insert Page After",   "add_after.png" },
+  { "paper",         "Paper Type",          "paper.svg" },
+  { "insert_before", "Insert Page Before",  "add_before.svg" },
+  { "delete_page",   "Delete Page",         "delete-page.svg" },
+  { "insert_after",  "Insert Page After",   "add_after.svg" },
   { "page_number",   "Current Page",        NULL },
-  { "goto_page",     "Go to Page",          "goto-page.png" },
-  { "clear",         "Clear Screen",        "trash.png" },
-  { "visibility",    "Toggle Visibility",   "eye-opened.png" },
+  { "goto_page",     "Go to Page",          "goto-page.svg" },
+  { "clear",         "Clear Screen",        "trash.svg" },
+  { "visibility",    "Toggle Visibility",   "eye-opened.svg" },
   { "eraser_size",   "Eraser Size",         NULL },
   { "line_color",    "Line Color",          NULL },
   { "thickness",     "Thickness",           NULL },
   { "fill_color",    "Fill Color",          NULL },
-  { "opacity",       "Opacity",             "opacity.png" },
-  { "marker_opacity","Marker Opacity",      "marker_opacity.png" },
-  { "settings",      "Settings",            "settings.png" },
-  { "hints",         "Show Hints",          "hint.png" },
-  { "quit",          "Quit",                "quit.png" }
+  { "opacity",       "Opacity",             "opacity.svg" },
+  { "marker_opacity","Marker Opacity",      "marker_opacity.svg" },
+  { "settings",      "Settings",            "settings.svg" },
+  { "hints",         "Show Hints",          "hint.svg" },
+  { "quit",          "Quit",                "quit.svg" }
 };
 
 static gint
@@ -857,7 +857,7 @@ companion_app_icon_pixbuf (ScreenatorData *data, guint slot, gint size)
   GdkPixbuf *pixbuf = NULL;
 
   if (!app)
-    return load_menu_icon_at_size ("app.png", size);
+    return load_menu_icon_at_size ("app.svg", size);
 
   if (!info)
     info = gtk_icon_theme_lookup_icon (theme, "application-x-executable",
@@ -2389,6 +2389,7 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
 
   if (reacquire)
     acquire_grab (data, NULL);
+  screenator_refresh_escape_shortcut (data);
 
   /* A paper is the active window again after the editor closes.  Release
    * the temporary keep-above only after focus is back on the paper, otherwise
@@ -2412,6 +2413,13 @@ text_editor_finish (ScreenatorData *data)
 {
   if (data->text_editor)
     close_text_editor_ex (data, TRUE, FALSE);
+}
+
+void
+text_editor_cancel (ScreenatorData *data)
+{
+  if (data->text_editor)
+    close_text_editor (data, FALSE);
 }
 
 static void
@@ -2651,6 +2659,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 
   data->text_editor = editor;
   data->text_entry = entry;
+  screenator_refresh_escape_shortcut (data);
 
   g_signal_connect (entry, "changed",
 		    G_CALLBACK (on_text_editor_changed), data);
@@ -7561,6 +7570,7 @@ static const struct { const gchar *label; const gchar *name; } line_colors[] =
  * them while the Paint Bucket tool is active. */
 static const struct { const gchar *label; const gchar *name; } fill_colors[] =
 {
+  { "None", "none" },
   { "Yellow", "#FFFF00" },
   { "Gray", "#808080" },
   { "White", "#FFFFFF" },
@@ -7568,8 +7578,7 @@ static const struct { const gchar *label; const gchar *name; } fill_colors[] =
   { "Blue", "#0000FF" },
   { "Green", "#00AA00" },
   { "Black", "#000000" },
-  { "Orange", "#FF8000" },
-  { "None", "none" }
+  { "Orange", "#FF8000" }
 };
 
 /* Recolour the frames that are still being edited (a text that was just
@@ -7941,10 +7950,10 @@ on_icon_custom_color (GtkMenuItem *menuitem, gpointer user_data)
 static guint
 color_table_index (const GdkRGBA *current, gboolean include_none)
 {
-  guint i, count = include_none ? G_N_ELEMENTS (fill_colors) - 1
+  guint i, count = include_none ? G_N_ELEMENTS (fill_colors)
 				: G_N_ELEMENTS (line_colors);
 
-  for (i = 0; i < count; i++)
+  for (i = include_none ? 1 : 0; i < count; i++)
     {
       const gchar *name = include_none ? fill_colors[i].name
 				       : line_colors[i].name;
@@ -7992,8 +8001,9 @@ static void
 cycle_shape_fill_color (ScreenatorData *data, gboolean down)
 {
   guint presets = G_N_ELEMENTS (fill_colors) - 1;
-  guint none = presets + 1;
-  guint count = none + 1;
+  guint none = 0;
+  guint custom = G_N_ELEMENTS (fill_colors);
+  guint count = custom + 1;
   guint current;
 
   if (!data->shape_fill_enabled)
@@ -8001,15 +8011,15 @@ cycle_shape_fill_color (ScreenatorData *data, gboolean down)
   else
     current = color_table_index (&data->shape_fill_color, TRUE);
 
-  if (current > none)
-    current = presets;
+  if (current > presets)
+    current = custom;
 
   if (down)
     current = (current + 1) % count;
   else
     current = (current + count - 1) % count;
 
-  if (current == presets)
+  if (current == custom)
     {
       gchar *hex = rgba_to_hex (&data->custom_fill_color);
 
@@ -11119,6 +11129,17 @@ set_paper_pan_cursor (ScreenatorData *data)
     }
 }
 
+static gboolean
+paper_pan_cursor_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->paper_pan_cursor_timeout_id = 0;
+  if (data->paper_panning)
+    set_paper_pan_cursor (data);
+  return G_SOURCE_REMOVE;
+}
+
 static void
 restore_paper_cursor (ScreenatorData *data)
 {
@@ -11173,7 +11194,10 @@ screenator_paper_pan_start (ScreenatorData *data, guint button, gint x, gint y)
   data->paper_pan_moved = FALSE;
   data->paper_pan_color_cycle = color_cycle_tool_active (data) &&
     !editable_handles_active (data) && !data->paper_hand_tool;
-  set_paper_pan_cursor (data);
+  if (data->paper_pan_cursor_timeout_id)
+    g_source_remove (data->paper_pan_cursor_timeout_id);
+  data->paper_pan_cursor_timeout_id = g_timeout_add (
+    200, paper_pan_cursor_timeout, data);
 }
 
 void
@@ -11219,6 +11243,12 @@ void
 screenator_paper_pan_end (ScreenatorData *data)
 {
   gboolean was_panning = data->paper_panning;
+
+  if (data->paper_pan_cursor_timeout_id)
+    {
+      g_source_remove (data->paper_pan_cursor_timeout_id);
+      data->paper_pan_cursor_timeout_id = 0;
+    }
 
   data->paper_panning = FALSE;
   data->paper_pan_button = 0;
@@ -16607,7 +16637,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	item = gtk_image_menu_item_new_with_label ("Cursor (Esc)");
 	gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
 	                               gtk_image_new_from_pixbuf (
-	                                 load_menu_icon ("cursor.png")));
+	                                 load_menu_icon ("cursor.svg")));
   gtk_widget_show_all (item);
   gtk_widget_set_tooltip_text (item, "Cursor (Esc)");
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
@@ -16616,28 +16646,28 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_PEN, "Pen");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("pen.png")));
+                                   load_menu_icon ("pen.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_pen), data);
 
   item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_TEXT, "Text");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("text.png")));
+                                   load_menu_icon ("text.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_text), data);
 
   item = gtk_image_menu_item_new_with_label ("Eraser");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("eraser.png")));
+                                   load_menu_icon ("eraser.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_eraser), data);
 
   item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_ARROW, "Arrow");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("arrow.png")));
+                                   load_menu_icon ("arrow.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_arrow), data);
 
@@ -16646,7 +16676,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
       item = shortcut_menu_item (data, SCREENATOR_SHORTCUT_TIMER, "Timer");
       gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
 				     gtk_image_new_from_pixbuf (
-				       load_menu_icon ("timer.png")));
+				       load_menu_icon ("timer.svg")));
       gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
       g_signal_connect (item, "activate", G_CALLBACK (on_icon_timer), data);
     }
@@ -16655,7 +16685,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = gtk_image_menu_item_new_with_label ("Shapes");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("shapes.png")));
+                                   load_menu_icon ("shapes.svg")));
   submenu = gtk_menu_new ();
   {
     static const struct
@@ -16665,17 +16695,17 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
       GCallback    callback;
     } shapes[] =
       {
-	{ "Marker",             "marker.png",             G_CALLBACK (on_icon_marker) },
-	{ "Line",               "free-line.png",          G_CALLBACK (on_icon_line) },
-	{ "Spline",             "spline.png",             G_CALLBACK (on_icon_spline) },
-	{ "Polygon",            "polygon.png",            G_CALLBACK (on_icon_polygon) },
-	{ "Triangle",           "triangle.png",           G_CALLBACK (on_icon_triangle) },
-	{ "Ellipse",            "ellipse.png",            G_CALLBACK (on_icon_ellipse) },
-	{ "Rounded Rectangle",  "rounded-rectangle.png",  G_CALLBACK (on_icon_rounded_rectangle) },
-	{ "Paint Bucket",       "bucket.png",             G_CALLBACK (on_icon_bucket) },
-	{ "Math Function",      "math.png",               G_CALLBACK (on_icon_math) },
-	{ "Parallel Lines",     "bars.png",               G_CALLBACK (on_icon_bars) },
-	{ "Random Signal",      "random-signal.png",      G_CALLBACK (on_icon_random) }
+	{ "Marker",             "marker.svg",             G_CALLBACK (on_icon_marker) },
+	{ "Line",               "free-line.svg",          G_CALLBACK (on_icon_line) },
+	{ "Spline",             "spline.svg",             G_CALLBACK (on_icon_spline) },
+	{ "Polygon",            "polygon.svg",            G_CALLBACK (on_icon_polygon) },
+	{ "Triangle",           "triangle.svg",           G_CALLBACK (on_icon_triangle) },
+	{ "Ellipse",            "ellipse.svg",            G_CALLBACK (on_icon_ellipse) },
+	{ "Rounded Rectangle",  "rounded-rectangle.svg",  G_CALLBACK (on_icon_rounded_rectangle) },
+	{ "Paint Bucket",       "bucket.svg",             G_CALLBACK (on_icon_bucket) },
+	{ "Math Function",      "math.svg",               G_CALLBACK (on_icon_math) },
+	{ "Parallel Lines",     "bars.svg",               G_CALLBACK (on_icon_bars) },
+	{ "Random Signal",      "random-signal.svg",      G_CALLBACK (on_icon_random) }
       };
     guint i;
 
@@ -16702,7 +16732,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = gtk_image_menu_item_new_with_label ("Actions");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("actions.png")));
+                                   load_menu_icon ("actions.svg")));
   submenu = gtk_menu_new ();
   {
     GtkWidget *action;
@@ -16711,7 +16741,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SWITCH_MODE, "Switch Mode");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("switch_mode.png")));
+                                     load_menu_icon ("switch_mode.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate",
 		      G_CALLBACK (on_icon_switch_mode), data);
@@ -16722,14 +16752,14 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_UNDO, "Undo");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("undo.png")));
+                                     load_menu_icon ("undo.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate", G_CALLBACK (on_undo), data);
 
     action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_REDO, "Redo");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("redo.png")));
+                                     load_menu_icon ("redo.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate", G_CALLBACK (on_redo), data);
 
@@ -16740,7 +16770,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 				 "Clear Screen");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("trash.png")));
+                                     load_menu_icon ("trash.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate", G_CALLBACK (on_clear), data);
 
@@ -16751,7 +16781,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 				     load_menu_icon (
 				       (data->paper == SCREENATOR_PAPER_NONE
 					? data->hidden : data->hide_drawings)
-				       ? "eye-closed.png" : "eye-opened.png")));
+				       ? "eye-closed.svg" : "eye-opened.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate",
 		      G_CALLBACK (on_toggle_vis), data);
@@ -16759,7 +16789,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     action = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SCREENSHOT, "Screenshot");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("screenshot.png")));
+                                     load_menu_icon ("screenshot.svg")));
     gtk_widget_set_sensitive (action,
 			      data->paper == SCREENATOR_PAPER_NONE);
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
@@ -16795,7 +16825,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     action = gtk_image_menu_item_new_with_label ("Show Hints");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (action),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("hint.png")));
+                                     load_menu_icon ("hint.svg")));
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), action);
     g_signal_connect (action, "activate", G_CALLBACK (on_show_hints), data);
   }
@@ -16923,7 +16953,18 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     GtkWidget *custom_item = NULL;
     guint i;
 
-    for (i = 0; i < G_N_ELEMENTS (fill_colors) - 1; i++)
+    i = 0;
+    items[i] = gtk_radio_menu_item_new_with_label (group,
+                                                   fill_colors[i].label);
+    group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (items[i]));
+    g_object_set_data (G_OBJECT (items[i]), "icon-shape-fill-name",
+                       (gpointer) fill_colors[i].name);
+    if (!data->shape_fill_enabled)
+      active_item = items[i];
+    gtk_menu_shell_append (GTK_MENU_SHELL (submenu), items[i]);
+    gtk_widget_show (items[i]);
+
+    for (i = 1; i < G_N_ELEMENTS (fill_colors); i++)
       {
 	GtkWidget *subitem;
 
@@ -16965,20 +17006,6 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 	  gtk_widget_show (custom);
 	}
 
-	{
-	  i = G_N_ELEMENTS (fill_colors) - 1;
-	  items[i] = gtk_radio_menu_item_new_with_label (group,
-							 fill_colors[i].label);
-	  group = gtk_radio_menu_item_get_group (
-	    GTK_RADIO_MENU_ITEM (items[i]));
-	  g_object_set_data (G_OBJECT (items[i]), "icon-shape-fill-name",
-			     (gpointer) fill_colors[i].name);
-	  if (!data->shape_fill_enabled)
-	    active_item = items[i];
-	  gtk_menu_shell_append (GTK_MENU_SHELL (submenu), items[i]);
-	  gtk_widget_show (items[i]);
-	}
-
     if (active_item)
       gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
     for (i = 0; i < G_N_ELEMENTS (fill_colors); i++)
@@ -16995,7 +17022,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = gtk_image_menu_item_new_with_label ("Paper");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("paper.png")));
+                                   load_menu_icon ("paper.svg")));
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
@@ -17054,7 +17081,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     widget = gtk_image_menu_item_new_with_label ("Reset Page or PDF File");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("paper.png")));
+                                     load_menu_icon ("paper.svg")));
     g_signal_connect (widget, "activate",
 		      G_CALLBACK (on_icon_reset_or_open_pdf), data);
     gtk_menu_shell_append (GTK_MENU_SHELL (submenu), widget);
@@ -17067,7 +17094,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_INSERT_BEFORE, "Insert Page Before");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("add_before.png")));
+                                     load_menu_icon ("add_before.svg")));
     gtk_widget_set_sensitive (widget, active && !pdf_active);
     g_object_set_data (G_OBJECT (widget), "paper-before",
 		       GINT_TO_POINTER (1));
@@ -17080,7 +17107,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
 				 "Delete Page");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("delete-page.png")));
+                                     load_menu_icon ("delete-page.svg")));
     gtk_widget_set_sensitive (widget,
 			      active && !pdf_active && page_count > 1);
     g_signal_connect (widget, "activate",
@@ -17091,7 +17118,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_INSERT_AFTER, "Insert Page After");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("add_after.png")));
+                                     load_menu_icon ("add_after.svg")));
     gtk_widget_set_sensitive (widget, active && !pdf_active);
     g_object_set_data (G_OBJECT (widget), "paper-before",
 		       GINT_TO_POINTER (0));
@@ -17103,7 +17130,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     widget = gtk_image_menu_item_new_with_label ("Go to Page...");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("goto-page.png")));
+                                     load_menu_icon ("goto-page.svg")));
     gtk_widget_set_sensitive (widget, active && page_count > 1);
     g_signal_connect (widget, "activate",
 		      G_CALLBACK (on_icon_paper_goto), data);
@@ -17117,7 +17144,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
     widget = shortcut_menu_item (data, SCREENATOR_SHORTCUT_SAVE, "Save current paper");
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (widget),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("save.png")));
+                                     load_menu_icon ("save.svg")));
     gtk_widget_set_sensitive (widget, active);
     g_signal_connect (widget, "activate",
 		      G_CALLBACK (on_icon_paper_save), data);
@@ -17176,7 +17203,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = gtk_image_menu_item_new_with_label ("Opacity");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("opacity.png")));
+                                   load_menu_icon ("opacity.svg")));
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
@@ -17226,7 +17253,7 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   item = gtk_image_menu_item_new_with_label ("Marker Opacity");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("marker_opacity.png")));
+                                   load_menu_icon ("marker_opacity.svg")));
   submenu = gtk_menu_new ();
   {
     GSList *group = NULL;
@@ -17289,7 +17316,7 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   item = gtk_image_menu_item_new_with_label ("Settings...");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("settings.png")));
+                                   load_menu_icon ("settings.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_settings), data);
 
@@ -17305,7 +17332,7 @@ GtkWidget *build_icon_menu (ScreenatorData *data)
   item = gtk_image_menu_item_new_with_label ("Quit");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
-                                   load_menu_icon ("quit.png")));
+                                   load_menu_icon ("quit.svg")));
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_quit), data);
 
@@ -17457,21 +17484,21 @@ typedef struct
 
 static const QuickTool quick_tools[] =
   {
-    { "Pen",            "pen.png",              1,  -1 },
-    { "Text",           "text.png",             4,  -1 },
-    { "Eraser",         "eraser.png",           3,  -1 },
-    { "Marker",         "marker.png",           11, -1 },
-    { "Line",           "free-line.png",        9,  SCREENATOR_SHAPE_LINE },
-    { "Spline",         "spline.png",           12, SCREENATOR_SHAPE_SPLINE },
-    { "Polygon",        "polygon.png",          14, SCREENATOR_SHAPE_STAR },
-    { "Triangle",       "triangle.png",         15, SCREENATOR_SHAPE_TRIANGLE },
-    { "Arrow",          "arrow.png",            2,  SCREENATOR_SHAPE_ARROW },
-    { "Ellipse",        "ellipse.png",          6,  SCREENATOR_SHAPE_ELLIPSE },
-    { "Rounded Rect",   "rounded-rectangle.png",7,  SCREENATOR_SHAPE_ROUNDED_RECTANGLE },
-    { "Bucket",         "bucket.png",           13, SCREENATOR_SHAPE_BUCKET },
-    { "Math",           "math.png",             16, SCREENATOR_SHAPE_MATH },
-    { "Parallel",       "bars.png",             17, SCREENATOR_SHAPE_BARS },
-    { "Random",         "random-signal.png",    18, SCREENATOR_SHAPE_RANDOM }
+    { "Pen",            "pen.svg",              1,  -1 },
+    { "Text",           "text.svg",             4,  -1 },
+    { "Eraser",         "eraser.svg",           3,  -1 },
+    { "Marker",         "marker.svg",           11, -1 },
+    { "Line",           "free-line.svg",        9,  SCREENATOR_SHAPE_LINE },
+    { "Spline",         "spline.svg",           12, SCREENATOR_SHAPE_SPLINE },
+    { "Polygon",        "polygon.svg",          14, SCREENATOR_SHAPE_STAR },
+    { "Triangle",       "triangle.svg",         15, SCREENATOR_SHAPE_TRIANGLE },
+    { "Arrow",          "arrow.svg",            2,  SCREENATOR_SHAPE_ARROW },
+    { "Ellipse",        "ellipse.svg",          6,  SCREENATOR_SHAPE_ELLIPSE },
+    { "Rounded Rect",   "rounded-rectangle.svg",7,  SCREENATOR_SHAPE_ROUNDED_RECTANGLE },
+    { "Bucket",         "bucket.svg",           13, SCREENATOR_SHAPE_BUCKET },
+    { "Math",           "math.svg",             16, SCREENATOR_SHAPE_MATH },
+    { "Parallel",       "bars.svg",             17, SCREENATOR_SHAPE_BARS },
+    { "Random",         "random-signal.svg",    18, SCREENATOR_SHAPE_RANDOM }
   };
 
 #define QUICK_COLS      5
@@ -18943,7 +18970,17 @@ paper_top_bar_build_fill_menu (ScreenatorData *data)
   guint i;
   gint swatch = MAX (16, MIN (paper_top_bar_icon_size (data), 32));
 
-  for (i = 0; i < G_N_ELEMENTS (fill_colors) - 1; i++)
+  i = 0;
+  {
+    GdkRGBA fallback = { 0, 0, 0, 1 };
+    items[i] = paper_add_fill_item (menu, &group, &fallback, TRUE, swatch,
+                                    fill_colors[i].label,
+                                    fill_colors[i].name);
+  }
+  if (!data->shape_fill_enabled)
+    active_item = items[i];
+
+  for (i = 1; i < G_N_ELEMENTS (fill_colors); i++)
     {
       GdkRGBA color;
 
@@ -18968,16 +19005,6 @@ paper_top_bar_build_fill_menu (ScreenatorData *data)
 		     (gpointer) "fill");
   if (!active_item)
     active_item = custom_item;
-
-  i = G_N_ELEMENTS (fill_colors) - 1;
-  {
-    GdkRGBA fallback = { 0, 0, 0, 1 };
-    items[i] = paper_add_fill_item (menu, &group, &fallback, TRUE, swatch,
-				    fill_colors[i].label,
-				    fill_colors[i].name);
-  }
-  if (!data->shape_fill_enabled)
-    active_item = items[i];
 
   if (active_item)
     gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (active_item), TRUE);
@@ -19236,7 +19263,7 @@ paper_top_bar_build_paper_type_menu (ScreenatorData *data)
 
     gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (open),
                                    gtk_image_new_from_pixbuf (
-                                     load_menu_icon ("paper.png")));
+                                     load_menu_icon ("paper.svg")));
     g_signal_connect (open, "activate",
 		      G_CALLBACK (on_icon_reset_or_open_pdf), data);
     gtk_menu_shell_append (GTK_MENU_SHELL (menu), sep);
@@ -20146,8 +20173,8 @@ screenator_refresh_visibility_icon (ScreenatorData *data)
 
   visible = data->paper == SCREENATOR_PAPER_NONE
     ? !data->hidden : !data->hide_drawings;
-  pixbuf = load_menu_icon_at_size (visible ? "eye-opened.png"
-					       : "eye-closed.png",
+  pixbuf = load_menu_icon_at_size (visible ? "eye-opened.svg"
+					       : "eye-closed.svg",
 				  paper_top_bar_icon_size (data));
   if (pixbuf)
     {
@@ -20193,7 +20220,7 @@ paper_top_bar_create (ScreenatorData *data)
   bar->box = box;
 
   /* Switch Mode is the first action. */
-  button = paper_top_bar_icon_button (data, "switch_mode.png",
+  button = paper_top_bar_icon_button (data, "switch_mode.svg",
 				      "Switch Mode (F3)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "switch_mode");
@@ -20202,7 +20229,7 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Cursor: exit the current tool and use the normal pointer. */
-  button = paper_top_bar_icon_button (data, "cursor.png", "Cursor (Esc)");
+  button = paper_top_bar_icon_button (data, "cursor.svg", "Cursor (Esc)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "cursor");
   bar->cursor_button = button;
@@ -20221,12 +20248,12 @@ paper_top_bar_create (ScreenatorData *data)
       gint         shape_type;
     } tools[] =
       {
-	{ "pen.png",    "Pen (F8)",   "pen",    1, -1 },
-	{ "text.png",   "Text (F7)",  "text",   4, -1 },
-	{ "eraser.png",
+	{ "pen.svg",    "Pen (F8)",   "pen",    1, -1 },
+	{ "text.svg",   "Text (F7)",  "text",   4, -1 },
+	{ "eraser.svg",
           "Eraser (Paper: wheel scrolls; Button 1 / middle mouse: click changes size, hold and drag to pan after 200 ms; Button 2: hold to erase, including while hovering)",
           "eraser", 3, -1 },
-	{ "arrow.png",  "Arrow (F6)", "arrow",  2, SCREENATOR_SHAPE_ARROW }
+	{ "arrow.svg",  "Arrow (F6)", "arrow",  2, SCREENATOR_SHAPE_ARROW }
       };
     guint i;
 
@@ -20257,7 +20284,7 @@ paper_top_bar_create (ScreenatorData *data)
 
   /* Timer tool, directly after Arrow.  It is created once so it can follow
    * mode changes, but is only visible in Screen Annotation mode. */
-  button = paper_top_bar_icon_button (data, "timer.png", "Timer (F12)");
+  button = paper_top_bar_icon_button (data, "timer.svg", "Timer (F12)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "timer");
   bar->timer_button = button;
@@ -20269,7 +20296,7 @@ paper_top_bar_create (ScreenatorData *data)
   /* Shapes menu, before Eraser Size. */
   menu = paper_top_bar_build_shapes_menu (data);
   {
-    GdkPixbuf *icon = load_menu_icon_at_size ("shapes.png", size);
+    GdkPixbuf *icon = load_menu_icon_at_size ("shapes.svg", size);
 
     button = paper_top_bar_menu_button (data, icon, "Shapes", menu);
     if (icon)
@@ -20281,20 +20308,20 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Undo and redo, directly after Shapes. */
-  button = paper_top_bar_icon_button (data, "undo.png", "Undo (Ctrl+Z)");
+  button = paper_top_bar_icon_button (data, "undo.svg", "Undo (Ctrl+Z)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "undo");
   g_signal_connect (button, "clicked", G_CALLBACK (on_undo), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "redo.png", "Redo (Ctrl+Shift+Z)");
+  button = paper_top_bar_icon_button (data, "redo.svg", "Redo (Ctrl+Shift+Z)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "redo");
   g_signal_connect (button, "clicked", G_CALLBACK (on_redo), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Screenshot is available in both modes; Save is Paper mode only. */
-  button = paper_top_bar_icon_button (data, "screenshot.png",
+  button = paper_top_bar_icon_button (data, "screenshot.svg",
 				      "Screenshot (F4)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "screenshot");
@@ -20303,7 +20330,7 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_screenshot_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "save.png",
+  button = paper_top_bar_icon_button (data, "save.svg",
 				      "Save current paper (Ctrl+S)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "save");
@@ -20324,7 +20351,7 @@ paper_top_bar_create (ScreenatorData *data)
   }
 
   /* Paper type menu. */
-  button = paper_top_bar_icon_button (data, "paper.png", "Paper Type");
+  button = paper_top_bar_icon_button (data, "paper.svg", "Paper Type");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "paper");
   g_signal_connect (button, "clicked",
@@ -20332,7 +20359,7 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   /* Add page before/after. */
-  button = paper_top_bar_icon_button (data, "add_before.png",
+  button = paper_top_bar_icon_button (data, "add_before.svg",
 				      "Insert Page Before (Ctrl+B)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "insert_before");
@@ -20345,7 +20372,7 @@ paper_top_bar_create (ScreenatorData *data)
     gchar *tip = shortcut_label (data, SCREENATOR_SHORTCUT_DELETE_PAGE,
 				 "Delete Page");
 
-    button = paper_top_bar_icon_button (data, "delete-page.png", tip);
+    button = paper_top_bar_icon_button (data, "delete-page.svg", tip);
     g_free (tip);
   }
   bar->delete_page_button = button;
@@ -20355,7 +20382,7 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_delete_page_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "add_after.png",
+  button = paper_top_bar_icon_button (data, "add_after.svg",
 				      "Insert Page After (Ctrl+A)");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "insert_after");
@@ -20373,7 +20400,7 @@ paper_top_bar_create (ScreenatorData *data)
 		    G_CALLBACK (paper_top_bar_goto_page_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "goto-page.png", "Go to Page");
+  button = paper_top_bar_icon_button (data, "goto-page.svg", "Go to Page");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "goto_page");
   bar->goto_page_button = button;
@@ -20386,7 +20413,7 @@ paper_top_bar_create (ScreenatorData *data)
     gchar *tip = shortcut_label (data, SCREENATOR_SHORTCUT_CLEAR_SCREEN,
 				 "Clear Screen");
 
-    button = paper_top_bar_icon_button (data, "trash.png", tip);
+    button = paper_top_bar_icon_button (data, "trash.svg", tip);
     g_free (tip);
   }
   bar->clear_button = button;
@@ -20397,7 +20424,7 @@ paper_top_bar_create (ScreenatorData *data)
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
   button = paper_top_bar_icon_button (
-    data, data->hidden ? "eye-closed.png" : "eye-opened.png",
+    data, data->hidden ? "eye-closed.svg" : "eye-opened.svg",
     "Toggle Visibility");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "visibility");
@@ -20476,7 +20503,7 @@ paper_top_bar_create (ScreenatorData *data)
   /* Line opacity menu. */
   menu = paper_top_bar_build_opacity_menu (data);
   {
-    GdkPixbuf *icon = load_menu_icon_at_size ("opacity.png", size);
+    GdkPixbuf *icon = load_menu_icon_at_size ("opacity.svg", size);
 
     button = paper_top_bar_menu_button (data, icon, "Opacity", menu);
     if (icon)
@@ -20491,7 +20518,7 @@ paper_top_bar_create (ScreenatorData *data)
   /* Separate Marker Opacity menu. */
   menu = paper_top_bar_build_marker_opacity_menu (data);
   {
-    GdkPixbuf *icon = load_menu_icon_at_size ("marker_opacity.png", size);
+    GdkPixbuf *icon = load_menu_icon_at_size ("marker_opacity.svg", size);
 
     button = paper_top_bar_menu_button (data, icon, "Marker Opacity", menu);
     if (icon)
@@ -20503,21 +20530,21 @@ paper_top_bar_create (ScreenatorData *data)
 		     (gpointer) "marker_opacity");
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "settings.png", "Settings");
+  button = paper_top_bar_icon_button (data, "settings.svg", "Settings");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "settings");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_settings_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "hint.png", "Show Hints");
+  button = paper_top_bar_icon_button (data, "hint.svg", "Show Hints");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "hints");
   g_signal_connect (button, "clicked",
 		    G_CALLBACK (paper_top_bar_hints_clicked), data);
   gtk_box_pack_start (GTK_BOX (box), button, FALSE, FALSE, 0);
 
-  button = paper_top_bar_icon_button (data, "quit.png", "Quit");
+  button = paper_top_bar_icon_button (data, "quit.svg", "Quit");
   g_object_set_data (G_OBJECT (button), "paper-toolbar-item",
 		     (gpointer) "quit");
   g_signal_connect (button, "clicked",

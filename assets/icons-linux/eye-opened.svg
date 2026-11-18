@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Cobalt eye opened</title><desc id="desc">Original colorful vector visibility icon, opened state.</desc>
+<g transform="matrix(1.00000 0 0 1.00000 -0.50000 -0.50000)"><path d="M12 64 Q36 24 64 24 Q92 24 116 64 Q92 104 64 104 Q36 104 12 64Z" fill="#315fca" stroke="#203a76" stroke-width="4" stroke-linejoin="round" />
+<circle cx="64" cy="64" r="21" fill="#87b9ff" /><circle cx="64" cy="64" r="10" fill="#203a76" />
+<circle cx="71" cy="57" r="4" fill="#fff" opacity=".9" />
+</g></svg>

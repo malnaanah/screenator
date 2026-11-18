@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Orchid Ellipse</title><desc id="desc">Original colorful vector shape-tool icon.</desc>
+<defs><linearGradient id="stroke" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#7c20d4" /><stop offset="1" stop-color="#bc7dff" /></linearGradient></defs>
+<g transform="matrix(1.04673 0 0 1.04673 -3.51402 -3.51402)"><ellipse cx="64" cy="64" rx="48" ry="35" fill="none" stroke="url(#stroke)" stroke-width="9" />
+</g></svg>

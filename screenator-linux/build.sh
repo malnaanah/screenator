@@ -15,10 +15,11 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 SRC="$ROOT"
 SHARED_ASSETS="$ROOT/../assets"
 LINUX_ASSETS="$SHARED_ASSETS/linux"
+LINUX_ICONS="$SHARED_ASSETS/icons-linux"
 BUILD="$ROOT/../build-linux"
-DEB="$BUILD/screenator_8.2_amd64.deb"
-RPM="$BUILD/screenator-8.2-1.x86_64.rpm"
-APPIMAGE="$BUILD/Screenator-8.2-x86_64.AppImage"
+DEB="$BUILD/screenator_9.0_amd64.deb"
+RPM="$BUILD/screenator-9.0-1.x86_64.rpm"
+APPIMAGE="$BUILD/Screenator-9.0-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -121,6 +122,10 @@ cmake -S "$SRC" -B "$CBUILD" \
                        -L$LIBDIR" >/dev/null
 make -C "$CBUILD" -j"$(nproc)"
 
+# The tray API expects a raster image; generate it from the Linux SVG source.
+TRAY_ICON="$STAGE/screenator-tray.png"
+convert -background none "$LINUX_ICONS/screenator.svg" -resize 128x128 "$TRAY_ICON"
+
 # ---------------------------------------------------------------------------
 # 3. Build the .deb
 # ---------------------------------------------------------------------------
@@ -130,7 +135,7 @@ mkdir -p "$PKROOT"/DEBIAN "$PKROOT"/usr/bin \
          "$PKROOT"/usr/share/applications \
          "$PKROOT"/usr/share/pixmaps \
          "$PKROOT"/usr/share/icons/hicolor/scalable/apps \
-         "$PKROOT"/usr/share/icons/hicolor/256x256/apps \
+         "$PKROOT"/usr/share/icons/hicolor/128x128/apps \
          "$PKROOT"/usr/share/man/man1 \
          "$PKROOT"/usr/share/metainfo \
          "$PKROOT"/usr/share/screenator \
@@ -139,37 +144,71 @@ mkdir -p "$PKROOT"/DEBIAN "$PKROOT"/usr/bin \
          "$PKROOT"/usr/share/doc/screenator
 
 install -m 0755 "$CBUILD/screenator" "$PKROOT"/usr/bin/screenator
+# Remove symbols and debug information from the packaged executable.
+strip --strip-unneeded "$PKROOT"/usr/bin/screenator
 install -m 0644 "$LINUX_ASSETS"/screenator.desktop \
    "$PKROOT"/usr/share/applications/
-install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
+install -m 0644 "$TRAY_ICON" \
    "$PKROOT"/usr/share/pixmaps/screenator.png
-install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
-   "$PKROOT"/usr/share/icons/hicolor/256x256/apps/screenator.png
-install -m 0644 "$LINUX_ASSETS"/screenator.svg \
+install -m 0644 "$TRAY_ICON" \
+   "$PKROOT"/usr/share/icons/hicolor/128x128/apps/screenator.png
+install -m 0644 "$LINUX_ICONS"/screenator.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator.svg
 install -m 0644 "$LINUX_ASSETS"/screenator-active.svg \
    "$PKROOT"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
-  install -m 0644 "$SHARED_ASSETS"/icons/$icon.png "$PKROOT"/usr/share/screenator/icons/$icon.png
+            trash eye-opened eye-closed hint settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
+  install -m 0644 "$LINUX_ICONS"/$icon.svg "$PKROOT"/usr/share/screenator/icons/$icon.svg
 done
 install -m 0644 "$SHARED_ASSETS"/hints.html "$PKROOT"/usr/share/screenator/hints.html
-gzip -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
+gzip -n -9 -c "$SRC"/screenator.1 > "$PKROOT"/usr/share/man/man1/screenator.1.gz
+chmod 0644 "$PKROOT"/usr/share/man/man1/screenator.1.gz
 install -m 0644 "$LINUX_ASSETS"/screenator.appdata.xml \
    "$PKROOT"/usr/share/metainfo/
 install -m 0644 "$LINUX_ASSETS"/screenator.cfg "$PKROOT"/etc/screenator/screenator.cfg
 install -m 0644 "$SRC"/README.md "$SRC"/AUTHORS "$SRC"/COPYING \
    "$PKROOT"/usr/share/doc/screenator/
+cat > "$PKROOT"/usr/share/doc/screenator/copyright <<'EOF'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: Screenator
+Source: https://github.com/malnaanah/screenator
+
+Files: *
+Copyright: 2025-2026 Mahmoud Alnaanah
+License: GPL-2+
+ This package is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License version 2 or later.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in /usr/share/common-licenses/GPL-2.
+EOF
+chmod 0644 "$PKROOT"/usr/share/doc/screenator/copyright
+
+cat > "$PKROOT"/usr/share/doc/screenator/changelog <<EOF
+screenator (9.0) unstable; urgency=medium
+
+  * Update Linux icons, input behavior, defaults and package metadata.
+
+ -- Mahmoud Alnaanah <malnaanah@gmail.com>  $(date -R)
+EOF
+gzip -n -9 -c "$PKROOT"/usr/share/doc/screenator/changelog \
+   > "$PKROOT"/usr/share/doc/screenator/changelog.gz
+rm "$PKROOT"/usr/share/doc/screenator/changelog
+chmod 0644 "$PKROOT"/usr/share/doc/screenator/changelog.gz
+
+cat > "$PKROOT"/DEBIAN/conffiles <<'EOF'
+/etc/screenator/screenator.cfg
+EOF
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 8.2
+Version: 9.0
 Section: x11
 Priority: optional
 Architecture: amd64
 Maintainer: Mahmoud Alnaanah <malnaanah@gmail.com>
-Depends: libayatana-appindicator3-1 (>= 0.2.92), libc6 (>= 2.34), libcairo2 (>= 1.10.0), libgdk-pixbuf-2.0-0 (>= 2.22.0), libglib2.0-0 (>= 2.39.4), libgtk-3-0 (>= 3.21.4), libpoppler-glib8 (>= 0.20), libx11-6, libxi6 (>= 2:1.2.99.4)
+Depends: libayatana-appindicator3-1 (>= 0.2.92), libc6 (>= 2.34), libcairo2 (>= 1.10.0), libgdk-pixbuf-2.0-0 (>= 2.22.0), librsvg2-common, libglib2.0-0 (>= 2.39.4), libgtk-3-0 (>= 3.21.4), libpoppler-glib8 (>= 0.20), libx11-6, libxi6 (>= 2:1.2.99.4)
 Recommends: qalculate-gtk
 Installed-Size: 320
 Description: vibe-coded screen annotation tool based on Gromit-MPX
@@ -202,6 +241,9 @@ exit 0
 EOF
   chmod 0755 "$PKROOT"/DEBIAN/$script
 done
+
+# Normalize the staged package directories for Debian and RPM packaging.
+find "$PKROOT" -type d -exec chmod 0755 {} +
 
 dpkg-deb --root-owner-group --build "$PKROOT" "$DEB" >/dev/null
 echo "==> Built: $DEB"
@@ -251,7 +293,7 @@ cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
 %define _build_id_links none
 %global __os_install_post %{nil}
 Name:           screenator
-Version:        8.2
+Version:        9.0
 Release:        1
 Summary:        Vibe-coded screen annotation tool based on Gromit-MPX
 License:        GPL-2.0-or-later
@@ -259,6 +301,7 @@ URL:            https://github.com/malnaanah/screenator
 BuildArch:      x86_64
 AutoReqProv:    yes
 Recommends:     qalculate-gtk
+Requires:       librsvg2
 
 %description
 Screenator is an on-screen annotation tool for X11.  Draw over any running
@@ -276,7 +319,7 @@ rm -rf %{buildroot}/DEBIAN
 /usr/bin/screenator
 /usr/share/applications/screenator.desktop
 /usr/share/pixmaps/screenator.png
-/usr/share/icons/hicolor/256x256/apps/screenator.png
+/usr/share/icons/hicolor/128x128/apps/screenator.png
 /usr/share/icons/hicolor/scalable/apps/screenator.svg
 /usr/share/icons/hicolor/scalable/apps/screenator-active.svg
 /usr/share/screenator
@@ -302,6 +345,8 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 %changelog
+* Wed Nov 18 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 9.0-1
+- Screenator 9.0 Linux release
 * Mon Nov 16 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 8.2-1
 - Screenator 8.2
 * Sat Nov 14 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 8.1-1
@@ -321,7 +366,7 @@ else
   "$RPMBUILD" -bb --define "_topdir $RPMTOP" \
     --define "_tmppath $RPMTMP" "$RPMTOP/SPECS/screenator.spec"
 fi
-cp "$RPMTOP/RPMS/x86_64/screenator-8.2-1.x86_64.rpm" "$RPM"
+cp "$RPMTOP/RPMS/x86_64/screenator-9.0-1.x86_64.rpm" "$RPM"
 echo "==> Built: $RPM"
 
 # ---------------------------------------------------------------------------
@@ -357,7 +402,7 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR"/usr/bin \
          "$APPDIR"/usr/share/applications \
          "$APPDIR"/usr/share/icons/hicolor/scalable/apps \
-         "$APPDIR"/usr/share/icons/hicolor/256x256/apps \
+         "$APPDIR"/usr/share/icons/hicolor/128x128/apps \
          "$APPDIR"/usr/share/metainfo \
          "$APPDIR"/usr/share/pixmaps \
          "$APPDIR"/usr/share/screenator \
@@ -366,13 +411,13 @@ mkdir -p "$APPDIR"/usr/bin \
 install -m 0755 "$CBUILD/screenator" "$APPDIR"/usr/bin/screenator
 install -m 0644 "$LINUX_ASSETS"/screenator.desktop \
    "$APPDIR"/usr/share/applications/screenator.desktop
-install -m 0644 "$LINUX_ASSETS"/screenator.svg \
+install -m 0644 "$LINUX_ICONS"/screenator.svg \
    "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator.svg
 install -m 0644 "$LINUX_ASSETS"/screenator-active.svg \
    "$APPDIR"/usr/share/icons/hicolor/scalable/apps/screenator-active.svg
-install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
-   "$APPDIR"/usr/share/icons/hicolor/256x256/apps/screenator.png
-install -m 0644 "$SHARED_ASSETS"/icons/screenator.png \
+install -m 0644 "$TRAY_ICON" \
+   "$APPDIR"/usr/share/icons/hicolor/128x128/apps/screenator.png
+install -m 0644 "$TRAY_ICON" \
    "$APPDIR"/usr/share/pixmaps/screenator.png
 install -m 0644 "$LINUX_ASSETS"/screenator.appdata.xml \
    "$APPDIR"/usr/share/metainfo/screenator.appdata.xml
@@ -382,14 +427,14 @@ install -m 0644 "$SHARED_ASSETS"/hints.html \
    "$APPDIR"/usr/share/screenator/hints.html
 for icon in pen arrow timer text free-line spline polygon triangle bucket math bars \
             random-signal ellipse rounded-rectangle marker eraser redo undo \
-            trash reset-settings eye-opened eye-closed hint font-settings settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
-  install -m 0644 "$SHARED_ASSETS"/icons/$icon.png "$APPDIR"/usr/share/screenator/icons/$icon.png
+            trash eye-opened eye-closed hint settings quit switch_mode shapes paper add_before delete-page add_after goto-page actions save screenshot opacity marker_opacity cursor app; do
+  install -m 0644 "$LINUX_ICONS"/$icon.svg "$APPDIR"/usr/share/screenator/icons/$icon.svg
 done
 
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=8.2
+export LINUXDEPLOY_OUTPUT_VERSION=9.0
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.
@@ -400,7 +445,7 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1 \
         --appdir "$APPDIR" \
         --executable "$APPDIR/usr/bin/screenator" \
         --desktop-file "$APPDIR/usr/share/applications/screenator.desktop" \
-        --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/screenator.png" \
+        --icon-file "$APPDIR/usr/share/icons/hicolor/128x128/apps/screenator.png" \
         --plugin gtk; then
     echo "WARNING: linuxdeploy GTK deployment failed; building an AppImage"
     echo "         that uses the GTK libraries of the host system."
@@ -429,9 +474,9 @@ chmod +x "$APPDIR/AppRun"
 [ -e "$APPDIR/screenator.desktop" ] || \
   cp "$APPDIR/usr/share/applications/screenator.desktop" "$APPDIR/screenator.desktop"
 [ -e "$APPDIR/screenator.png" ] || \
-  cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/screenator.png" "$APPDIR/screenator.png"
+  cp "$APPDIR/usr/share/icons/hicolor/128x128/apps/screenator.png" "$APPDIR/screenator.png"
 [ -e "$APPDIR/.DirIcon" ] || \
-  cp "$APPDIR/usr/share/icons/hicolor/256x256/apps/screenator.png" "$APPDIR/.DirIcon"
+  cp "$APPDIR/usr/share/icons/hicolor/128x128/apps/screenator.png" "$APPDIR/.DirIcon"
 
 echo "==> Building the AppImage ..."
 rm -f "$APPIMAGE"

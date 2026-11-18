@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+<title id="title">Rose Clean</title>
+<desc id="desc">Original colorful vector eraser icon concept.</desc>
+<g transform="matrix(1.14286 0 0 1.14286 -9.71429 -10.28571)"><path d="M22 72 73 21q6-6 12 0l22 22q6 6 0 12l-51 51q-6 6-12 0L22 84q-6-6 0-12z" fill="#d94e86" stroke="#253047" stroke-width="4" stroke-linejoin="round" />
+<path d="m41 53 31 31-19 19-31-31z" fill="#56a1cf" stroke="#253047" stroke-width="3.5" stroke-linejoin="round" />
+<path d="m47 58 20 20" stroke="#ffc2dc" stroke-width="5" stroke-linecap="round" />
+<path d="M18 110h31" stroke="#ffc2dc" stroke-width="5" stroke-linecap="round" opacity=".8" />
+</g></svg>
