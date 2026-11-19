@@ -1,5 +1,9 @@
 # Screenator
 
+
+https://github.com/user-attachments/assets/3b77de2f-f812-4c95-aa48-a5df7c2da130
+
+
 Screenator is a screen annotation tool for Linux and Windows, based on
 [Gromit-MPX](https://github.com/bk138/gromit-mpx) 1.4.2. Version 9.0 brings
 together the 8.1 and 8.2 updates with refinements to Paper-mode navigation and
