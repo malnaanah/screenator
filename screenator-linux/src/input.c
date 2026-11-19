@@ -8,7 +8,9 @@
 
 #include <string.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <signal.h>
+#include <unistd.h>
 #include <gdk/gdk.h>
 #include <gio/gdesktopappinfo.h>
 #ifdef GDK_WINDOWING_X11
@@ -369,6 +371,128 @@ screenator_companion_add_identity (GPtrArray *identities,
     g_ptr_array_add (identities, g_strdup (identity));
 }
 
+static pid_t
+screenator_process_parent_pid (pid_t pid)
+{
+  gchar *path = g_strdup_printf ("/proc/%ld/stat", (long) pid);
+  gchar *contents = NULL;
+  gchar *close_paren;
+  gchar *parent_text;
+  gchar *end = NULL;
+  long parent_pid;
+
+  if (!g_file_get_contents (path, &contents, NULL, NULL))
+    {
+      g_free (path);
+      return -1;
+    }
+  g_free (path);
+
+  /* comm is parenthesized but may itself contain spaces or parentheses.
+   * The final ')' separates it from state and PPID in /proc/PID/stat. */
+  close_paren = strrchr (contents, ')');
+  if (!close_paren || close_paren[1] != ' ' || !close_paren[2] ||
+      close_paren[3] != ' ')
+    {
+      g_free (contents);
+      return -1;
+    }
+
+  parent_text = close_paren + 4;
+  parent_pid = strtol (parent_text, &end, 10);
+  if (end == parent_text || parent_pid <= 0 || parent_pid > G_MAXINT)
+    parent_pid = -1;
+
+  g_free (contents);
+  return (pid_t) parent_pid;
+}
+
+static gboolean
+screenator_process_descends_from (pid_t pid, pid_t ancestor_pid)
+{
+  guint depth;
+
+  if (ancestor_pid <= 0)
+    return FALSE;
+
+  for (depth = 0; pid > 1 && depth < 64; depth++)
+    {
+      pid_t parent_pid;
+
+      if (pid == ancestor_pid)
+	return TRUE;
+
+      parent_pid = screenator_process_parent_pid (pid);
+      if (parent_pid <= 0 || parent_pid == pid)
+	return FALSE;
+      pid = parent_pid;
+    }
+
+  return FALSE;
+}
+
+static void
+screenator_companion_add_executable_identity (GPtrArray *identities,
+					      const gchar *executable)
+{
+  const gchar *base;
+  const gchar *slash;
+  const gchar *backslash;
+  gchar *name;
+  gsize length;
+
+  if (!executable || !*executable)
+    return;
+
+  slash = strrchr (executable, '/');
+  backslash = strrchr (executable, '\\');
+  base = executable;
+  if (slash && slash + 1 > base)
+    base = slash + 1;
+  if (backslash && backslash + 1 > base)
+    base = backslash + 1;
+
+  name = g_strdup (base);
+  screenator_companion_add_identity (identities, name);
+  length = strlen (name);
+  if (length > 4 && g_ascii_strcasecmp (name + length - 4, ".exe") == 0)
+    {
+      name[length - 4] = '\0';
+      screenator_companion_add_identity (identities, name);
+    }
+  g_free (name);
+}
+
+static void
+screenator_companion_add_command_identities (GPtrArray *identities,
+					     const gchar *command)
+{
+  gchar **argv = NULL;
+  gint argc = 0;
+  gint i;
+
+  if (!command || !*command ||
+      !g_shell_parse_argv (command, &argc, &argv, NULL) || argc == 0)
+    {
+      g_strfreev (argv);
+      return;
+    }
+
+  screenator_companion_add_executable_identity (identities, argv[0]);
+  for (i = 1; i < argc; i++)
+    {
+      gsize length = strlen (argv[i]);
+
+      /* Wine keeps the Windows executable path in an argument after the
+       * Linux wine launcher.  Match both App.exe and App window classes. */
+      if (length > 4 &&
+	  g_ascii_strcasecmp (argv[i] + length - 4, ".exe") == 0)
+	screenator_companion_add_executable_identity (identities, argv[i]);
+    }
+
+  g_strfreev (argv);
+}
+
 static gboolean
 screenator_attach_companion_window (ScreenatorData *data, guint slot,
                                     Window app_window)
@@ -428,6 +552,7 @@ screenator_find_companion_window (ScreenatorData *data, guint slot)
   unsigned int child_count;
   Atom clients_atom, actual_type;
   Atom pid_atom;
+  Window active_candidate = None;
   int actual_format;
   unsigned long client_count, bytes_after;
   unsigned char *client_data = NULL;
@@ -455,6 +580,24 @@ screenator_find_companion_window (ScreenatorData *data, guint slot)
 
   xdisplay = GDK_DISPLAY_XDISPLAY (gdk_window_get_display (paper_window));
   root = DefaultRootWindow (xdisplay);
+  {
+    Atom active_atom = XInternAtom (xdisplay, "_NET_ACTIVE_WINDOW", True);
+    Atom active_type;
+    int active_format;
+    unsigned long active_count, active_bytes_after;
+    unsigned char *active_data = NULL;
+
+    if (active_atom != None &&
+	XGetWindowProperty (xdisplay, root, active_atom, 0, 1, False,
+			    XA_WINDOW, &active_type, &active_format,
+			    &active_count, &active_bytes_after,
+			    &active_data) == Success &&
+	active_type == XA_WINDOW && active_format == 32 &&
+	active_count == 1 && active_data)
+      active_candidate = (Window) *((unsigned long *) active_data);
+    if (active_data)
+      XFree (active_data);
+  }
   if (app)
     {
       const gchar *name = g_app_info_get_name (app);
@@ -462,31 +605,19 @@ screenator_find_companion_window (ScreenatorData *data, guint slot)
 
       screenator_companion_add_identity (identities, name);
       if (executable)
-	{
-	  gchar *base = g_path_get_basename (executable);
-	  screenator_companion_add_identity (identities, base);
-	  g_free (base);
-	}
+	screenator_companion_add_executable_identity (identities, executable);
       if (G_IS_DESKTOP_APP_INFO (app))
 	{
 	  const gchar *wm_class = g_desktop_app_info_get_startup_wm_class (
 	    G_DESKTOP_APP_INFO (app));
 	  screenator_companion_add_identity (identities, wm_class);
 	}
+      screenator_companion_add_command_identities (
+	identities, g_app_info_get_commandline (app));
     }
   if (data->companion_app_commands[slot])
-    {
-      gchar **argv = NULL;
-      gint argc = 0;
-      if (g_shell_parse_argv (data->companion_app_commands[slot], &argc,
-			      &argv, NULL) && argc > 0)
-	{
-	  gchar *base = g_path_get_basename (argv[0]);
-	  screenator_companion_add_identity (identities, base);
-	  g_free (base);
-	}
-      g_strfreev (argv);
-    }
+    screenator_companion_add_command_identities (
+      identities, data->companion_app_commands[slot]);
   if (data->companion_app_ids[slot])
     {
       gchar *base = g_path_get_basename (data->companion_app_ids[slot]);
@@ -548,8 +679,9 @@ screenator_find_companion_window (ScreenatorData *data, guint slot)
 			      &pid_count, &pid_bytes_after, &pid_data) == Success &&
 	      pid_type == XA_CARDINAL && pid_format == 32 && pid_count == 1 &&
 	      pid_data)
-	    pid_matches = (GPid) *((unsigned long *) pid_data) ==
-	      data->companion_app_pids[slot];
+	    pid_matches = screenator_process_descends_from (
+	      (pid_t) *((unsigned long *) pid_data),
+	      (pid_t) data->companion_app_pids[slot]);
 	  if (pid_data)
 	    XFree (pid_data);
 	}
@@ -576,6 +708,32 @@ screenator_find_companion_window (ScreenatorData *data, guint slot)
       XSync (xdisplay, False);
       gdk_x11_display_error_trap_pop_ignored (
 	gdk_window_get_display (paper_window));
+    }
+  /* AppImages often launch a detached Wine process whose window has neither
+   * the AppImage's WM_CLASS nor a surviving parent PID.  The active window
+   * changes to the launched app in that case; remember it so a later Paper
+   * focus event can put the companion back above Paper. */
+  if (match == None && active_candidate != None &&
+      active_candidate != GDK_WINDOW_XID (paper_window) &&
+      active_candidate != (Window) data->companion_app_previous_focus[slot])
+    {
+      Atom active_pid_atom = XInternAtom (xdisplay, "_NET_WM_PID", True);
+      Atom active_pid_type;
+      int active_pid_format;
+      unsigned long active_pid_count, active_pid_bytes_after;
+      unsigned char *active_pid_data = NULL;
+
+      if (active_pid_atom != None &&
+	  XGetWindowProperty (xdisplay, active_candidate, active_pid_atom, 0, 1,
+			      False, XA_CARDINAL, &active_pid_type,
+			      &active_pid_format, &active_pid_count,
+			      &active_pid_bytes_after, &active_pid_data) == Success &&
+	  active_pid_type == XA_CARDINAL && active_pid_format == 32 &&
+	  active_pid_count == 1 && active_pid_data &&
+	  (pid_t) *((unsigned long *) active_pid_data) != getpid ())
+	match = active_candidate;
+      if (active_pid_data)
+	XFree (active_pid_data);
     }
   XFree (client_data);
   g_ptr_array_unref (identities);

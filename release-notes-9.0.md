@@ -3,7 +3,7 @@
 Screenator 9.0 brings together the accumulated 8.1 and 8.2 updates with
 refinements to Paper-mode navigation and shortcut handling.
 
-Updated: 2026-11-18
+Updated: 2026-11-19
 
 ## Linux
 
@@ -11,6 +11,8 @@ Updated: 2026-11-18
 - Paper-mode shortcuts and Escape are scoped to the active Screenator window.
 - Toggle Visibility now behaves consistently across Screen and Paper modes and
   remains unchanged when selecting tools.
+- Companion apps stay above Paper while the desktop panel remains hidden, and
+  command or path changes appear on the toolbar immediately.
 - Updated icons, defaults, drawing behavior, and package metadata.
 
 ## Windows

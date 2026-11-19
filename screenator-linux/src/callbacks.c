@@ -15030,6 +15030,7 @@ settings_apply_live (SettingsDialog *sd, guint flags)
 	  {
 	    g_free (data->companion_app_commands[i]);
 	    data->companion_app_commands[i] = *command ? g_strdup (command) : NULL;
+	    toolbar_rebuild_needed = TRUE;
 	  }
       }
 
@@ -15277,6 +15278,7 @@ settings_apply_current (SettingsDialog *sd)
 	      {
 		g_free (data->companion_app_commands[slot]);
 		data->companion_app_commands[slot] = *command ? g_strdup (command) : NULL;
+		companion_icons_changed = TRUE;
 	      }
 	  }
 	if (companion_icons_changed)
