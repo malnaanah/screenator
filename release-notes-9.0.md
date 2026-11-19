@@ -13,6 +13,8 @@ Updated: 2026-11-19
   remains unchanged when selecting tools.
 - Companion apps stay above Paper while the desktop panel remains hidden, and
   command or path changes appear on the toolbar immediately.
+- Polar math plots now follow the standard counterclockwise direction as θ
+  increases.
 - Updated icons, defaults, drawing behavior, and package metadata.
 
 ## Windows

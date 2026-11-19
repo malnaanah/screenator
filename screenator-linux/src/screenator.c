@@ -3906,7 +3906,7 @@ frame_draw_math_deltas (ScreenatorData *data, cairo_t *cr,
 	{
 	  gdouble radius = MIN (shape->frame.w, shape->frame.h) / 2.0 * 0.9;
 	  gdouble ux = cos (value);
-	  gdouble uy = sin (value);
+	  gdouble uy = -sin (value);
 	  gdouble tip_x = radius * ux;
 	  gdouble tip_y = radius * uy;
 
@@ -4047,7 +4047,7 @@ frame_draw_polar_math (ScreenatorData *data, cairo_t *cr,
 	}
 
       lx = r * cos (theta) * scale;
-      ly = r * sin (theta) * scale;
+      ly = -r * sin (theta) * scale;
 
       if (!pen_down)
 	{
