@@ -353,6 +353,8 @@ void tools_activate(Tool t)
     marker_leave();
 
   g.tool = t;
+  g.pdf_text_selecting = 0;
+  g.pdf_text_selection_valid = 0;
   g.handle = 0;
   g.drag_started = 0;
   g.drag_new_frame = 0;
@@ -407,6 +409,8 @@ void tools_exit(void)
 
   if (g.tool == TOOL_MARKER) marker_leave();
   g.tool = TOOL_NONE;
+  g.pdf_text_selecting = 0;
+  g.pdf_text_selection_valid = 0;
   g.edit = EDIT_NONE;
   g.handle = 0;
   g.drag_started = 0;

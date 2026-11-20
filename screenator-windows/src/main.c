@@ -559,6 +559,19 @@ void app_render(int x, int y, int w, int h)
           cairo_restore(cr);
         }
       draw_preview(cr);
+      if (g.pdf_text_selection_valid && g.paper == PAPER_PDF)
+        {
+          double x = fmin(g.pdf_text_select_start.x, g.pdf_text_select_end.x);
+          double y = fmin(g.pdf_text_select_start.y, g.pdf_text_select_end.y);
+          double w = fabs(g.pdf_text_select_end.x - g.pdf_text_select_start.x);
+          double h = fabs(g.pdf_text_select_end.y - g.pdf_text_select_start.y);
+          cairo_set_source_rgba(cr, 0.20, 0.48, 0.92, 0.28);
+          cairo_rectangle(cr, x, y, w, h);
+          cairo_fill_preserve(cr);
+          cairo_set_source_rgba(cr, 0.12, 0.36, 0.82, 0.85);
+          cairo_set_line_width(cr, 1.0);
+          cairo_stroke(cr);
+        }
       cairo_restore(cr);
     }
   if (g.text_editor_active)
@@ -568,6 +581,26 @@ void app_render(int x, int y, int w, int h)
         cairo_translate(cr, 0, paper_current_page_view_top());
       draw_text_editor(cr);
       cairo_restore(cr);
+    }
+  if (g.pdf_text_notice && g.paper == PAPER_PDF)
+    {
+      const char *message = g.pdf_text_notice == 1 ?
+        "Text copied" : "No text selected";
+      cairo_text_extents_t ext;
+      cairo_select_font_face(cr, "Segoe UI", CAIRO_FONT_SLANT_NORMAL,
+                             CAIRO_FONT_WEIGHT_NORMAL);
+      cairo_set_font_size(cr, 20.0);
+      cairo_text_extents(cr, message, &ext);
+      double box_w = ext.width + 40.0, box_h = 54.0;
+      double bx = (app_view_w() - box_w) / 2.0;
+      double by = (app_view_h() - box_h) / 2.0;
+      cairo_set_source_rgba(cr, 0.12, 0.17, 0.20, 0.96);
+      cairo_rectangle(cr, bx, by, box_w, box_h);
+      cairo_fill(cr);
+      cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+      cairo_move_to(cr, bx + (box_w - ext.width) / 2.0 - ext.x_bearing,
+                    by + (box_h - ext.height) / 2.0 - ext.y_bearing);
+      cairo_show_text(cr, message);
     }
   cairo_destroy(cr);
   if (!g.dibbits)
@@ -1247,6 +1280,7 @@ static HCURSOR build_eraser_cursor(int width)
 
 static HCURSOR tool_cursor(void)
 {
+  if (g.right_erase_active) return g.cur_erase;
   if (g.tool == TOOL_NONE) return LoadCursorW(NULL, IDC_ARROW);
   if (g.middle_erasing || g.tool == TOOL_ERASER) return g.cur_erase;
   if (g.tool == TOOL_TEXT) return g.cur_text;
@@ -1885,7 +1919,7 @@ void app_update_tray_icon(void)
   if (!g.tray_added) return;
   g.nid.uFlags = NIF_ICON | NIF_TIP;
   g.nid.hIcon = (g.tool != TOOL_NONE) ? g.hicon_active : g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 9.0");
+  wcscpy(g.nid.szTip, L"Screenator 9.1");
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -2516,6 +2550,7 @@ void app_start_right_press(Pt p)
     }
   g.right_down = p;
   g.right_erase_active = 1;
+  app_update_cursor();
   tools_erase_start(p);
   return;
 }
@@ -2535,6 +2570,7 @@ static void right_button_up(Pt p)
     {
       g.right_erase_active = 0;
       tools_erase_end();
+      app_update_cursor();
       g.right_short_done = 1;
       return;
     }
@@ -2879,6 +2915,7 @@ static void pen_cancel(void)
         {
           g.right_erase_active = 0;
           tools_erase_end();
+          app_update_cursor();
         }
       g.pen_second_down = 0;
       pen_second_owner = 0;
@@ -3752,6 +3789,19 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       mouse_reset_pen_state();
       if (g.pen_seen && is_pen_mouse()) return 0;
       if (g.pen_pointer_active || g.pen_eraser_down) return 0;
+      if (g.paper == PAPER_PDF && g.tool == TOOL_NONE && !g.paper_panning &&
+          !g.pen_id && !pen_input_recent())
+        {
+          KillTimer(g.msgwin, TIMER_PDF_SELECTION);
+          g.pdf_text_notice = 0;
+          g.pdf_text_selecting = 1;
+          g.pdf_text_selection_valid = 1;
+          g.pdf_text_select_start = g.pdf_text_select_end =
+            overlay_point_page(lp, 1);
+          SetCapture(hwnd);
+          app_render_all();
+          return 0;
+        }
       /* In Paper mode, left drag pans with Cursor or Bucket selected.
        * Bucket fills and Eraser strokes are deferred so short clicks retain
        * their action; Bucket and Eraser panning requires a 200 ms hold. */
@@ -3796,6 +3846,12 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
     case WM_MOUSEMOVE:
       {
         if (ui_is_modal()) return 0;
+        if (g.pdf_text_selecting)
+          {
+            g.pdf_text_select_end = overlay_point_page(lp, 0);
+            app_render_all();
+            return 0;
+          }
         if (paper_left_pending && (wp & MK_LBUTTON))
           {
             POINT pt = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
@@ -3892,6 +3948,18 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
       }
       return 0;
     case WM_LBUTTONUP:
+      if (g.pdf_text_selecting)
+        {
+          g.pdf_text_selecting = 0;
+          g.pdf_text_select_end = overlay_point_page(lp, 0);
+          if (GetCapture() == hwnd) ReleaseCapture();
+          g.pdf_text_selection_valid = 0;
+          g.pdf_text_notice = paper_pdf_copy_text_region(
+            g.pdf_text_select_start, g.pdf_text_select_end) ? 1 : 2;
+          SetTimer(g.msgwin, TIMER_PDF_SELECTION, 1000, NULL);
+          app_render_all();
+          return 0;
+        }
       if (paper_left_panning)
         {
           paper_left_panning = 0;
@@ -4522,6 +4590,13 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       }
       return TRUE;
     case WM_TIMER:
+      if (wp == TIMER_PDF_SELECTION)
+        {
+          KillTimer(hwnd, TIMER_PDF_SELECTION);
+          g.pdf_text_notice = 0;
+          app_render_all();
+          return 0;
+        }
       if ((UINT_PTR) wp >= TIMER_COMPANION &&
           (UINT_PTR) wp < TIMER_COMPANION + COMPANION_COUNT)
         { companion_poll((int) ((UINT_PTR) wp - TIMER_COMPANION)); return 0; }
@@ -5062,7 +5137,7 @@ static void add_tray(void)
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
   g.nid.hIcon = g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 9.0");
+  wcscpy(g.nid.szTip, L"Screenator 9.1");
   if (Shell_NotifyIconW(NIM_ADD, &g.nid))
     g.tray_added = 1;
 }
@@ -6234,7 +6309,7 @@ static int run_selftest(void)
   /* Text through pango. */
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 9.0");
+  fs.text = _strdup("Screenator 9.1");
   fs.font = _strdup("Arial Bold 34");
   fs.font_size = 34;
   fs.color = color_from_hex("#202020", NULL);
@@ -6420,7 +6495,7 @@ static void demo_draw(void)
   draw_line_shape(cr, &ln, 6, color_from_hex("#1040C0", NULL));
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 9.0 for Windows");
+  fs.text = _strdup("Screenator 9.1 for Windows");
   fs.font = _strdup("Arial Bold 40");
   fs.font_size = 40;
   fs.color = color_from_hex("#B00020", NULL);

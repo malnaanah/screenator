@@ -1680,6 +1680,89 @@ static cairo_surface_t *pdf_render_page(int index, int w, int h)
   return surf;
 }
 
+/* Copy PDF text whose character boxes intersect a drag rectangle. The
+ * coordinates are in the current page's annotation surface, matching the
+ * exact letterbox geometry used by pdf_render_page(). */
+int paper_pdf_copy_text_region(Pt a, Pt b)
+{
+  if (!pdf_doc || current_type != PAPER_PDF || page_index < 0 ||
+      page_index >= page_count || pages[page_index].bg != PAPER_PDF)
+    return 0;
+
+  int pdf_index = pages[page_index].pdf_page;
+  FPDF_PAGE page = FPDF_LoadPage(pdf_doc, pdf_index);
+  if (!page) return 0;
+  FPDF_TEXTPAGE text_page = FPDFText_LoadPage(page);
+  if (!text_page) { FPDF_ClosePage(page); return 0; }
+
+  int w = paper_surface_w(), h = paper_surface_h();
+  double pw = FPDF_GetPageWidthF(page), ph = FPDF_GetPageHeightF(page);
+  double margin = 12.0, scale = 0.0;
+  double availw = w - 2.0 * margin, availh = h - 2.0 * margin;
+  if (availw < 1) availw = 1;
+  if (availh < 1) availh = 1;
+  if (pw > 0.0 && ph > 0.0)
+    {
+      scale = availw / pw;
+      if (availh / ph < scale) scale = availh / ph;
+    }
+  int dw = (int)(pw * scale + 0.5), dh = (int)(ph * scale + 0.5);
+  double dx = (w - dw) / 2.0, dy = (h - dh) / 2.0;
+  double x0 = fmin(a.x, b.x), x1 = fmax(a.x, b.x);
+  double y0 = fmin(a.y, b.y), y1 = fmax(a.y, b.y);
+  int nout = 0;
+  wchar_t *out = NULL;
+  if (scale <= 0.0 || pw <= 0.0 || ph <= 0.0) goto done;
+
+  /* PDFium extracts a bounded region as text runs and supplies the line
+   * separators. Character-by-character reconstruction can split words
+   * because glyph boxes on one line do not share the same vertical center. */
+  x0 = fmax(dx, fmin(x0, dx + dw));
+  x1 = fmax(dx, fmin(x1, dx + dw));
+  y0 = fmax(dy, fmin(y0, dy + dh));
+  y1 = fmax(dy, fmin(y1, dy + dh));
+  if (x1 <= x0 || y1 <= y0) goto done;
+  double pdf_left = (x0 - dx) / scale;
+  double pdf_right = (x1 - dx) / scale;
+  double pdf_top = ph - (y0 - dy) / scale;
+  double pdf_bottom = ph - (y1 - dy) / scale;
+  int needed = FPDFText_GetBoundedText(text_page, pdf_left, pdf_top,
+                                       pdf_right, pdf_bottom, NULL, 0);
+  if (needed <= 0) goto done;
+  out = (wchar_t *)calloc((size_t)needed + 1, sizeof(wchar_t));
+  if (!out) goto done;
+  int copied = FPDFText_GetBoundedText(
+    text_page, pdf_left, pdf_top, pdf_right, pdf_bottom,
+    (unsigned short *)out, needed + 1);
+  if (copied <= 0) goto done;
+  nout = copied;
+  if (out[nout - 1] == L'\0') nout--;
+  out[nout] = L'\0';
+  if (nout > 0 && OpenClipboard(g.overlay))
+    {
+      HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE,
+                                (SIZE_T)(nout + 1) * sizeof(wchar_t));
+      if (mem)
+        {
+          wchar_t *dst = (wchar_t *)GlobalLock(mem);
+          if (dst)
+            {
+              memcpy(dst, out, (size_t)(nout + 1) * sizeof(wchar_t));
+              GlobalUnlock(mem);
+              EmptyClipboard();
+              if (!SetClipboardData(CF_UNICODETEXT, mem)) GlobalFree(mem);
+            }
+          else GlobalFree(mem);
+        }
+      CloseClipboard();
+    }
+done:
+  free(out);
+  FPDFText_ClosePage(text_page);
+  FPDF_ClosePage(page);
+  return nout > 0;
+}
+
 static void pdf_build_pages(void)
 {
   page_count = pdf_npages < PAPER_MAX_PAGES ? pdf_npages : PAPER_MAX_PAGES;

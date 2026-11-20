@@ -1,7 +1,12 @@
-# Screenator for Windows 9.0
+# Screenator for Windows 9.1
 
 A portable 64-bit Windows release of the Screenator screen annotation tool,
 based on Screenator 6.0 by Mahmoud Alnaanah.
+
+## Windows 9.1 changes
+
+- Added drag selection and clipboard copying of text from opened PDF files.
+- Added brief PDF selection feedback and an eraser cursor while right-click erasing.
 
 ## Windows 9.0 changes
 

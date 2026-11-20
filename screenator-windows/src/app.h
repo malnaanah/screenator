@@ -35,8 +35,8 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "9.0"
-#define APP_TITLE    "Screenator 9.0"
+#define APP_VERSION  "9.1"
+#define APP_TITLE    "Screenator 9.1"
 #define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
@@ -81,6 +81,7 @@ typedef enum
 #define TIMER_PEN_POLL     9
 #define TIMER_COUNTDOWN   10
 #define TIMER_COMPANION   20
+#define TIMER_PDF_SELECTION 40
 
 /* Hotkey ids. */
 #define HK_PEN       100
@@ -346,6 +347,11 @@ typedef struct
   int paper_custom_h_mm;
   int paper_panning;
   int paper_pan_pen;
+  int pdf_text_selecting;
+  int pdf_text_selection_valid;
+  int pdf_text_notice;
+  Pt pdf_text_select_start;
+  Pt pdf_text_select_end;
   int paper_topmost;
   int paper_windowed;
   Pt paper_pan_last;
@@ -639,6 +645,7 @@ int  paper_goto_page(int index);
 void paper_resize_all(int w, int h);
 void paper_replace_current_surface(cairo_surface_t *src);
 void paper_draw_pdf_page(cairo_t *cr, int w, int h);
+int  paper_pdf_copy_text_region(Pt a, Pt b);
 void paper_draw_page_margin(cairo_t *cr, int w, int h);
 int  paper_continuous_active(void);
 void paper_draw_continuous(cairo_t *cr, int w, int h);

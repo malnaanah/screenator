@@ -1,7 +1,7 @@
-# Screenator Windows 9.0 port status
+# Screenator Windows 9.1 port status
 
 The Windows code has been updated with the applicable behaviour from the Linux
-8.0 source tree and is packaged as version 9.0.
+8.0 source tree and is packaged as version 9.1.
 
 | Linux 8.0 change | Windows status | Files / notes |
 |---|---|---|
