@@ -1953,7 +1953,11 @@ void tools_text_commit(const char *text, int cancelled)
   measure_frame_text(&g.frame);
 
   int rtl = text_is_rtl(text);
-  g.frame.frame.cy = g.text_editor_click_y;
+  /* The live preview keeps its first line at the click point. Position the
+   * committed frame so its text origin uses that same anchor. */
+  g.frame.frame.cy = g.text_editor_click_y -
+    g.frame.text_first_line_anchor + g.frame.frame.h / 2.0 +
+    g.frame.text_off_y;
   g.frame.frame.cx = g.text_editor_click_x +
                      (rtl ? -g.frame.frame.w / 2.0 : g.frame.frame.w / 2.0);
   g.frame.frame.rotation = 0;

@@ -165,6 +165,164 @@ static void layout_apply_missing_glyph_font(
   g_object_unref(font);
 }
 
+/* Keep line baselines evenly spaced as bidi runs and fallback fonts change.
+ * Without an absolute line height, adding a trailing Arabic space can alter
+ * the line's logical height and move every following line. */
+static void layout_set_fixed_line_height(
+  PangoLayout *layout, const PangoFontDescription *font)
+{
+  PangoContext *context = pango_layout_get_context(layout);
+  PangoFontMetrics *metrics = pango_context_get_metrics(context, font, NULL);
+  int height = metrics ? pango_font_metrics_get_height(metrics) : 0;
+  if (metrics) pango_font_metrics_unref(metrics);
+
+  PangoFontDescription *fallback = pango_font_description_copy(font);
+  pango_font_description_set_family(fallback, "Arial");
+  pango_font_description_set_weight(fallback, PANGO_WEIGHT_BOLD);
+  metrics = pango_context_get_metrics(context, fallback, NULL);
+  if (metrics)
+    {
+      int fallback_height = pango_font_metrics_get_height(metrics);
+      if (fallback_height > height) height = fallback_height;
+      pango_font_metrics_unref(metrics);
+    }
+  pango_font_description_free(fallback);
+  if (height <= 0) return;
+
+  PangoAttrList *current = pango_layout_get_attributes(layout);
+  PangoAttrList *attrs = current ? pango_attr_list_copy(current)
+                                 : pango_attr_list_new();
+  PangoAttribute *line_height = pango_attr_line_height_new_absolute(height);
+  line_height->start_index = 0;
+  line_height->end_index = G_MAXUINT;
+  pango_attr_list_insert(attrs, line_height);
+  pango_layout_set_attributes(layout, attrs);
+  pango_attr_list_unref(attrs);
+}
+
+static int editor_vertical_x_valid;
+static int editor_vertical_x;
+
+void text_editor_reset_vertical_navigation(void)
+{
+  editor_vertical_x_valid = 0;
+}
+
+static int utf8_position_to_utf16(const char *text, int byte_index,
+                                 int trailing)
+{
+  int bytes = (int) strlen(text);
+  if (byte_index < 0) byte_index = 0;
+  if (byte_index > bytes) byte_index = bytes;
+  int units = byte_index > 0
+    ? MultiByteToWideChar(CP_UTF8, 0, text, byte_index, NULL, 0) : 0;
+  const char *p = text + byte_index;
+  while (trailing-- > 0 && *p)
+    {
+      gunichar ch = g_utf8_get_char(p);
+      units += ch > 0xFFFF ? 2 : 1;
+      p = g_utf8_next_char(p);
+    }
+  return units;
+}
+
+int text_editor_move_caret(int key, int current_utf16, int *next_utf16)
+{
+  if (!g.textwin || !next_utf16) return 0;
+  wchar_t wbuf[2048] = L"";
+  GetWindowTextW(g.textwin, wbuf, 2048);
+  int chars = (int) wcslen(wbuf);
+  if (current_utf16 < 0) current_utf16 = 0;
+  if (current_utf16 > chars) current_utf16 = chars;
+  char utf8[8192];
+  if (!WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, utf8, sizeof(utf8),
+                           NULL, NULL))
+    return 0;
+  int byte_index = current_utf16 > 0
+    ? WideCharToMultiByte(CP_UTF8, 0, wbuf, current_utf16, NULL, 0,
+                          NULL, NULL)
+    : 0;
+
+  cairo_surface_t *surface = cairo_image_surface_create(
+    CAIRO_FORMAT_ARGB32, 1, 1);
+  cairo_t *cr = cairo_create(surface);
+  PangoLayout *layout = pango_cairo_create_layout(cr);
+  /* Use a tiny image context so navigation uses the same shaping and fallback
+   * behavior as the visible text preview. */
+  if (!layout)
+    {
+      cairo_destroy(cr);
+      cairo_surface_destroy(surface);
+      return 0;
+    }
+  PangoFontDescription *fd = pango_font_description_from_string(g.font);
+  pango_font_description_set_absolute_size(fd, font_pixel_size(g.font) *
+                                           PANGO_SCALE);
+  pango_layout_set_font_description(layout, fd);
+  pango_layout_set_text(layout, utf8, -1);
+  layout_apply_missing_glyph_font(layout, fd, utf8);
+  layout_set_fixed_line_height(layout, fd);
+  pango_layout_set_auto_dir(layout, TRUE);
+
+  int result_index = byte_index, result_trailing = 0;
+  if (key == VK_LEFT || key == VK_RIGHT)
+    {
+      editor_vertical_x_valid = 0;
+      pango_layout_move_cursor_visually(layout, TRUE, byte_index, 0,
+        key == VK_LEFT ? -1 : 1, &result_index, &result_trailing);
+      if (result_index == G_MAXINT)
+        result_index = (int) strlen(utf8);
+      else if (result_index < 0)
+        result_index = 0;
+    }
+  else if (key == VK_UP || key == VK_DOWN)
+    {
+      int line = 0, x = 0;
+      pango_layout_index_to_line_x(layout, byte_index, 0, &line, &x);
+      if (!editor_vertical_x_valid)
+        {
+          editor_vertical_x = x;
+          editor_vertical_x_valid = 1;
+        }
+      int target = line + (key == VK_UP ? -1 : 1);
+      if (target < 0 || target >= pango_layout_get_line_count(layout))
+        {
+          pango_font_description_free(fd);
+          g_object_unref(layout);
+          cairo_destroy(cr);
+          cairo_surface_destroy(surface);
+          return 1;
+        }
+      PangoLayoutIter *iter = pango_layout_get_iter(layout);
+      int y0 = 0, y1 = 0;
+      for (int i = 0; i <= target; i++)
+        {
+          pango_layout_iter_get_line_yrange(iter, &y0, &y1);
+          if (i < target && !pango_layout_iter_next_line(iter)) break;
+        }
+      pango_layout_iter_free(iter);
+      int y = y0 + (y1 - y0) / 2;
+      pango_layout_xy_to_index(layout, editor_vertical_x, y,
+                               &result_index, &result_trailing);
+    }
+  else
+    {
+      pango_font_description_free(fd);
+      g_object_unref(layout);
+      cairo_destroy(cr);
+      cairo_surface_destroy(surface);
+      return 0;
+    }
+
+  *next_utf16 = utf8_position_to_utf16(utf8, result_index,
+                                       result_trailing);
+  pango_font_description_free(fd);
+  g_object_unref(layout);
+  cairo_destroy(cr);
+  cairo_surface_destroy(surface);
+  return 1;
+}
+
 void measure_frame_text(FrameShape *shape)
 {
   if (!shape || !shape->text || !shape->text[0])
@@ -172,6 +330,7 @@ void measure_frame_text(FrameShape *shape)
       shape->frame.w = FRAME_MIN_SIZE;
       shape->frame.h = FRAME_MIN_SIZE;
       shape->text_off_x = shape->text_off_y = 0;
+      shape->text_first_line_anchor = 0;
       return;
     }
 
@@ -186,13 +345,27 @@ void measure_frame_text(FrameShape *shape)
   pango_layout_set_font_description(layout, fd);
   pango_layout_set_text(layout, shape->text, -1);
   layout_apply_missing_glyph_font(layout, fd, shape->text);
+  layout_set_fixed_line_height(layout, fd);
   pango_layout_set_auto_dir(layout, TRUE);
   pango_layout_get_pixel_extents(layout, &ink, &logical);
+  PangoFontMetrics *metrics = pango_context_get_metrics(
+    pango_layout_get_context(layout), fd, NULL);
+  double target_baseline = 0;
+  if (metrics)
+    {
+      target_baseline =
+        (pango_font_metrics_get_ascent(metrics) -
+         pango_font_metrics_get_descent(metrics)) / 2.0 / PANGO_SCALE;
+      pango_font_metrics_unref(metrics);
+    }
+  double layout_baseline =
+    pango_layout_get_baseline(layout) / (double) PANGO_SCALE;
 
   shape->frame.w = ink.width > 1 ? ink.width : 1;
   shape->frame.h = ink.height > 1 ? ink.height : 1;
   shape->text_off_x = ink.x;
   shape->text_off_y = ink.y;
+  shape->text_first_line_anchor = layout_baseline - target_baseline;
 
   pango_font_description_free(fd);
   g_object_unref(layout);
@@ -1066,6 +1239,7 @@ void draw_frame_shape(cairo_t *cr, const FrameShape *shape)
           pango_layout_set_font_description(layout, fd);
           pango_layout_set_text(layout, shape->text, -1);
           layout_apply_missing_glyph_font(layout, fd, shape->text);
+          layout_set_fixed_line_height(layout, fd);
           pango_layout_set_auto_dir(layout, TRUE);
           set_source_color(cr, shape->color);
           cairo_move_to(cr, -w / 2 - shape->text_off_x,
@@ -1426,6 +1600,7 @@ void draw_text_editor(cairo_t *cr)
   pango_layout_set_font_description(layout, fd);
   pango_layout_set_text(layout, utf8, -1);
   layout_apply_missing_glyph_font(layout, fd, utf8);
+  layout_set_fixed_line_height(layout, fd);
   pango_layout_set_auto_dir(layout, TRUE);
 
   PangoRectangle ink, logical;
@@ -1434,9 +1609,21 @@ void draw_text_editor(cairo_t *cr)
 
   int rtl = preview_is_rtl(utf8);
   double w = logical.width;
-  double h = logical.height > 0 ? logical.height : font_pixel_size(g.font);
+  PangoFontMetrics *metrics = pango_context_get_metrics(
+    pango_layout_get_context(layout), fd, NULL);
+  double target_baseline = 0;
+  if (metrics)
+    {
+      target_baseline =
+        (pango_font_metrics_get_ascent(metrics) -
+         pango_font_metrics_get_descent(metrics)) / 2.0 / PANGO_SCALE;
+      pango_font_metrics_unref(metrics);
+    }
+  double layout_baseline =
+    pango_layout_get_baseline(layout) / (double) PANGO_SCALE;
   double x = g.text_editor_click_x;
-  double y = g.text_editor_click_y - h / 2.0;
+  /* Keep the first baseline fixed as lines or bidi runs change. */
+  double y = g.text_editor_click_y + target_baseline - layout_baseline;
 
   if (rtl && w > 0) x -= w;
 
@@ -1460,7 +1647,7 @@ void draw_text_editor(cairo_t *cr)
       double cx = x + PANGO_PIXELS(strong.x);
       double cy = y + PANGO_PIXELS(strong.y);
       double ch = PANGO_PIXELS(strong.height);
-      if (ch <= 0) ch = h;
+      if (ch <= 0) ch = font_pixel_size(g.font);
 
       cairo_set_line_width(cr, 1.5);
       cairo_move_to(cr, cx, cy);

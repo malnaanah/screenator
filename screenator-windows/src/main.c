@@ -38,6 +38,9 @@ static int cursor_ctrl_c_down;
 static int tool_cursor_fill_enabled;
 static int old_vx, old_vy, old_vw, old_vh;
 static WNDPROC edit_old_proc;
+static int text_shift_anchor = -1;
+static int text_arrow_caret;
+static int text_arrow_caret_valid;
 static HHOOK g_wheel_hook;
 static HHOOK g_key_hook;
 static int paper_control_shortcuts_pending;
@@ -2335,13 +2338,69 @@ static void editor_make_font(void)
                               DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
+/* Coalesce the edit control's key-down, character and paste notifications
+ * into one overlay redraw after Windows has finished updating its contents. */
+static void text_schedule_preview(void)
+{
+  g.text_caret_visible = 1;
+  SetTimer(g.msgwin, TIMER_CARET, 500, NULL);
+  SetTimer(g.msgwin, TIMER_TEXT_REDRAW, 1, NULL);
+}
+
 static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
   switch (msg)
     {
     case WM_KEYDOWN:
+      if ((wp == VK_LEFT || wp == VK_RIGHT || wp == VK_UP ||
+           wp == VK_DOWN) && !(GetKeyState(VK_CONTROL) & 0x8000))
+        {
+          DWORD sel_start = 0, sel_end = 0;
+          SendMessageW(hwnd, EM_GETSEL, (WPARAM) &sel_start,
+                       (LPARAM) &sel_end);
+          int extend = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+          if (!extend && sel_start != sel_end &&
+              (wp == VK_LEFT || wp == VK_RIGHT))
+            {
+              int collapsed = wp == VK_LEFT ? (int) sel_start : (int) sel_end;
+              SendMessageW(hwnd, EM_SETSEL, collapsed, collapsed);
+              text_arrow_caret = collapsed;
+              text_arrow_caret_valid = 1;
+              text_shift_anchor = -1;
+              text_editor_reset_vertical_navigation();
+              text_schedule_preview();
+              return 0;
+            }
+          if (!extend) text_shift_anchor = -1;
+          int current = extend && text_arrow_caret_valid
+            ? text_arrow_caret : (int) sel_end;
+          if (extend && text_shift_anchor < 0)
+            text_shift_anchor = current;
+          int next = current;
+          if (text_editor_move_caret((int) wp, current, &next))
+            {
+              int anchor = extend ? text_shift_anchor : next;
+              SendMessageW(hwnd, EM_SETSEL, anchor, next);
+              text_arrow_caret = next;
+              text_arrow_caret_valid = 1;
+              text_schedule_preview();
+              return 0;
+            }
+        }
       if (wp == VK_RETURN)
         {
+          SHORT ctrl = GetKeyState(VK_CONTROL);
+          SHORT shift = GetKeyState(VK_SHIFT);
+          if ((ctrl | shift) & 0x8000)
+            {
+              /* Keep Return as the accept key, while Ctrl+Return and
+               * Shift+Return insert a line break into the multiline edit. */
+              SendMessageW(hwnd, EM_REPLACESEL, TRUE,
+                           (LPARAM) L"\r\n");
+              text_editor_reset_vertical_navigation();
+              text_schedule_preview();
+              return 0;
+            }
           PostMessageW(g.msgwin, WM_COMMIT_TEXT, 1, 0);
           return 0;
         }
@@ -2406,8 +2465,11 @@ static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CHAR:
       /* The key-down message already commits/cancels.  Swallow the generated
        * character too, otherwise the edit control beeps for Enter/Escape. */
-      if (wp == VK_RETURN || wp == VK_ESCAPE)
+      if (wp == VK_RETURN || wp == L'\n' || wp == VK_ESCAPE)
         return 0;
+      break;
+    case WM_KEYUP:
+      if (wp == VK_SHIFT) text_shift_anchor = -1;
       break;
     case WM_KILLFOCUS:
       dlog("edit killfocus barrel=%d scroll=%d", g.pen_barrel_down,
@@ -2427,9 +2489,19 @@ static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
   if (msg == WM_CHAR || msg == WM_KEYDOWN || msg == WM_PASTE ||
       msg == WM_CUT || msg == WM_CLEAR || msg == WM_UNDO)
     {
-      g.text_caret_visible = 1;
-      SetTimer(g.msgwin, TIMER_CARET, 500, NULL);
-      app_render_all();
+      if (msg == WM_CHAR || msg == WM_PASTE || msg == WM_CUT ||
+          msg == WM_CLEAR || msg == WM_UNDO ||
+          (msg == WM_KEYDOWN && (wp == VK_BACK || wp == VK_DELETE)))
+        {
+          DWORD sel_start = 0, sel_end = 0;
+          SendMessageW(hwnd, EM_GETSEL, (WPARAM) &sel_start,
+                       (LPARAM) &sel_end);
+          text_arrow_caret = (int) sel_end;
+          text_arrow_caret_valid = 1;
+          text_shift_anchor = -1;
+          text_editor_reset_vertical_navigation();
+        }
+      text_schedule_preview();
     }
   return r;
 }
@@ -2440,6 +2512,10 @@ void app_begin_text(Pt p)
   if (g.text_editor_active) app_end_text(0);
   dlog("begin_text %.0f,%.0f", p.x, p.y);
   g.text_editor_active = 1;
+  text_shift_anchor = -1;
+  text_arrow_caret = 0;
+  text_arrow_caret_valid = 1;
+  text_editor_reset_vertical_navigation();
   g.text_caret_visible = 1;
   g.text_editor_click_x = (int) p.x;
   g.text_editor_click_y = (int) p.y;
@@ -2458,7 +2534,8 @@ void app_begin_text(Pt p)
   g.textwin = CreateWindowExW(
     WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
     L"EDIT", L"",
-    WS_POPUP | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL,
+    WS_POPUP | WS_VISIBLE | ES_LEFT | ES_MULTILINE | ES_WANTRETURN |
+      ES_AUTOVSCROLL,
     x, y, 16, 16, NULL, NULL, g.hinst, NULL);
   if (!g.textwin)
     {
@@ -2485,6 +2562,7 @@ void app_end_text(int commit)
   if (!g.text_editor_active) return;
   dlog("end_text commit=%d", commit);
   KillTimer(g.msgwin, TIMER_CARET);
+  KillTimer(g.msgwin, TIMER_TEXT_REDRAW);
   g.text_caret_visible = 1;
   wchar_t wbuf[2048] = L"";
   if (g.textwin)
@@ -3793,6 +3871,7 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
           !g.pen_id && !pen_input_recent())
         {
           KillTimer(g.msgwin, TIMER_PDF_SELECTION);
+          KillTimer(g.msgwin, TIMER_PDF_SELECT_HIDE);
           g.pdf_text_notice = 0;
           g.pdf_text_selecting = 1;
           g.pdf_text_selection_valid = 1;
@@ -3953,10 +4032,13 @@ static LRESULT CALLBACK overlay_proc(HWND hwnd, UINT msg, WPARAM wp,
           g.pdf_text_selecting = 0;
           g.pdf_text_select_end = overlay_point_page(lp, 0);
           if (GetCapture() == hwnd) ReleaseCapture();
-          g.pdf_text_selection_valid = 0;
+          /* Let the highlight linger briefly after mouse-up so users can
+           * see the region that was copied. */
+          g.pdf_text_selection_valid = 1;
           g.pdf_text_notice = paper_pdf_copy_text_region(
             g.pdf_text_select_start, g.pdf_text_select_end) ? 1 : 2;
           SetTimer(g.msgwin, TIMER_PDF_SELECTION, 1000, NULL);
+          SetTimer(g.msgwin, TIMER_PDF_SELECT_HIDE, 100, NULL);
           app_render_all();
           return 0;
         }
@@ -4590,6 +4672,19 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
       }
       return TRUE;
     case WM_TIMER:
+      if (wp == TIMER_TEXT_REDRAW)
+        {
+          KillTimer(hwnd, TIMER_TEXT_REDRAW);
+          if (g.text_editor_active) app_render_all();
+          return 0;
+        }
+      if (wp == TIMER_PDF_SELECT_HIDE)
+        {
+          KillTimer(hwnd, TIMER_PDF_SELECT_HIDE);
+          g.pdf_text_selection_valid = 0;
+          app_render_all();
+          return 0;
+        }
       if (wp == TIMER_PDF_SELECTION)
         {
           KillTimer(hwnd, TIMER_PDF_SELECTION);

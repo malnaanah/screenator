@@ -82,6 +82,8 @@ typedef enum
 #define TIMER_COUNTDOWN   10
 #define TIMER_COMPANION   20
 #define TIMER_PDF_SELECTION 40
+#define TIMER_PDF_SELECT_HIDE 41
+#define TIMER_TEXT_REDRAW 42
 
 /* Hotkey ids. */
 #define HK_PEN       100
@@ -238,6 +240,7 @@ typedef struct
   char *font;
   double font_size;
   int text_off_x, text_off_y;
+  double text_first_line_anchor;
   Color color;
 } FrameShape;
 
@@ -545,6 +548,8 @@ void set_source_color(cairo_t *cr, Color c);
 double font_pixel_size(const char *font);
 char *font_make(const char *family, int bold, int italic, double px);
 void measure_frame_text(FrameShape *shape);
+int  text_editor_move_caret(int key, int current_utf16, int *next_utf16);
+void text_editor_reset_vertical_navigation(void);
 void draw_warm_up_text(void);
 
 void draw_paper(cairo_t *cr, Paper paper, int w, int h);
