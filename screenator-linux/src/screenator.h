@@ -753,6 +753,7 @@ typedef struct
   gboolean     text_editor_positioned; /* the editor window has been placed */
   gboolean     text_editor_sized;  /* fixed width chosen for this editor */
   gboolean     text_editor_rtl;    /* editor width was sized for RTL text */
+  guint        text_preview_refresh_id;
   guint        text_focus_id;
   guint        text_focus_attempts;
   gboolean     text_focus_committed;   /* next paper click follows focus-out commit */
@@ -765,6 +766,8 @@ typedef struct
   gboolean     text_preview_valid;
   GdkRectangle text_preview_bounds; /* last area invalidated for the preview */
   gboolean     text_caret_visible;
+  gboolean     text_caret_bounds_valid;
+  GdkRectangle text_caret_last_bounds;
   guint        text_caret_timeout;
   GtkWidget   *tray_menu;
   guint        tray_refresh_id;   /* pending tray menu rebuild */

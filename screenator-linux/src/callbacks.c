@@ -596,6 +596,7 @@ static gboolean text_preview_shape (ScreenatorData *data,
 static void text_preview_refresh (ScreenatorData *data);
 static void text_preview_clear (ScreenatorData *data);
 static gboolean text_caret_bounds (ScreenatorData *data, GdkRectangle *rect);
+static void text_caret_refresh_bounds (ScreenatorData *data);
 static gint text_editor_line_height (ScreenatorData *data);
 static void icon_grab_pointer (ScreenatorData *data);
 static void icon_ungrab_pointer (ScreenatorData *data);
@@ -1775,12 +1776,36 @@ void on_clientapp_selection_received (GtkWidget *widget,
 
 /* Root position of the editor's text layout.  The committed text is placed
  * there, so the preview uses the same point. */
+static PangoLayout *
+text_editor_pango_layout (ScreenatorData *data)
+{
+  cairo_surface_t *surface;
+  cairo_t *cr;
+  PangoLayout *layout;
+  PangoFontDescription *font;
+  const gchar *text = data->text_entry
+    ? gtk_entry_get_text (GTK_ENTRY (data->text_entry)) : "";
+
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32, 1, 1);
+  cr = cairo_create (surface);
+  layout = pango_cairo_create_layout (cr);
+  pango_layout_set_text (layout, text ? text : "", -1);
+  font = screenator_font_description_new (data->font ? data->font
+                                                       : KEY_DFLT_FONT);
+  pango_font_description_set_absolute_size (
+    font, frame_font_pixel_size (data->font ? data->font : KEY_DFLT_FONT)
+          * PANGO_SCALE);
+  pango_layout_set_font_description (layout, font);
+  pango_font_description_free (font);
+  cairo_destroy (cr);
+  cairo_surface_destroy (surface);
+
+  return layout;
+}
+
 static void
 text_editor_origin (ScreenatorData *data, gint *x, gint *y)
 {
-  GtkAllocation allocation;
-  gint layout_x = 0, layout_y = 0;
-
   *x = data->text_x;
   *y = data->text_y;
 
@@ -1792,7 +1817,7 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
    * the widened RTL entry has been allocated. */
   if (data->text_editor_rtl)
     {
-      PangoLayout *layout = gtk_entry_get_layout (GTK_ENTRY (data->text_entry));
+      PangoLayout *layout = text_editor_pango_layout (data);
 
       if (layout)
 	{
@@ -1801,26 +1826,14 @@ text_editor_origin (ScreenatorData *data, gint *x, gint *y)
 	  pango_layout_get_pixel_extents (layout, &ink, NULL);
 	  *x = data->text_x - ink.x - MAX (ink.width, 1);
 	  *y = data->text_y - text_editor_line_height (data) / 2;
+	  g_object_unref (layout);
 	  return;
 	}
     }
-
-  gtk_widget_get_allocation (data->text_entry, &allocation);
-  gtk_entry_get_layout_offsets (GTK_ENTRY (data->text_entry),
-				&layout_x, &layout_y);
-  /* Use the position the editor was asked to take, not the window manager's
-   * current position: the latter lags behind, so the first caret was drawn at
-   * the click and left a static line below the centred one. */
-  if (data->text_editor_positioned)
-    {
-      *x = data->text_editor_x + allocation.x + layout_x;
-      *y = data->text_editor_y + allocation.y + layout_y;
-    }
-  else
-    {
-      *x = data->text_x;
-      *y = data->text_y;
-    }
+  /* Keep LTR text fixed at the click.  GtkEntry scrolls its internal
+   * single-line layout as the caret moves through later lines. */
+  *x = data->text_x;
+  *y = data->text_y - text_editor_line_height (data) / 2;
 }
 
 /* Build the frame that the text in the editor will become.  The preview is
@@ -1888,13 +1901,8 @@ text_preview_refresh (ScreenatorData *data)
   if (has_new)
     screenator_invalidate_rect (data, &new_bounds);
 
-  /* The caret moves with the text. */
-  {
-    GdkRectangle caret;
-
-    if (text_caret_bounds (data, &caret))
-      screenator_invalidate_rect (data, &caret);
-  }
+  /* Clear the old caret and redraw it at the current insertion point. */
+  text_caret_refresh_bounds (data);
 
   data->text_preview_valid = has_new;
   if (has_new)
@@ -1917,63 +1925,65 @@ text_preview_clear (ScreenatorData *data)
   data->text_preview_valid = FALSE;
 }
 
-/* Area of the typing caret in the annotation window.  The editor is placed so
- * that the layout origin of its entry is the click position, so the caret
- * position from the entry's own layout can be drawn on the annotation window
- * as well.  That keeps the caret visible above drawings and the screen
- * paper, which would otherwise cover the editor window. */
+/* Area of the typing caret in the annotation window.  Use the same multiline
+ * Pango layout as the preview so the caret follows the insertion point on
+ * every line and is only as tall as that line. */
 static gboolean
 text_caret_bounds (ScreenatorData *data, GdkRectangle *rect)
 {
-  GtkEntry *entry;
   PangoLayout *layout;
-  PangoRectangle pos;
+  PangoRectangle strong;
   const gchar *text;
   gint cursor, byte_index;
   gint origin_x, origin_y;
-  gint line_height = 0;
 
   if (!data->text_entry)
     return FALSE;
 
-  entry = GTK_ENTRY (data->text_entry);
-  layout = gtk_entry_get_layout (entry);
+  layout = text_editor_pango_layout (data);
   if (!layout)
     return FALSE;
 
-  cursor = gtk_editable_get_position (GTK_EDITABLE (entry));
-  text = gtk_entry_get_text (entry);
+  cursor = gtk_editable_get_position (GTK_EDITABLE (data->text_entry));
+  text = gtk_entry_get_text (GTK_ENTRY (data->text_entry));
   if (text && cursor > 0)
     byte_index = (gint) (g_utf8_offset_to_pointer (text, cursor) - text);
   else
     byte_index = 0;
 
-  pango_layout_index_to_pos (layout, byte_index, &pos);
+  pango_layout_get_cursor_pos (layout, byte_index, &strong, NULL);
 
-  /* The layout origin is the click position for left-to-right text and the
-   * right edge of the editor for right-to-left text, exactly like the text
-   * preview.  An empty layout still has a line height, so the caret is
-   * visible before the first character is typed. */
+  /* Use the same origin as the preview. */
   text_editor_origin (data, &origin_x, &origin_y);
-  pango_layout_get_pixel_size (layout, NULL, &line_height);
-
-  if (data->text_editor_rtl)
-    {
-      /* Pango reports the position from the left of the layout.  In RTL text
-       * the insertion point grows to the left, so mirror it inside the text
-       * width: the end of the text is the left edge, not the right one. */
-      gint lw = 0;
-
-      pango_layout_get_pixel_size (layout, &lw, NULL);
-      rect->x = origin_x + lw - pos.x / PANGO_SCALE;
-    }
-  else
-    rect->x = origin_x + pos.x / PANGO_SCALE;
-  rect->y = origin_y + pos.y / PANGO_SCALE;
+  rect->x = origin_x + strong.x / PANGO_SCALE;
+  rect->y = origin_y + strong.y / PANGO_SCALE;
   rect->width = 2;
-  rect->height = MAX (MAX (pos.height / PANGO_SCALE, line_height), 1);
+  rect->height = MAX (strong.height / PANGO_SCALE, 1);
+  g_object_unref (layout);
 
   return TRUE;
+}
+
+/* Invalidate both the last caret location and the current one.  Cursor moves
+ * do not change the text preview bounds, so the old caret needs its own dirty
+ * rectangle or it remains visible as a trail. */
+static void
+text_caret_refresh_bounds (ScreenatorData *data)
+{
+  GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
+  GdkRectangle caret;
+
+  if (data->text_caret_bounds_valid && window)
+    screenator_invalidate_rect (data, &data->text_caret_last_bounds);
+
+  data->text_caret_bounds_valid = FALSE;
+  if (text_caret_bounds (data, &caret))
+    {
+      if (window)
+	screenator_invalidate_rect (data, &caret);
+      data->text_caret_last_bounds = caret;
+      data->text_caret_bounds_valid = TRUE;
+    }
 }
 
 /* Blink the caret drawn in the annotation window. */
@@ -1981,8 +1991,6 @@ static gboolean
 text_caret_blink (gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
-  GdkWindow *window;
-  GdkRectangle caret;
 
   if (!data->text_editor)
     {
@@ -1991,16 +1999,132 @@ text_caret_blink (gpointer user_data)
     }
 
   data->text_caret_visible = !data->text_caret_visible;
-
-  window = data->win ? gtk_widget_get_window (data->win) : NULL;
-  if (window && text_caret_bounds (data, &caret))
-    screenator_invalidate_rect (data, &caret);
+  text_caret_refresh_bounds (data);
 
   /* On a screen without a compositor the annotation window is shaped, so the
    * caret area has to enter and leave the shape together with the blink. */
   update_window_shape (data);
 
   return G_SOURCE_CONTINUE;
+}
+
+static void
+on_text_editor_cursor_changed (GObject *object, GParamSpec *pspec,
+			       gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  if (!data->text_editor)
+    return;
+
+  text_caret_refresh_bounds (data);
+  update_window_shape (data);
+}
+
+/* Move the insertion point to the closest horizontal position on the adjacent
+ * explicit line.  GtkEntry does not provide vertical navigation for pasted or
+ * shortcut-inserted newlines, so use the preview's Pango layout directly. */
+static gboolean
+text_editor_move_vertical (ScreenatorData *data, gint line_delta,
+			   gboolean extend_selection)
+{
+  GtkEditable *editable = GTK_EDITABLE (data->text_entry);
+  const gchar *text = gtk_entry_get_text (GTK_ENTRY (data->text_entry));
+  PangoLayout *layout = text_editor_pango_layout (data);
+  gint cursor, byte_index, line_index, x_pos;
+  gint target_index, trailing = 0, target_position;
+  gint selection_bound;
+  PangoLayoutLine *target_line;
+
+  if (!layout)
+    return FALSE;
+
+  cursor = gtk_editable_get_position (editable);
+  byte_index = (gint) (g_utf8_offset_to_pointer (text, cursor) - text);
+  pango_layout_index_to_line_x (layout, byte_index, FALSE,
+				&line_index, &x_pos);
+  (void) x_pos;
+  line_index += line_delta;
+  if (line_index < 0 || line_index >= pango_layout_get_line_count (layout))
+    {
+      g_object_unref (layout);
+      return TRUE;
+    }
+
+  target_line = pango_layout_get_line_readonly (layout, line_index);
+  /* Even when x falls outside a short line, Pango returns its nearest edge. */
+  pango_layout_line_x_to_index (target_line, x_pos,
+				&target_index, &trailing);
+
+  target_position = (gint) g_utf8_pointer_to_offset (text,
+							     text + target_index)
+    + trailing;
+  target_position = CLAMP (target_position, 0,
+				 (gint) g_utf8_strlen (text, -1));
+
+  if (extend_selection)
+    {
+      g_object_get (editable, "selection-bound", &selection_bound, NULL);
+      gtk_editable_select_region (editable, selection_bound, target_position);
+    }
+  else
+    gtk_editable_set_position (editable, target_position);
+
+  g_object_unref (layout);
+  return TRUE;
+}
+
+static gboolean
+text_editor_move_line_edge (ScreenatorData *data, gboolean to_end,
+			    gboolean extend_selection)
+{
+  GtkEditable *editable = GTK_EDITABLE (data->text_entry);
+  const gchar *text = gtk_entry_get_text (GTK_ENTRY (data->text_entry));
+  PangoLayout *layout = text_editor_pango_layout (data);
+  gint cursor, byte_index, line_index, x_pos;
+  gint target_byte, target_position, selection_bound;
+  PangoLayoutLine *line;
+
+  if (!layout)
+    return FALSE;
+
+  cursor = gtk_editable_get_position (editable);
+  byte_index = (gint) (g_utf8_offset_to_pointer (text, cursor) - text);
+  pango_layout_index_to_line_x (layout, byte_index, FALSE,
+				&line_index, &x_pos);
+
+  (void) x_pos;
+  line = pango_layout_get_line_readonly (layout, line_index);
+  if (!line)
+    {
+      g_object_unref (layout);
+      return FALSE;
+    }
+
+  target_byte = line->start_index;
+  if (to_end)
+    {
+      target_byte += line->length;
+      if (target_byte > line->start_index && text[target_byte - 1] == '\n')
+	{
+	  target_byte--;
+	  if (target_byte > line->start_index && text[target_byte - 1] == '\r')
+	    target_byte--;
+	}
+    }
+
+  target_position = (gint) g_utf8_pointer_to_offset (text,
+							     text + target_byte);
+  if (extend_selection)
+    {
+      g_object_get (editable, "selection-bound", &selection_bound, NULL);
+      gtk_editable_select_region (editable, selection_bound, target_position);
+    }
+  else
+    gtk_editable_set_position (editable, target_position);
+
+  g_object_unref (layout);
+  return TRUE;
 }
 
 /* Add the pixels of the typing preview and its caret to the annotation
@@ -2243,6 +2367,26 @@ size_text_editor (ScreenatorData *data, PangoDirection direction)
 }
 
 static void
+text_preview_refresh_idle (gpointer user_data)
+{
+  ScreenatorData *data = (ScreenatorData *) user_data;
+
+  data->text_preview_refresh_id = 0;
+  if (data->text_editor && data->text_entry)
+    text_preview_refresh (data);
+
+  return G_SOURCE_REMOVE;
+}
+
+static void
+queue_text_preview_refresh (ScreenatorData *data)
+{
+  if (!data->text_preview_refresh_id)
+    data->text_preview_refresh_id =
+      g_idle_add (text_preview_refresh_idle, data);
+}
+
+static void
 on_text_editor_changed (GtkEditable *editable, gpointer user_data)
 {
   ScreenatorData *data = (ScreenatorData *) user_data;
@@ -2256,7 +2400,7 @@ on_text_editor_changed (GtkEditable *editable, gpointer user_data)
   if (!text || !*text)
     {
       /* Remove the preview of the text that was just deleted. */
-      text_preview_refresh (data);
+      queue_text_preview_refresh (data);
       return;
     }
 
@@ -2270,7 +2414,10 @@ G_GNUC_END_IGNORE_DEPRECATIONS
       (direction == PANGO_DIRECTION_RTL) != data->text_editor_rtl)
     size_text_editor (data, direction);
 
-  text_preview_refresh (data);
+  /* Let GTK apply the entry's new width and layout before reading its Pango
+   * layout for the overlay preview.  This matters for multi-character paste,
+   * where changed is emitted before the resized entry has been allocated. */
+  queue_text_preview_refresh (data);
 }
 
 /* Turn a committed string into an editable text frame.  The click position is
@@ -2344,15 +2491,9 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
       data->text_caret_timeout = 0;
     }
 
-  if (data->text_caret_visible)
-    {
-      GdkRectangle caret;
-      GdkWindow *window = data->win ? gtk_widget_get_window (data->win) : NULL;
-
-      data->text_caret_visible = FALSE;
-      if (window && text_caret_bounds (data, &caret))
-	screenator_invalidate_rect (data, &caret);
-    }
+  data->text_caret_visible = FALSE;
+  text_caret_refresh_bounds (data);
+  data->text_caret_bounds_valid = FALSE;
 
   if (data->text_focus_id)
     {
@@ -2360,29 +2501,31 @@ close_text_editor_ex (ScreenatorData *data, gboolean commit, gboolean reacquire)
       data->text_focus_id = 0;
     }
 
+  if (commit && entry)
+    {
+      ScreenatorFrameShape preview;
+
+      text = g_strdup (gtk_entry_get_text (GTK_ENTRY (entry)));
+
+      /* Recover the layout origin from the exact preview shape.  This keeps
+       * both the LTR vertical inset and the RTL right-edge alignment when the
+       * editor state is cleared below. */
+      if (text_preview_shape (data, &preview))
+	{
+	  x = (gint) round (preview.frame.cx - preview.frame.w / 2.0
+			    - preview.text_off_x);
+	  y = (gint) round (preview.frame.cy - preview.frame.h / 2.0
+			    - preview.text_off_y);
+	  frame_shape_clear (&preview);
+	}
+      paper_window_to_root (data, &x, &y);
+    }
+
+  /* Keep the editor alive until its preview geometry has been captured. */
   data->text_editor = NULL;
   data->text_entry = NULL;
   data->text_editor_active = FALSE;
   data->text_device = NULL;
-
-  if (commit && entry)
-    {
-      GtkAllocation allocation;
-      gint layout_x = 0, layout_y = 0;
-      GdkWindow *window;
-
-      text = g_strdup (gtk_entry_get_text (GTK_ENTRY (entry)));
-
-      /* Line the committed text up with the previewed text. */
-      gtk_widget_get_allocation (entry, &allocation);
-      gtk_entry_get_layout_offsets (GTK_ENTRY (entry), &layout_x, &layout_y);
-      window = gtk_widget_get_window (entry);
-      if (window)
-	gdk_window_get_root_coords (window,
-				    allocation.x + layout_x,
-				    allocation.y + layout_y,
-				    &x, &y);
-    }
 
   invalidate_text_area (data, x, y);
 
@@ -2449,11 +2592,41 @@ static gboolean
 on_text_editor_key_press (GtkWidget *widget, GdkEventKey *event,
 			  gpointer user_data)
 {
+  ScreenatorData *data = (ScreenatorData *) user_data;
+  GtkEditable *editable = GTK_EDITABLE (widget);
+
   if (event->keyval == GDK_KEY_Escape)
     {
       close_text_editor ((ScreenatorData *) user_data, FALSE);
       return TRUE;
     }
+
+  if ((event->keyval == GDK_KEY_Return ||
+       event->keyval == GDK_KEY_KP_Enter) &&
+      (event->state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK)))
+    {
+      gint position;
+
+      /* Match normal typing: replace any selected text before inserting the
+       * line break at the caret.  Plain Enter remains the accept action. */
+      gtk_editable_delete_selection (editable);
+      position = gtk_editable_get_position (editable);
+      gtk_editable_insert_text (editable, "\n", 1, &position);
+      gtk_editable_set_position (editable, position);
+      return TRUE;
+    }
+
+  if ((event->keyval == GDK_KEY_Up || event->keyval == GDK_KEY_Down) &&
+      !(event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_META_MASK)))
+    return text_editor_move_vertical (data,
+				      event->keyval == GDK_KEY_Up ? -1 : 1,
+				      (event->state & GDK_SHIFT_MASK) != 0);
+
+  if ((event->keyval == GDK_KEY_Home || event->keyval == GDK_KEY_End) &&
+      !(event->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_META_MASK)))
+    return text_editor_move_line_edge (data,
+				       event->keyval == GDK_KEY_End,
+				       (event->state & GDK_SHIFT_MASK) != 0);
 
   return FALSE;
 }
@@ -2479,10 +2652,16 @@ on_text_editor_destroy (GtkWidget *widget, gpointer user_data)
 	  data->text_caret_timeout = 0;
 	}
       data->text_caret_visible = FALSE;
+      data->text_caret_bounds_valid = FALSE;
       if (data->text_focus_id)
 	{
 	  g_source_remove (data->text_focus_id);
 	  data->text_focus_id = 0;
+	}
+      if (data->text_preview_refresh_id)
+	{
+	  g_source_remove (data->text_preview_refresh_id);
+	  data->text_preview_refresh_id = 0;
 	}
       data->text_editor = NULL;
       data->text_entry = NULL;
@@ -2606,6 +2785,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
       data->text_focus_commit_id = 0;
     }
   data->text_preview_valid = FALSE;
+  data->text_caret_bounds_valid = FALSE;
   memset (&data->text_preview_bounds, 0, sizeof (data->text_preview_bounds));
 
   /* The caret is drawn on the annotation window and blinks like a normal
@@ -2680,6 +2860,10 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
 
   g_signal_connect (entry, "changed",
 		    G_CALLBACK (on_text_editor_changed), data);
+  g_signal_connect (entry, "notify::cursor-position",
+		    G_CALLBACK (on_text_editor_cursor_changed), data);
+  g_signal_connect (entry, "notify::selection-bound",
+		    G_CALLBACK (on_text_editor_cursor_changed), data);
   g_signal_connect (entry, "activate",
 		    G_CALLBACK (on_text_editor_activate), data);
   g_signal_connect (entry, "key-press-event",
@@ -2726,6 +2910,7 @@ show_text_editor (ScreenatorData *data, GdkDevice *device, gint x, gint y)
   invalidate_text_area (data, x, y);
 
   data->text_caret_visible = TRUE;
+  text_caret_refresh_bounds (data);
   data->text_caret_timeout = g_timeout_add (500, text_caret_blink, data);
 
   /* Draw the caret right away, before the first blink. */
@@ -7018,7 +7203,7 @@ gboolean on_buttonrelease (GtkWidget *win,
 	gboolean copied = paper_pdf_copy_text_region (data);
 	show_text_copy_toast (data, copied);
 	data->pdf_text_selection_timeout = g_timeout_add (
-	  200, pdf_text_selection_timeout, data);
+	  100, pdf_text_selection_timeout, data);
       }
       gtk_widget_queue_draw (win);
       return TRUE;
