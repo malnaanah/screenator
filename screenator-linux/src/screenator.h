@@ -849,6 +849,15 @@ typedef struct
    * tip pans the paper instead of drawing. */
   gboolean     paper_hand_tool;
 
+  /* Drag selection over a PDF page. Coordinates are in the paper canvas. */
+  gboolean     pdf_text_selecting;
+  gboolean     pdf_text_selection_valid;
+  guint        pdf_text_selection_timeout;
+  gdouble      pdf_text_select_x0;
+  gdouble      pdf_text_select_y0;
+  gdouble      pdf_text_select_x1;
+  gdouble      pdf_text_select_y1;
+
   /* Middle-button / stylus-pen panning in Paper Drawing. */
   gboolean     paper_panning;
   GdkDevice   *paper_pan_device;

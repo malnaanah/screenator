@@ -709,7 +709,7 @@ read_pen_tool (GKeyFile *key_file)
 }
 
 
-#define PAPER_TOOLBAR_ITEMS_VERSION 7
+#define PAPER_TOOLBAR_ITEMS_VERSION 9
 
 /* Older saved toolbars predate Delete Page, Show Hints, Go to Page and the
  * current-page indicator.  Add them once, then record the migration version
@@ -799,7 +799,7 @@ toolbar_items_migrate (const gchar *items, gint version)
     {
       gchar *id = g_strstrip (tokens[i]);
 
-      if (!*id)
+      if (!*id || g_strcmp0 (id, "select_text") == 0)
 	continue;
 
       if (out->len > 0)

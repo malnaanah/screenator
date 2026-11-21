@@ -1168,6 +1168,23 @@ gboolean on_expose (GtkWidget *widget,
 	}
     }
 
+  if (data->pdf_text_selection_valid && data->paper == SCREENATOR_PAPER_PDF)
+    {
+      gdouble x = MIN (data->pdf_text_select_x0, data->pdf_text_select_x1);
+      gdouble y = MIN (data->pdf_text_select_y0, data->pdf_text_select_y1);
+      gdouble w = fabs (data->pdf_text_select_x1 - data->pdf_text_select_x0);
+      gdouble h = fabs (data->pdf_text_select_y1 - data->pdf_text_select_y0);
+
+      cairo_save (cr);
+      cairo_set_source_rgba (cr, 0.20, 0.48, 0.92, 0.28);
+      cairo_rectangle (cr, x, y, w, h);
+      cairo_fill_preserve (cr);
+      cairo_set_source_rgba (cr, 0.12, 0.36, 0.82, 0.85);
+      cairo_set_line_width (cr, 1.0);
+      cairo_stroke (cr);
+      cairo_restore (cr);
+    }
+
   if (data->paper_window_mode && data->win == data->paper_win)
     cairo_restore (cr);
 
@@ -5116,6 +5133,13 @@ screenator_activate_cursor_state (ScreenatorData *data)
     release_grab (data, NULL);
 
   data->paper_hand_tool = FALSE;
+  data->pdf_text_selecting = FALSE;
+  data->pdf_text_selection_valid = FALSE;
+  if (data->pdf_text_selection_timeout)
+    {
+      g_source_remove (data->pdf_text_selection_timeout);
+      data->pdf_text_selection_timeout = 0;
+    }
   data->forced_context = NULL;
   data->pen_tool = 0;
   screenator_refresh_visibility_shortcut (data);
@@ -5342,6 +5366,23 @@ gboolean on_buttonpress (GtkWidget *win,
     return TRUE;
 
   paper_window_transform_event (data, &ev->x, &ev->y);
+
+  if (data->paper == SCREENATOR_PAPER_PDF &&
+      data->pen_tool == 0 && !data->forced_context &&
+      !data->paper_hand_tool && ev->button == 1)
+    {
+      if (data->pdf_text_selection_timeout)
+	{
+	  g_source_remove (data->pdf_text_selection_timeout);
+	  data->pdf_text_selection_timeout = 0;
+	}
+      data->pdf_text_selecting = TRUE;
+      data->pdf_text_selection_valid = TRUE;
+      data->pdf_text_select_x0 = data->pdf_text_select_x1 = ev->x;
+      data->pdf_text_select_y0 = data->pdf_text_select_y1 = ev->y;
+      gtk_widget_queue_draw (win);
+      return TRUE;
+    }
   has_pressure = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_PRESSURE,
 				     &pressure);
   has_distance = gdk_event_get_axis ((GdkEvent *) ev, GDK_AXIS_DISTANCE,
@@ -6193,6 +6234,14 @@ gboolean on_motion (GtkWidget *win,
 
   paper_window_transform_event (data, &ev->x, &ev->y);
 
+  if (data->pdf_text_selecting)
+    {
+      data->pdf_text_select_x1 = ev->x;
+      data->pdf_text_select_y1 = ev->y;
+      gtk_widget_queue_draw (win);
+      return TRUE;
+    }
+
   /* get the data for this device */
   ScreenatorDeviceData *devdata = g_hash_table_lookup(data->devdatatable, ev->device);
   gboolean stylus = event_source_is_stylus ((GdkEvent *) ev);
@@ -6565,6 +6614,385 @@ gboolean on_motion (GtkWidget *win,
 }
 
 
+static gboolean
+copy_text_toast_timeout (gpointer user_data)
+{
+  GtkWidget *window = GTK_WIDGET (user_data);
+
+  gtk_widget_destroy (window);
+  g_object_unref (window);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+pdf_text_selection_timeout (gpointer user_data)
+{
+  ScreenatorData *data = user_data;
+
+  data->pdf_text_selection_timeout = 0;
+  data->pdf_text_selection_valid = FALSE;
+  if (data->win)
+    gtk_widget_queue_draw (data->win);
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean
+copy_text_toast_draw (GtkWidget *widget, cairo_t *cr, gpointer user_data)
+{
+  GtkAllocation allocation;
+  gdouble radius = 7.0;
+
+  (void) user_data;
+
+  gtk_widget_get_allocation (widget, &allocation);
+  cairo_save (cr);
+  cairo_new_path (cr);
+  cairo_move_to (cr, radius, 0);
+  cairo_line_to (cr, allocation.width - radius, 0);
+  cairo_arc (cr, allocation.width - radius, radius, radius,
+	     -G_PI_2, 0);
+  cairo_line_to (cr, allocation.width, allocation.height - radius);
+  cairo_arc (cr, allocation.width - radius, allocation.height - radius,
+	     radius, 0, G_PI_2);
+  cairo_line_to (cr, radius, allocation.height);
+  cairo_arc (cr, radius, allocation.height - radius, radius,
+	     G_PI_2, G_PI);
+  cairo_line_to (cr, 0, radius);
+  cairo_arc (cr, radius, radius, radius, G_PI, 3 * G_PI_2);
+  cairo_close_path (cr);
+  cairo_set_source_rgba (cr, 0.12, 0.17, 0.20, 0.96);
+  cairo_fill (cr);
+  cairo_restore (cr);
+
+  return FALSE;
+}
+
+static void
+show_text_copy_toast (ScreenatorData *data, gboolean copied)
+{
+  GtkWidget *window = gtk_window_new (GTK_WINDOW_POPUP);
+  GtkWidget *label = gtk_label_new (NULL);
+  const gchar *message = copied ? "Text copied" : "No text selected";
+  GtkRequisition req;
+  GdkScreen *screen = data->screen ? data->screen : gdk_screen_get_default ();
+  GdkRectangle area;
+  cairo_region_t *empty;
+  gint monitor = screen ? gdk_screen_get_primary_monitor (screen) : 0;
+
+  gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+  gtk_window_set_resizable (GTK_WINDOW (window), FALSE);
+  gtk_window_set_skip_taskbar_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_skip_pager_hint (GTK_WINDOW (window), TRUE);
+  gtk_window_set_accept_focus (GTK_WINDOW (window), FALSE);
+  gtk_window_set_focus_on_map (GTK_WINDOW (window), FALSE);
+  gtk_window_set_keep_above (GTK_WINDOW (window), TRUE);
+  gtk_window_set_type_hint (GTK_WINDOW (window), GDK_WINDOW_TYPE_HINT_NOTIFICATION);
+  gtk_container_set_border_width (GTK_CONTAINER (window), 10);
+  gtk_widget_set_app_paintable (window, TRUE);
+  gchar *markup = g_markup_printf_escaped (
+    "<span foreground=\"#ffffff\" size=\"large\">%s</span>", message);
+  gtk_label_set_markup (GTK_LABEL (label), markup);
+  g_free (markup);
+  gtk_widget_set_margin_start (label, 10);
+  gtk_widget_set_margin_end (label, 10);
+  gtk_widget_set_margin_top (label, 6);
+  gtk_widget_set_margin_bottom (label, 6);
+  gtk_container_add (GTK_CONTAINER (window), label);
+  g_signal_connect (window, "draw", G_CALLBACK (copy_text_toast_draw), NULL);
+
+  if (screen && gdk_screen_is_composited (screen))
+    {
+      GdkVisual *visual = gdk_screen_get_rgba_visual (screen);
+      if (visual)
+	gtk_widget_set_visual (window, visual);
+    }
+
+  if (screen)
+    {
+      if (monitor < 0)
+	monitor = 0;
+      gdk_screen_get_monitor_workarea (screen, monitor, &area);
+      gtk_widget_get_preferred_size (window, NULL, &req);
+      gtk_window_move (GTK_WINDOW (window),
+		       area.x + (area.width - req.width) / 2,
+		       area.y + (area.height - req.height) / 2);
+    }
+
+  gtk_widget_realize (window);
+  empty = cairo_region_create ();
+  gdk_window_input_shape_combine_region (gtk_widget_get_window (window),
+					 empty, 0, 0);
+  cairo_region_destroy (empty);
+  gtk_widget_show_all (window);
+  g_timeout_add (1000, copy_text_toast_timeout, g_object_ref (window));
+}
+
+static gboolean
+pdf_text_line_is_rtl (const gchar *line)
+{
+  const gchar *p;
+  guint rtl_count = 0, ltr_count = 0;
+
+  for (p = line; *p; p = g_utf8_next_char (p))
+    {
+      gunichar codepoint = g_utf8_get_char (p);
+      if ((codepoint >= 0x0590 && codepoint <= 0x08FF) ||
+	  (codepoint >= 0xFB1D && codepoint <= 0xFDFF) ||
+	  (codepoint >= 0xFE70 && codepoint <= 0xFEFF) ||
+	  (codepoint >= 0x1EE00 && codepoint <= 0x1EEFF))
+	rtl_count++;
+      else if ((codepoint >= 'A' && codepoint <= 'Z') ||
+	       (codepoint >= 'a' && codepoint <= 'z') ||
+	       (codepoint >= 0x00C0 && codepoint <= 0x02AF) ||
+	       (codepoint >= 0x0370 && codepoint <= 0x052F))
+	ltr_count++;
+    }
+
+  return rtl_count > 0 && ltr_count == 0;
+}
+
+/* Poppler can return Arabic words in visual left-to-right order. Restore the
+ * logical word order while leaving each word's codepoints untouched. */
+static gchar *
+pdf_text_restore_rtl_word_order (const gchar *text)
+{
+  gchar **lines = g_strsplit (text, "\n", -1);
+  GString *ordered = g_string_new (NULL);
+  guint i;
+
+  for (i = 0; lines[i]; i++)
+    {
+      gchar **words;
+      guint word_count, j;
+
+      if (i > 0)
+	g_string_append_c (ordered, '\n');
+	if (!pdf_text_line_is_rtl (lines[i]))
+	{
+	  g_string_append (ordered, lines[i]);
+	  continue;
+	}
+
+      words = g_strsplit_set (lines[i], " \t\r", -1);
+      word_count = g_strv_length (words);
+      for (j = word_count; j > 0; j--)
+	{
+	  if (j < word_count)
+	    g_string_append_c (ordered, ' ');
+	  g_string_append (ordered, words[j - 1]);
+	}
+      g_strfreev (words);
+    }
+
+  g_strfreev (lines);
+  return g_string_free (ordered, FALSE);
+}
+
+static gboolean
+pdf_text_glyph_intersects (const PopplerRectangle *glyph,
+			   const PopplerRectangle *area)
+{
+  return MAX (glyph->x1, glyph->x2) > area->x1 &&
+	MIN (glyph->x1, glyph->x2) < area->x2 &&
+	MAX (glyph->y1, glyph->y2) > area->y1 &&
+	MIN (glyph->y1, glyph->y2) < area->y2;
+}
+
+static void
+pdf_text_flush_selected_word (GPtrArray *words, GString **word)
+{
+  if ((*word)->len > 0)
+    {
+      g_ptr_array_add (words, g_string_free (*word, FALSE));
+      *word = g_string_new (NULL);
+    }
+}
+
+static void
+pdf_text_flush_selected_line (GString *output, GPtrArray *words)
+{
+  guint i;
+
+  if (words->len == 0)
+    return;
+  if (output->len > 0)
+    g_string_append_c (output, '\n');
+  for (i = 0; i < words->len; i++)
+    {
+      if (i > 0)
+	g_string_append_c (output, ' ');
+      g_string_append (output, g_ptr_array_index (words, i));
+    }
+  g_ptr_array_set_size (words, 0);
+}
+
+static gchar *
+pdf_text_extract_intersecting_glyphs (PopplerPage *page,
+				      PopplerRectangle *area)
+{
+  PopplerRectangle *layout = NULL;
+  guint n_layout = 0, layout_index = 0;
+  gchar *page_text, *result;
+  const gchar *cursor;
+  GPtrArray *words;
+  GString *word, *ordered;
+
+  if (!poppler_page_get_text_layout (page, &layout, &n_layout))
+    return NULL;
+  page_text = poppler_page_get_text (page);
+  if (!page_text)
+    {
+      g_free (layout);
+      return NULL;
+    }
+
+  words = g_ptr_array_new_with_free_func (g_free);
+  word = g_string_new (NULL);
+  ordered = g_string_new (NULL);
+  for (cursor = page_text; *cursor; cursor = g_utf8_next_char (cursor))
+    {
+      gunichar codepoint = g_utf8_get_char (cursor);
+      const gchar *next = g_utf8_next_char (cursor);
+
+      /* Poppler's layout omits Unicode formatting marks such as RLE/PDF. */
+      if (g_unichar_type (codepoint) == G_UNICODE_FORMAT)
+	continue;
+      if (layout_index >= n_layout)
+	break;
+
+      if (codepoint == '\n' || codepoint == '\r')
+	{
+	  pdf_text_flush_selected_word (words, &word);
+	  pdf_text_flush_selected_line (ordered, words);
+	  layout_index++;
+	  continue;
+	}
+
+      if (g_unichar_isspace (codepoint))
+	{
+	  pdf_text_flush_selected_word (words, &word);
+	  layout_index++;
+	  continue;
+	}
+
+      if (pdf_text_glyph_intersects (&layout[layout_index], area))
+	g_string_append_len (word, cursor, next - cursor);
+      layout_index++;
+    }
+
+  pdf_text_flush_selected_word (words, &word);
+  pdf_text_flush_selected_line (ordered, words);
+  g_string_free (word, TRUE);
+  g_ptr_array_free (words, TRUE);
+  result = g_string_free (ordered, FALSE);
+
+  g_free (layout);
+  g_free (page_text);
+  return result;
+}
+
+static gboolean
+paper_pdf_copy_text_region (ScreenatorData *data)
+{
+#ifdef HAVE_POPPLER_GLIB
+  ScreenatorPaperDocument *doc = paper_active_document (data);
+  gint page_index;
+  gint page_top = 0;
+  gdouble x0, y0, x1, y1;
+  gdouble pdf_width, pdf_height;
+  ScreenatorPaperPage *paper_page;
+  PopplerPage *page;
+  PopplerRectangle area;
+  gchar *text = NULL;
+  gboolean copied;
+
+  if (!doc || !doc->pdf_document || !doc->pages || doc->pages->len == 0)
+    return FALSE;
+
+  x0 = MIN (data->pdf_text_select_x0, data->pdf_text_select_x1);
+  x1 = MAX (data->pdf_text_select_x0, data->pdf_text_select_x1);
+  y0 = MIN (data->pdf_text_select_y0, data->pdf_text_select_y1);
+  y1 = MAX (data->pdf_text_select_y0, data->pdf_text_select_y1);
+
+  if (paper_continuous (data))
+    {
+      gint content_y = doc->pdf_scroll_y + (gint) ((y0 + y1) / 2.0);
+      page_index = paper_pdf_page_at (doc, content_y);
+      if (page_index < 0 || page_index >= (gint) doc->pages->len)
+	return FALSE;
+      page_top = g_array_index (doc->pdf_page_tops, gint, page_index);
+      y0 += doc->pdf_scroll_y - page_top;
+      y1 += doc->pdf_scroll_y - page_top;
+    }
+  else
+    {
+      gint origin_x, origin_y;
+
+      page_index = (gint) doc->page;
+      if (page_index >= 0 && page_index < (gint) doc->pages->len)
+	{
+	  ScreenatorPaperPage *visible_page = &g_array_index (
+	    doc->pages, ScreenatorPaperPage, page_index);
+	  paper_page_origin (data, visible_page, &origin_x, &origin_y);
+	  x0 += visible_page->view_x - origin_x;
+	  x1 += visible_page->view_x - origin_x;
+	  y0 += visible_page->view_y - origin_y;
+	  y1 += visible_page->view_y - origin_y;
+	}
+    }
+
+  if (page_index < 0 || page_index >= (gint) doc->pages->len)
+    return FALSE;
+  paper_page = &g_array_index (doc->pages, ScreenatorPaperPage, page_index);
+  if (paper_page->canvas_width <= 0 || paper_page->canvas_height <= 0)
+    return FALSE;
+
+  x0 = CLAMP (x0, 0.0, paper_page->canvas_width);
+  x1 = CLAMP (x1, 0.0, paper_page->canvas_width);
+  y0 = CLAMP (y0, 0.0, paper_page->canvas_height);
+  y1 = CLAMP (y1, 0.0, paper_page->canvas_height);
+  page = poppler_document_get_page ((PopplerDocument *) doc->pdf_document,
+				    page_index);
+  if (!page)
+    return FALSE;
+  poppler_page_get_size (page, &pdf_width, &pdf_height);
+  if (pdf_width <= 0.0 || pdf_height <= 0.0)
+    {
+      g_object_unref (page);
+      return FALSE;
+    }
+  area.x1 = x0 * pdf_width / paper_page->canvas_width;
+  area.x2 = x1 * pdf_width / paper_page->canvas_width;
+  /* Poppler's page selection rectangle uses the same top-left page space as
+   * the rendered page here.  Keep the drag's top and bottom in that order;
+   * flipping against the page height selects the mirrored area vertically. */
+  area.y1 = y0 * pdf_height / paper_page->canvas_height;
+  area.y2 = y1 * pdf_height / paper_page->canvas_height;
+  /* Filter the page's per-character layout ourselves; Poppler's selection
+   * API can expand a small rectangle to neighboring text lines. */
+  text = pdf_text_extract_intersecting_glyphs (page, &area);
+  if (text && *text)
+    {
+      gchar *ordered_text = pdf_text_restore_rtl_word_order (text);
+      g_free (text);
+      text = ordered_text;
+    }
+  copied = text && *text;
+  if (text && *text)
+    {
+      GtkClipboard *clipboard = gtk_clipboard_get (GDK_SELECTION_CLIPBOARD);
+      gtk_clipboard_set_text (clipboard, text, -1);
+      gtk_clipboard_store (clipboard);
+    }
+  g_free (text);
+  g_object_unref (page);
+  return copied;
+#else
+  (void) data;
+  return FALSE;
+#endif
+}
+
 gboolean on_buttonrelease (GtkWidget *win, 
 			   GdkEventButton *ev, 
 			   gpointer user_data)
@@ -6580,6 +7008,21 @@ gboolean on_buttonrelease (GtkWidget *win,
   raw_x = ev->x;
   raw_y = ev->y;
   paper_window_transform_event (data, &ev->x, &ev->y);
+
+  if (data->pdf_text_selecting)
+    {
+      data->pdf_text_selecting = FALSE;
+      data->pdf_text_select_x1 = ev->x;
+      data->pdf_text_select_y1 = ev->y;
+      {
+	gboolean copied = paper_pdf_copy_text_region (data);
+	show_text_copy_toast (data, copied);
+	data->pdf_text_selection_timeout = g_timeout_add (
+	  200, pdf_text_selection_timeout, data);
+      }
+      gtk_widget_queue_draw (win);
+      return TRUE;
+    }
 
   if (data->paper != SCREENATOR_PAPER_NONE && data->paper_eraser_active &&
       ev->button == 3 && data->paper_eraser_device != ev->device)
@@ -16654,6 +17097,10 @@ static void append_icon_tool_items (ScreenatorData *data, GtkWidget *menu)
   gtk_menu_shell_append (GTK_MENU_SHELL (menu), item);
   g_signal_connect (item, "activate", G_CALLBACK (on_icon_text), data);
 
+  if (data->paper == SCREENATOR_PAPER_PDF)
+    {
+    }
+
   item = gtk_image_menu_item_new_with_label ("Eraser");
   gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (item),
                                  gtk_image_new_from_pixbuf (
@@ -17498,7 +17945,6 @@ static const QuickTool quick_tools[] =
   };
 
 #define QUICK_COLS      5
-#define QUICK_ROWS      3
 #define QUICK_CELL_W    108
 #define QUICK_CELL_H    100
 #define QUICK_MARGIN    12
@@ -17509,6 +17955,8 @@ typedef struct
   ScreenatorData *data;
   GtkWidget      *window;
   GtkWidget      *cells[G_N_ELEMENTS (quick_tools)];
+  guint           tool_indices[G_N_ELEMENTS (quick_tools)];
+  guint           count;
   guint           selected;
   gboolean        was_grabbed;
   gboolean        finished;
@@ -17597,13 +18045,13 @@ quick_menu_activate (QuickMenu *menu, guint index)
   gint shape_type;
   gboolean was_grabbed;
 
-  if (menu->finished || index >= G_N_ELEMENTS (quick_tools))
+  if (menu->finished || index >= menu->count)
     return;
 
   menu->finished = TRUE;
   data = menu->data;
-  pen_tool = quick_tools[index].pen_tool;
-  shape_type = quick_tools[index].shape_type;
+  pen_tool = quick_tools[menu->tool_indices[index]].pen_tool;
+  shape_type = quick_tools[menu->tool_indices[index]].shape_type;
   was_grabbed = menu->was_grabbed;
   data->quick_menu = NULL;
   gtk_widget_destroy (menu->window);
@@ -17689,6 +18137,7 @@ quick_menu_key_press (GtkWidget *widget, GdkEventKey *event,
   guint sel = menu->selected;
   guint col = sel % QUICK_COLS;
   guint row = sel / QUICK_COLS;
+  guint rows = (menu->count + QUICK_COLS - 1) / QUICK_COLS;
 
   switch (event->keyval)
     {
@@ -17699,18 +18148,18 @@ quick_menu_key_press (GtkWidget *widget, GdkEventKey *event,
       col = (col + 1) % QUICK_COLS;
       break;
     case GDK_KEY_Up:
-      row = (row + QUICK_ROWS - 1) % QUICK_ROWS;
+      row = (row + rows - 1) % rows;
       break;
     case GDK_KEY_Down:
-      row = (row + 1) % QUICK_ROWS;
+      row = (row + 1) % rows;
       break;
     case GDK_KEY_Home:
       row = 0;
       col = 0;
       break;
     case GDK_KEY_End:
-      row = QUICK_ROWS - 1;
-      col = QUICK_COLS - 1;
+      row = (menu->count - 1) / QUICK_COLS;
+      col = (menu->count - 1) % QUICK_COLS;
       break;
     case GDK_KEY_Return:
     case GDK_KEY_KP_Enter:
@@ -17725,6 +18174,8 @@ quick_menu_key_press (GtkWidget *widget, GdkEventKey *event,
     }
 
   menu->selected = row * QUICK_COLS + col;
+  if (menu->selected >= menu->count)
+    menu->selected = menu->count - 1;
   gtk_widget_grab_focus (menu->cells[menu->selected]);
   return TRUE;
 }
@@ -17778,7 +18229,7 @@ quick_menu_map (GtkWidget *window, GdkEvent *event, gpointer user_data)
   return FALSE;
 }
 
-/* F10 quick tool menu: a centered 5x3 grid of large icon tiles, matching the
+/* F10 quick tool menu: a centered grid of large icon tiles, matching the
  * Windows version.  Arrow keys move the selection, Home/End jump to the
  * corners, Enter/Space activate it, and Escape or clicking outside closes the
  * grid without selecting a tool. */
@@ -17836,11 +18287,17 @@ screenator_show_quick_menu (ScreenatorData *data)
 
   for (i = 0; i < G_N_ELEMENTS (quick_tools); i++)
     {
-      GtkWidget *button = gtk_button_new ();
-      GtkWidget *box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
+      guint cell_index;
+      GtkWidget *button;
+      GtkWidget *box;
       GtkWidget *image;
       GtkWidget *label;
       GdkPixbuf *pixbuf;
+
+      cell_index = menu->count++;
+      menu->tool_indices[cell_index] = i;
+      button = gtk_button_new ();
+      box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 4);
 
       gtk_style_context_add_class (gtk_widget_get_style_context (button),
 				   "quick-cell");
@@ -17868,7 +18325,7 @@ screenator_show_quick_menu (ScreenatorData *data)
 
       gtk_container_add (GTK_CONTAINER (button), box);
       g_object_set_data (G_OBJECT (button), "quick-index",
-			 GUINT_TO_POINTER (i));
+			 GUINT_TO_POINTER (cell_index));
       g_signal_connect (button, "clicked",
 			G_CALLBACK (quick_menu_clicked), menu);
       g_signal_connect (button, "focus-in-event",
@@ -17876,9 +18333,10 @@ screenator_show_quick_menu (ScreenatorData *data)
       g_signal_connect (button, "enter-notify-event",
 			G_CALLBACK (quick_menu_enter), menu);
       gtk_grid_attach (GTK_GRID (grid), button,
-		       (gint) (i % QUICK_COLS), (gint) (i / QUICK_COLS),
+		       (gint) (cell_index % QUICK_COLS),
+		       (gint) (cell_index / QUICK_COLS),
 		       1, 1);
-      menu->cells[i] = button;
+      menu->cells[cell_index] = button;
     }
 
   data->quick_menu = window;
@@ -21949,6 +22407,16 @@ activate_tool_immediately (ScreenatorData *data, gint pen_tool,
   GHashTableIter it;
   gpointer value;
   ScreenatorDeviceData *devdata = NULL;
+
+  {
+      data->pdf_text_selecting = FALSE;
+      data->pdf_text_selection_valid = FALSE;
+      if (data->pdf_text_selection_timeout)
+	{
+	  g_source_remove (data->pdf_text_selection_timeout);
+	  data->pdf_text_selection_timeout = 0;
+	}
+    }
 
   /* Selecting any tool leaves the Cursor mode. */
   if (data->paper_hand_tool)

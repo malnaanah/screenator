@@ -45,6 +45,11 @@
   </provides>
 
   <releases>
+    <release version="9.1" date="2026-11-21">
+      <description>
+        <p>Screenator 9.1 adds PDF text selection and copying in Cursor mode, with Arabic word order handling and precise glyph-based selection.</p>
+      </description>
+    </release>
     <release version="9.0" date="2026-11-18">
       <description>
         <p>Screenator 9.0 refreshes Linux icons and package metadata, delays the Paper mode hand cursor for quick middle-button and stylus clicks, and improves Escape handling for tools, text entry and applications behind the paper.</p>
