@@ -2353,7 +2353,8 @@ static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
     case WM_KEYDOWN:
       if ((wp == VK_LEFT || wp == VK_RIGHT || wp == VK_UP ||
-           wp == VK_DOWN) && !(GetKeyState(VK_CONTROL) & 0x8000))
+           wp == VK_DOWN || wp == VK_HOME || wp == VK_END) &&
+          !(GetKeyState(VK_CONTROL) & 0x8000))
         {
           DWORD sel_start = 0, sel_end = 0;
           SendMessageW(hwnd, EM_GETSEL, (WPARAM) &sel_start,

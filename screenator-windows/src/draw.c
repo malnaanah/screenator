@@ -265,7 +265,27 @@ int text_editor_move_caret(int key, int current_utf16, int *next_utf16)
   pango_layout_set_auto_dir(layout, TRUE);
 
   int result_index = byte_index, result_trailing = 0;
-  if (key == VK_LEFT || key == VK_RIGHT)
+  if (key == VK_HOME || key == VK_END)
+    {
+      int line_number = 0, x = 0;
+      pango_layout_index_to_line_x(layout, byte_index, 0, &line_number, &x);
+      PangoLayoutLine *line =
+        pango_layout_get_line_readonly(layout, line_number);
+      if (line)
+        {
+          int start = pango_layout_line_get_start_index(line);
+          int end = start + pango_layout_line_get_length(line);
+          int text_bytes = (int) strlen(utf8);
+          if (end > text_bytes) end = text_bytes;
+          while (end > start &&
+                 (utf8[end - 1] == '\r' || utf8[end - 1] == '\n'))
+            end--;
+          result_index = key == VK_HOME ? start : end;
+          result_trailing = 0;
+        }
+      editor_vertical_x_valid = 0;
+    }
+  else if (key == VK_LEFT || key == VK_RIGHT)
     {
       editor_vertical_x_valid = 0;
       pango_layout_move_cursor_visually(layout, TRUE, byte_index, 0,
