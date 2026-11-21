@@ -226,6 +226,21 @@ static int utf8_position_to_utf16(const char *text, int byte_index,
   return units;
 }
 
+static int text_layout_line_bounds(PangoLayout *layout, int line_number,
+                                  const char *text, int *start, int *end)
+{
+  PangoLayoutLine *line =
+    pango_layout_get_line_readonly(layout, line_number);
+  if (!line) return 0;
+  int text_bytes = (int) strlen(text);
+  *start = pango_layout_line_get_start_index(line);
+  *end = *start + pango_layout_line_get_length(line);
+  if (*end > text_bytes) *end = text_bytes;
+  while (*end > *start && (text[*end - 1] == '\r' || text[*end - 1] == '\n'))
+    (*end)--;
+  return 1;
+}
+
 int text_editor_move_caret(int key, int current_utf16, int *next_utf16)
 {
   if (!g.textwin || !next_utf16) return 0;
@@ -273,13 +288,8 @@ int text_editor_move_caret(int key, int current_utf16, int *next_utf16)
         pango_layout_get_line_readonly(layout, line_number);
       if (line)
         {
-          int start = pango_layout_line_get_start_index(line);
-          int end = start + pango_layout_line_get_length(line);
-          int text_bytes = (int) strlen(utf8);
-          if (end > text_bytes) end = text_bytes;
-          while (end > start &&
-                 (utf8[end - 1] == '\r' || utf8[end - 1] == '\n'))
-            end--;
+          int start, end;
+          text_layout_line_bounds(layout, line_number, utf8, &start, &end);
           result_index = key == VK_HOME ? start : end;
           result_trailing = 0;
         }
@@ -288,12 +298,40 @@ int text_editor_move_caret(int key, int current_utf16, int *next_utf16)
   else if (key == VK_LEFT || key == VK_RIGHT)
     {
       editor_vertical_x_valid = 0;
-      pango_layout_move_cursor_visually(layout, TRUE, byte_index, 0,
-        key == VK_LEFT ? -1 : 1, &result_index, &result_trailing);
-      if (result_index == G_MAXINT)
-        result_index = (int) strlen(utf8);
-      else if (result_index < 0)
-        result_index = 0;
+      int line_number = 0, x = 0, start = 0, end = 0;
+      int lines = pango_layout_get_line_count(layout);
+      pango_layout_index_to_line_x(layout, byte_index, 0, &line_number, &x);
+      int rtl = pango_layout_get_direction(layout, line_number) ==
+                PANGO_DIRECTION_RTL;
+      if (!text_layout_line_bounds(layout, line_number, utf8, &start, &end))
+        start = end = byte_index;
+
+      /* At an Arabic line break, left moves forward in reading order. Land
+       * at the next line's start rather than Pango's opposite visual edge. */
+      if (rtl && key == VK_LEFT && byte_index == end &&
+          line_number + 1 < lines)
+        {
+          text_layout_line_bounds(layout, line_number + 1, utf8,
+                                  &result_index, &x);
+          result_trailing = 0;
+        }
+      else if (rtl && key == VK_RIGHT && byte_index == start &&
+               line_number > 0)
+        {
+          int previous_start = 0;
+          text_layout_line_bounds(layout, line_number - 1, utf8,
+                                  &previous_start, &result_index);
+          result_trailing = 0;
+        }
+      else
+        {
+          pango_layout_move_cursor_visually(layout, TRUE, byte_index, 0,
+            key == VK_LEFT ? -1 : 1, &result_index, &result_trailing);
+          if (result_index == G_MAXINT)
+            result_index = (int) strlen(utf8);
+          else if (result_index < 0)
+            result_index = 0;
+        }
     }
   else if (key == VK_UP || key == VK_DOWN)
     {
