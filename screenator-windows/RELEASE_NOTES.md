@@ -7,6 +7,9 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 
 - Added drag selection and clipboard copying of text from opened PDF files.
 - Added brief PDF selection feedback and an eraser cursor while right-click erasing.
+- Added multiline Text editing with Ctrl+Enter and Shift+Enter line breaks,
+  multiline paste, and Up/Down line navigation. Left/Right follows visual order
+  in right-to-left text, and line spacing stays stable as text is entered.
 
 ## Windows 9.0 changes
 
