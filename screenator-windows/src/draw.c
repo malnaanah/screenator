@@ -354,11 +354,18 @@ void measure_frame_text(FrameShape *shape)
       return;
     }
 
-  cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 8, 8);
-  cairo_t *cr = cairo_create(surf);
+  cairo_surface_t *surf = NULL;
+  cairo_t *cr;
+  if (g.present)
+    cr = cairo_create(g.present);
+  else
+    {
+      surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 8, 8);
+      cr = cairo_create(surf);
+    }
   PangoLayout *layout = pango_cairo_create_layout(cr);
   PangoFontDescription *fd = pango_font_description_from_string(shape->font);
-  PangoRectangle ink, logical;
+  PangoRectangle ink;
 
   pango_font_description_set_absolute_size(fd,
                                            shape->font_size * PANGO_SCALE);
@@ -367,7 +374,7 @@ void measure_frame_text(FrameShape *shape)
   layout_apply_missing_glyph_font(layout, fd, shape->text);
   layout_set_fixed_line_height(layout, fd);
   pango_layout_set_auto_dir(layout, TRUE);
-  pango_layout_get_pixel_extents(layout, &ink, &logical);
+  pango_layout_get_pixel_extents(layout, &ink, NULL);
   PangoFontMetrics *metrics = pango_context_get_metrics(
     pango_layout_get_context(layout), fd, NULL);
   double target_baseline = 0;
@@ -390,7 +397,7 @@ void measure_frame_text(FrameShape *shape)
   pango_font_description_free(fd);
   g_object_unref(layout);
   cairo_destroy(cr);
-  cairo_surface_destroy(surf);
+  if (surf) cairo_surface_destroy(surf);
 }
 
 void draw_paper(cairo_t *cr, Paper paper, int w, int h)
@@ -1628,7 +1635,6 @@ void draw_text_editor(cairo_t *cr)
   (void) ink;
 
   int rtl = preview_is_rtl(utf8);
-  double w = logical.width;
   PangoFontMetrics *metrics = pango_context_get_metrics(
     pango_layout_get_context(layout), fd, NULL);
   double target_baseline = 0;
@@ -1645,7 +1651,9 @@ void draw_text_editor(cairo_t *cr)
   /* Keep the first baseline fixed as lines or bidi runs change. */
   double y = g.text_editor_click_y + target_baseline - layout_baseline;
 
-  if (rtl && w > 0) x -= w;
+  /* Use the same ink origin as the committed frame, including side bearings. */
+  if (rtl) x -= ink.width;
+  x -= ink.x;
 
   Color c = g.pen_color;
   c.a = 1.0;
