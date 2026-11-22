@@ -13,6 +13,8 @@ Updated: 2026-11-22
   Arabic word order handling.
 - Stylus tip contact events with missing or zero pressure are no longer
   mistaken for side-button clicks.
+- The toolbar line color and dot follow the Marker’s yellow color, then return
+  to the previous line color when you leave the Marker.
 
 ## Windows
 
