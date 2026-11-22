@@ -22520,6 +22520,8 @@ screenator_marker_prepare (ScreenatorData *data)
   data->pen_color.alpha = 1.0;
 
   apply_pen_settings (data);
+  screenator_update_tool_cursors (data);
+  paper_top_bar_update_images (data);
   update_settings_indicator (data);
   schedule_tray_menu_refresh (data);
 }
@@ -22534,6 +22536,8 @@ screenator_marker_leave (ScreenatorData *data)
   data->pen_color = data->marker_saved_color;
   data->marker_saved_color_valid = FALSE;
   apply_pen_settings (data);
+  screenator_update_tool_cursors (data);
+  paper_top_bar_update_images (data);
   update_settings_indicator (data);
   schedule_tray_menu_refresh (data);
 }
