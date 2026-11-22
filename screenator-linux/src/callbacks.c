@@ -5575,8 +5575,7 @@ gboolean on_buttonpress (GtkWidget *win,
   stylus_button1 = event_source_is_stylus ((GdkEvent *) ev) &&
     (ev->button == 2 ||
      (ev->button == 1 &&
-      (!has_pressure || pressure <= 0.0 ||
-	(has_distance && distance > 0.0))));
+      has_distance && distance > 0.0));
 
   /* Some tablet drivers report a stylus side-button release under a
    * different button number. If that release was lost or remapped, don't let
@@ -5759,10 +5758,10 @@ gboolean on_buttonpress (GtkWidget *win,
 	}
     }
 
-  /* Stylus side button 1 is normally mapped to middle click.  Some tablet
-   * drivers report it as button 1 while the pen is hovering, with zero
-   * pressure, so accept that form too. Keep the threshold at zero so the
-   * low-pressure start of a pen-tip stroke is not mistaken for this button. */
+  /* Stylus side button 1 is normally mapped to middle click. Some tablet
+   * drivers report it as button 1 while the pen is hovering. Only infer that
+   * mapping when the event reports a positive hover distance: pressure can
+   * be absent or zero on the first tip-contact event. */
   if (stylus_button1 &&
       data->paper == SCREENATOR_PAPER_NONE &&
       cycle_input_allowed (data) &&
