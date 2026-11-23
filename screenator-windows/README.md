@@ -1,4 +1,4 @@
-# Screenator for Windows 9.1
+# Screenator for Windows 9.2
 
 A native Windows port of [Screenator 6.0](https://github.com/malnaanah/screenator),
 the screen annotation tool for X11. Draw over any running application with a
@@ -359,9 +359,9 @@ the portable package in `dist/`:
       AUTHORS
       PDFIUM_LICENSE.txt
   release/
-    Screenator-9.1-win64/       portable package folder
-    Screenator-9.1-win64.zip
-    Screenator-9.1-win64-setup.exe
+    Screenator-9.2-win64/       portable package folder
+    Screenator-9.2-win64.zip
+    Screenator-9.2-win64-setup.exe
 ```
 
 Run `package.ps1` from PowerShell to copy `dist/` into the versioned portable
@@ -385,7 +385,7 @@ cd installer
 
 On Linux or macOS install `nsis` and run the same wrapper; it adds
 `-DPOSIX_BUILD` so the POSIX NSIS uses the right path separators. The result is
-`../build-windows/release/Screenator-9.1-win64-setup.exe`. The installer places
+`../build-windows/release/Screenator-9.2-win64-setup.exe`. The installer places
 the app in
 `%LOCALAPPDATA%\Programs\Screenator`, creates Start menu entries, and includes
 the **PDF Open with list** task, selected by default. That task registers

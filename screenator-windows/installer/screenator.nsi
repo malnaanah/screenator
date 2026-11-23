@@ -1,4 +1,4 @@
-; Screenator 9.1 installer for Windows
+; Screenator 9.2 installer for Windows
 ; Build with: makensis screenator.nsi          (Windows NSIS)
 ;             makensis -DPOSIX_BUILD screenator.nsi   (Linux/macOS NSIS)
 ; The wrapper ./build-installer.sh picks the right form.
@@ -19,7 +19,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 !define APPNAME "Screenator"
-!define APPVERSION "9.1"
+!define APPVERSION "9.2"
 !define PUBLISHER "Screenator contributors"
 !define APPEXE "Screenator.exe"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Screenator"
@@ -92,7 +92,7 @@ Unicode true
 
 Name "${APPNAME} ${APPVERSION}"
 !ifndef SETUPNAME
-  !define SETUPNAME "Screenator-9.1-win64-setup"
+  !define SETUPNAME "Screenator-9.2-win64-setup"
 !endif
 OutFile "..${SEP}..${SEP}build-windows${SEP}release${SEP}${SETUPNAME}.exe"
 InstallDir "$LOCALAPPDATA\Programs\Screenator"
@@ -101,7 +101,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 
-VIProductVersion "9.1.0.0"
+VIProductVersion "9.2.0.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "FileDescription" "${APPNAME} installer"
 VIAddVersionKey "FileVersion" "${APPVERSION}"

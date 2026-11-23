@@ -35,8 +35,8 @@
 #include <string.h>
 
 #define APP_NAME     "Screenator"
-#define APP_VERSION  "9.1"
-#define APP_TITLE    "Screenator 9.1"
+#define APP_VERSION  "9.2"
+#define APP_TITLE    "Screenator 9.2"
 #define MAX_UNDO     50
 #define FRAME_MIN_SIZE 8.0
 #define LINE_HEADS_HANDLE_OFFSET 28.0
@@ -161,6 +161,15 @@ typedef enum
 {
   PAPER_NONE = 0, PAPER_PLAIN, PAPER_RULED, PAPER_GRAPH, PAPER_PDF
 } Paper;
+
+typedef struct
+{
+  cairo_surface_t *undo[MAX_UNDO];
+  cairo_surface_t *redo[MAX_UNDO];
+  int undo_token[MAX_UNDO];
+  int redo_token[MAX_UNDO];
+  int undo_head, undo_depth, redo_head, redo_depth;
+} DrawingHistory;
 
 typedef enum
 {
@@ -299,11 +308,7 @@ typedef struct
   void *dibbits;
   int dibw, dibh;
 
-  cairo_surface_t *undo[MAX_UNDO];
-  cairo_surface_t *vec_undo[MAX_UNDO];
-  cairo_surface_t *redo[MAX_UNDO];
-  cairo_surface_t *vec_redo[MAX_UNDO];
-  int undo_head, undo_depth, redo_head, redo_depth;
+  DrawingHistory drawing_history[PAPER_PDF + 1];
 
   /* Settings. */
   Tool tool;
@@ -612,6 +617,9 @@ void tools_triangle_hover(Pt p);
 void tools_undo(void);
 void tools_redo(void);
 void tools_push_undo(void);
+DrawingHistory *tools_current_history(void);
+void tools_clear_undo_for(Paper type);
+void tools_clear_all_undo(void);
 void tools_set_frame_color(void);
 void tools_text_commit(const char *text, int cancelled);
 void tools_clear_undo(void);
@@ -674,6 +682,8 @@ void paper_vector_capture_redo(int slot);
 void paper_vector_swap_undo(int slot);
 void paper_vector_swap_redo(int slot);
 void paper_vector_undo_clear(void);
+void paper_vector_undo_clear_for(Paper type);
+void paper_vector_redo_clear_for(Paper type);
 void paper_add_text(const FrameShape *shape);
 void paper_erase_add_point(Pt p, double width);
 void paper_erase_add_span(int x1, int y1, int x2, int y2, double width);

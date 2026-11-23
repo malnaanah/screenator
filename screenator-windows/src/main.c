@@ -191,13 +191,6 @@ static void destroy_buffers(void)
   if (g.backbuf) { cairo_surface_destroy(g.backbuf); g.backbuf = NULL; }
   if (g.present) { cairo_surface_destroy(g.present); g.present = NULL; }
   if (g.strokebuf) { cairo_surface_destroy(g.strokebuf); g.strokebuf = NULL; }
-  for (int i = 0; i < MAX_UNDO; i++)
-    {
-      if (g.undo[i]) { cairo_surface_destroy(g.undo[i]); g.undo[i] = NULL; }
-      if (g.redo[i]) { cairo_surface_destroy(g.redo[i]); g.redo[i] = NULL; }
-    }
-  g.undo_head = g.undo_depth = 0;
-  g.redo_head = g.redo_depth = 0;
   if (g.menu_capture)
     { cairo_surface_destroy(g.menu_capture); g.menu_capture = NULL; }
   if (g.menu_ghost)
@@ -268,13 +261,14 @@ static cairo_surface_t *scale_surface_center(cairo_surface_t *src,
 
 void ui_rebuild_surfaces(void)
 {
+  DrawingHistory *h = tools_current_history();
   cairo_surface_t *old_back = g.backbuf;
   cairo_surface_t *old_undo[MAX_UNDO];
   cairo_surface_t *old_redo[MAX_UNDO];
-  int old_undo_head = g.undo_head, old_undo_depth = g.undo_depth;
-  int old_redo_head = g.redo_head, old_redo_depth = g.redo_depth;
+  int old_undo_head = h->undo_head, old_undo_depth = h->undo_depth;
+  int old_redo_head = h->redo_head, old_redo_depth = h->redo_depth;
   for (int i = 0; i < MAX_UNDO; i++)
-    { old_undo[i] = g.undo[i]; old_redo[i] = g.redo[i]; }
+    { old_undo[i] = h->undo[i]; old_redo[i] = h->redo[i]; }
   /* Keep the live page in sync before the screen dimensions change. */
   if (g.paper != PAPER_NONE) paper_sync_current();
   get_virtual_screen();
@@ -291,14 +285,19 @@ void ui_rebuild_surfaces(void)
         new_undo[i] = scale_surface_center(old_undo[i], cw, ch);
         new_redo[i] = scale_surface_center(old_redo[i], cw, ch);
       }
+    for (int i = 0; i < MAX_UNDO; i++)
+      {
+        if (old_undo[i]) cairo_surface_destroy(old_undo[i]);
+        if (old_redo[i]) cairo_surface_destroy(old_redo[i]);
+      }
     destroy_buffers();
     g.backbuf = newbuf;
     for (int i = 0; i < MAX_UNDO; i++)
-      { g.undo[i] = new_undo[i]; g.redo[i] = new_redo[i]; }
-    g.undo_head = old_undo_head;
-    g.undo_depth = old_undo_depth;
-    g.redo_head = old_redo_head;
-    g.redo_depth = old_redo_depth;
+      { h->undo[i] = new_undo[i]; h->redo[i] = new_redo[i]; }
+    h->undo_head = old_undo_head;
+    h->undo_depth = old_undo_depth;
+    h->redo_head = old_redo_head;
+    h->redo_depth = old_redo_depth;
     if (g.paper != PAPER_NONE) paper_replace_current_surface(g.backbuf);
   }
   if (!make_dib())
@@ -449,15 +448,16 @@ static cairo_surface_t *copy_surface_top_left(cairo_surface_t *src, int w,
 
 static void resize_canvas_common(int sync_live, int reload_page)
 {
+  DrawingHistory *h = tools_current_history();
   cairo_surface_t *old_back = g.backbuf;
   cairo_surface_t *old_undo[MAX_UNDO];
   cairo_surface_t *old_redo[MAX_UNDO];
-  int old_undo_head = g.undo_head, old_undo_depth = g.undo_depth;
-  int old_redo_head = g.redo_head, old_redo_depth = g.redo_depth;
+  int old_undo_head = h->undo_head, old_undo_depth = h->undo_depth;
+  int old_redo_head = h->redo_head, old_redo_depth = h->redo_depth;
   int cw, ch, screen_mode;
   if (!g.backbuf) return;
   for (int i = 0; i < MAX_UNDO; i++)
-    { old_undo[i] = g.undo[i]; old_redo[i] = g.redo[i]; }
+    { old_undo[i] = h->undo[i]; old_redo[i] = h->redo[i]; }
   screen_mode = g.paper == PAPER_NONE;
   if (!screen_mode && sync_live) paper_sync_current();
   cw = paper_page_width();
@@ -477,14 +477,19 @@ static void resize_canvas_common(int sync_live, int reload_page)
         new_redo[i] = screen_mode ? copy_surface_top_left(old_redo[i], cw, ch)
                                   : scale_surface_center(old_redo[i], cw, ch);
       }
+    for (int i = 0; i < MAX_UNDO; i++)
+      {
+        if (old_undo[i]) cairo_surface_destroy(old_undo[i]);
+        if (old_redo[i]) cairo_surface_destroy(old_redo[i]);
+      }
     destroy_buffers();
     g.backbuf = newbuf;
     for (int i = 0; i < MAX_UNDO; i++)
-      { g.undo[i] = new_undo[i]; g.redo[i] = new_redo[i]; }
-    g.undo_head = old_undo_head;
-    g.undo_depth = old_undo_depth;
-    g.redo_head = old_redo_head;
-    g.redo_depth = old_redo_depth;
+      { h->undo[i] = new_undo[i]; h->redo[i] = new_redo[i]; }
+    h->undo_head = old_undo_head;
+    h->undo_depth = old_undo_depth;
+    h->redo_head = old_redo_head;
+    h->redo_depth = old_redo_depth;
     if (!screen_mode)
       {
         if (sync_live) paper_replace_current_surface(g.backbuf);
@@ -1922,7 +1927,7 @@ void app_update_tray_icon(void)
   if (!g.tray_added) return;
   g.nid.uFlags = NIF_ICON | NIF_TIP;
   g.nid.hIcon = (g.tool != TOOL_NONE) ? g.hicon_active : g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 9.1");
+  wcscpy(g.nid.szTip, L"Screenator 9.2");
   Shell_NotifyIconW(NIM_MODIFY, &g.nid);
 }
 
@@ -5233,7 +5238,7 @@ static void add_tray(void)
   g.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
   g.nid.uCallbackMessage = WM_TRAY;
   g.nid.hIcon = g.hicon_normal;
-  wcscpy(g.nid.szTip, L"Screenator 9.1");
+  wcscpy(g.nid.szTip, L"Screenator 9.2");
   if (Shell_NotifyIconW(NIM_ADD, &g.nid))
     g.tray_added = 1;
 }
@@ -5461,7 +5466,7 @@ static int run_uitest(void)
     cairo_paint(cr);
     cairo_destroy(cr);
   }
-  g.undo_depth = g.redo_depth = 0;
+  tools_clear_undo_for(g.paper);
   g.tool = TOOL_NONE;
   int ox = g.vx, oy = g.vy;
   /* Pen stroke. */
@@ -6405,7 +6410,7 @@ static int run_selftest(void)
   /* Text through pango. */
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 9.1");
+  fs.text = _strdup("Screenator 9.2");
   fs.font = _strdup("Arial Bold 34");
   fs.font_size = 34;
   fs.color = color_from_hex("#202020", NULL);
@@ -6591,7 +6596,7 @@ static void demo_draw(void)
   draw_line_shape(cr, &ln, 6, color_from_hex("#1040C0", NULL));
   memset(&fs, 0, sizeof(fs));
   fs.type = SHAPE_TEXT;
-  fs.text = _strdup("Screenator 9.1 for Windows");
+  fs.text = _strdup("Screenator 9.2 for Windows");
   fs.font = _strdup("Arial Bold 40");
   fs.font_size = 40;
   fs.color = color_from_hex("#B00020", NULL);

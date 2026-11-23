@@ -1,7 +1,15 @@
-# Screenator for Windows 9.1
+# Screenator for Windows 9.2
 
 A portable 64-bit Windows release of the Screenator screen annotation tool,
 based on Screenator 6.0 by Mahmoud Alnaanah.
+
+## Windows 9.2 changes
+
+- Kept drawing undo and redo histories independent for Screen and each Paper
+  type, including across mode and document switches. Page insertion and
+  deletion histories remain separate and are retained per Paper type.
+- Tied drawing history snapshots to stable Paper page identities so page
+  insertion and deletion do not redirect an undo step to a different page.
 
 ## Windows 9.1 changes
 

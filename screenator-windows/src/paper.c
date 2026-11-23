@@ -47,6 +47,7 @@ typedef struct
 typedef struct
 {
   Paper bg;                    /* PAPER_PLAIN/RULED/GRAPH/PDF */
+  uint32_t history_id;         /* stable across page insertion/deletion */
   int pdf_page;                /* 0-based PDF page, or -1 */
   cairo_surface_t *ann;        /* annotation layer at screen size */
   cairo_surface_t *vec;        /* recording surface for vector export */
@@ -77,6 +78,23 @@ typedef struct
 
 typedef struct
 {
+  cairo_surface_t *vec_undo[MAX_UNDO], *vec_redo[MAX_UNDO];
+  FrameShape *text_undo[MAX_UNDO], *text_redo[MAX_UNDO];
+  int text_undo_n[MAX_UNDO], text_redo_n[MAX_UNDO];
+  int text_undo_w[MAX_UNDO], text_undo_h[MAX_UNDO];
+  int text_redo_w[MAX_UNDO], text_redo_h[MAX_UNDO];
+  int vec_undo_erased[MAX_UNDO], vec_redo_erased[MAX_UNDO];
+  int vec_undo_dirty[MAX_UNDO], vec_redo_dirty[MAX_UNDO];
+  PaperResizeState vec_undo_resize[MAX_UNDO];
+  PaperResizeState vec_redo_resize[MAX_UNDO];
+  EraseStroke *er_undo[MAX_UNDO], *er_redo[MAX_UNDO];
+  int er_undo_n[MAX_UNDO], er_redo_n[MAX_UNDO];
+  int er_undo_w[MAX_UNDO], er_undo_h[MAX_UNDO];
+  int er_redo_w[MAX_UNDO], er_redo_h[MAX_UNDO];
+} PaperVectorHistory;
+
+typedef struct
+{
   wchar_t path[MAX_PATH];
   int page;                    /* 0-based */
 } PdfHistoryEntry;
@@ -92,10 +110,38 @@ typedef struct
   int changes_pending;
   PaperPage pages[PAPER_MAX_PAGES];
   wchar_t pdf_path[MAX_PATH];
+  PaperVectorHistory drawing;
+  PaperAction page_undo[PAPER_UNDO_MAX], page_redo[PAPER_UNDO_MAX];
+  int page_undo_depth, page_redo_depth, page_change_last;
 } PaperDocStore;
 
 static PaperDocStore doc_store[PAPER_PDF + 1];
 static Paper current_type = PAPER_PLAIN;
+
+#define vec_undo (drawing_state.vec_undo)
+#define vec_redo (drawing_state.vec_redo)
+#define text_undo (drawing_state.text_undo)
+#define text_redo (drawing_state.text_redo)
+#define text_undo_n (drawing_state.text_undo_n)
+#define text_redo_n (drawing_state.text_redo_n)
+#define text_undo_w (drawing_state.text_undo_w)
+#define text_undo_h (drawing_state.text_undo_h)
+#define text_redo_w (drawing_state.text_redo_w)
+#define text_redo_h (drawing_state.text_redo_h)
+#define vec_undo_erased (drawing_state.vec_undo_erased)
+#define vec_redo_erased (drawing_state.vec_redo_erased)
+#define vec_undo_dirty (drawing_state.vec_undo_dirty)
+#define vec_redo_dirty (drawing_state.vec_redo_dirty)
+#define vec_undo_resize (drawing_state.vec_undo_resize)
+#define vec_redo_resize (drawing_state.vec_redo_resize)
+#define er_undo (drawing_state.er_undo)
+#define er_redo (drawing_state.er_redo)
+#define er_undo_n (drawing_state.er_undo_n)
+#define er_redo_n (drawing_state.er_redo_n)
+#define er_undo_w (drawing_state.er_undo_w)
+#define er_undo_h (drawing_state.er_undo_h)
+#define er_redo_w (drawing_state.er_redo_w)
+#define er_redo_h (drawing_state.er_redo_h)
 
 static PaperPage pages[PAPER_MAX_PAGES];
 static int page_count;
@@ -106,29 +152,16 @@ static cairo_surface_t *screen_ann;
 static int paper_scroll_y;
 static ULONGLONG paper_scroll_paint_at;
 
-static FrameShape *text_undo[MAX_UNDO];
-static int text_undo_n[MAX_UNDO];
-static int text_undo_w[MAX_UNDO], text_undo_h[MAX_UNDO];
-static FrameShape *text_redo[MAX_UNDO];
-static int text_redo_n[MAX_UNDO];
-static int text_redo_w[MAX_UNDO], text_redo_h[MAX_UNDO];
-static int vec_undo_erased[MAX_UNDO], vec_redo_erased[MAX_UNDO];
-static int vec_undo_dirty[MAX_UNDO], vec_redo_dirty[MAX_UNDO];
-static PaperResizeState vec_undo_resize[MAX_UNDO];
-static PaperResizeState vec_redo_resize[MAX_UNDO];
-static EraseStroke *er_undo[MAX_UNDO];
-static int er_undo_n[MAX_UNDO];
-static int er_undo_w[MAX_UNDO], er_undo_h[MAX_UNDO];
-static EraseStroke *er_redo[MAX_UNDO];
-static int er_redo_n[MAX_UNDO];
-static int er_redo_w[MAX_UNDO], er_redo_h[MAX_UNDO];
-
 #define PAPER_CONT_GAP 18
 
-static PaperAction undo_stack[PAPER_UNDO_MAX];
-static PaperAction redo_stack[PAPER_UNDO_MAX];
-static int undo_depth, redo_depth;
-static int page_change_last;
+#define drawing_state (doc_store[current_type].drawing)
+#define undo_stack (doc_store[current_type].page_undo)
+#define redo_stack (doc_store[current_type].page_redo)
+#define undo_depth (doc_store[current_type].page_undo_depth)
+#define redo_depth (doc_store[current_type].page_redo_depth)
+#define page_change_last (doc_store[current_type].page_change_last)
+
+static uint32_t next_page_history_id = 1;
 
 /* PDF document and cached rendered page images. */
 static FPDF_DOCUMENT pdf_doc;
@@ -668,17 +701,17 @@ void paper_vector_undo_push(int slot)
 {
   if (!doc_ready || g.paper == PAPER_NONE || slot < 0 || slot >= MAX_UNDO)
     return;
-  if (g.vec_undo[slot])
+  if (vec_undo[slot])
     {
-      cairo_surface_destroy(g.vec_undo[slot]);
-      g.vec_undo[slot] = NULL;
+      cairo_surface_destroy(vec_undo[slot]);
+      vec_undo[slot] = NULL;
     }
   if (page_index >= 0 && page_index < page_count)
     {
       PaperPage *p = &pages[page_index];
       paper_resize_state_init(p);
       vec_undo_resize[slot] = p->resize;
-      g.vec_undo[slot] = paper_copy_vector(p->vec);
+      vec_undo[slot] = paper_copy_vector(p->vec);
       paper_free_texts(&text_undo[slot], &text_undo_n[slot], NULL);
       text_undo[slot] = paper_copy_texts(p->texts, p->ntexts,
                                          &text_undo_n[slot]);
@@ -698,17 +731,17 @@ void paper_vector_capture_redo(int slot)
 {
   if (!doc_ready || g.paper == PAPER_NONE || slot < 0 || slot >= MAX_UNDO)
     return;
-  if (g.vec_redo[slot])
+  if (vec_redo[slot])
     {
-      cairo_surface_destroy(g.vec_redo[slot]);
-      g.vec_redo[slot] = NULL;
+      cairo_surface_destroy(vec_redo[slot]);
+      vec_redo[slot] = NULL;
     }
   if (page_index >= 0 && page_index < page_count)
     {
       PaperPage *p = &pages[page_index];
       paper_resize_state_init(p);
       vec_redo_resize[slot] = p->resize;
-      g.vec_redo[slot] = paper_copy_vector(p->vec);
+      vec_redo[slot] = paper_copy_vector(p->vec);
       paper_free_texts(&text_redo[slot], &text_redo_n[slot], NULL);
       text_redo[slot] = paper_copy_texts(p->texts, p->ntexts,
                                          &text_redo_n[slot]);
@@ -734,8 +767,8 @@ void paper_vector_swap_undo(int slot)
     return;
   if (page_index < 0 || page_index >= page_count) return;
   tmp = pages[page_index].vec;
-  pages[page_index].vec = g.vec_undo[slot];
-  g.vec_undo[slot] = tmp;
+  pages[page_index].vec = vec_undo[slot];
+  vec_undo[slot] = tmp;
 
   ttmp = pages[page_index].texts;
   tn = pages[page_index].ntexts;
@@ -779,8 +812,8 @@ void paper_vector_swap_redo(int slot)
     return;
   if (page_index < 0 || page_index >= page_count) return;
   tmp = pages[page_index].vec;
-  pages[page_index].vec = g.vec_redo[slot];
-  g.vec_redo[slot] = tmp;
+  pages[page_index].vec = vec_redo[slot];
+  vec_redo[slot] = tmp;
 
   ttmp = pages[page_index].texts;
   tn = pages[page_index].ntexts;
@@ -818,15 +851,15 @@ void paper_vector_undo_clear(void)
 {
   for (int i = 0; i < MAX_UNDO; i++)
     {
-      if (g.vec_undo[i])
+      if (vec_undo[i])
         {
-          cairo_surface_destroy(g.vec_undo[i]);
-          g.vec_undo[i] = NULL;
+          cairo_surface_destroy(vec_undo[i]);
+          vec_undo[i] = NULL;
         }
-      if (g.vec_redo[i])
+      if (vec_redo[i])
         {
-          cairo_surface_destroy(g.vec_redo[i]);
-          g.vec_redo[i] = NULL;
+          cairo_surface_destroy(vec_redo[i]);
+          vec_redo[i] = NULL;
         }
       paper_free_texts(&text_undo[i], &text_undo_n[i], NULL);
       paper_free_texts(&text_redo[i], &text_redo_n[i], NULL);
@@ -839,6 +872,32 @@ void paper_vector_undo_clear(void)
       memset(&vec_undo_resize[i], 0, sizeof(vec_undo_resize[i]));
       memset(&vec_redo_resize[i], 0, sizeof(vec_redo_resize[i]));
     }
+}
+
+void paper_vector_undo_clear_for(Paper type)
+{
+  Paper saved = current_type;
+  if (type < PAPER_PLAIN || type > PAPER_PDF) return;
+  current_type = type;
+  paper_vector_undo_clear();
+  current_type = saved;
+}
+
+void paper_vector_redo_clear_for(Paper type)
+{
+  Paper saved = current_type;
+  if (type < PAPER_PLAIN || type > PAPER_PDF) return;
+  current_type = type;
+  for (int i = 0; i < MAX_UNDO; i++)
+    {
+      if (vec_redo[i]) { cairo_surface_destroy(vec_redo[i]); vec_redo[i] = NULL; }
+      paper_free_texts(&text_redo[i], &text_redo_n[i], NULL);
+      paper_free_erases(&er_redo[i], &er_redo_n[i]);
+      text_redo_w[i] = text_redo_h[i] = 0;
+      er_redo_w[i] = er_redo_h[i] = 0;
+      memset(&vec_redo_resize[i], 0, sizeof(vec_redo_resize[i]));
+    }
+  current_type = saved;
 }
 
 /* Text frames are not replayed from a recording surface: Cairo's recording
@@ -1170,6 +1229,12 @@ static void paper_free_page(PaperPage *p)
 
 static void paper_ensure_page(PaperPage *p)
 {
+  if (p && !p->history_id)
+    {
+      if (next_page_history_id == 0 || next_page_history_id > 0x00ffffffu)
+        next_page_history_id = 1;
+      p->history_id = next_page_history_id++;
+    }
   if (!p->ann) p->ann = paper_new_surface();
 }
 
@@ -1915,8 +1980,11 @@ void paper_draw_pdf_page(cairo_t *cr, int w, int h)
 /* page model                                                         */
 /* ------------------------------------------------------------------ */
 
-static void paper_clear_history(void)
+static void paper_clear_history_for(Paper type)
 {
+  Paper saved = current_type;
+  if (type < PAPER_PLAIN || type > PAPER_PDF) return;
+  current_type = type;
   for (int i = 0; i < PAPER_UNDO_MAX; i++)
     {
       if (undo_stack[i].has_page)
@@ -1932,6 +2000,7 @@ static void paper_clear_history(void)
     }
   undo_depth = redo_depth = 0;
   page_change_last = 0;
+  current_type = saved;
 }
 
 static void paper_clear_document(void)
@@ -1939,7 +2008,9 @@ static void paper_clear_document(void)
   paper_clear_active_pages();
   for (int t = PAPER_PLAIN; t <= PAPER_PDF; t++)
     paper_clear_store((Paper) t);
-  paper_clear_history();
+  for (int t = PAPER_PLAIN; t <= PAPER_PDF; t++)
+    paper_clear_history_for((Paper) t);
+  tools_clear_all_undo();
   pdf_close();
 }
 
@@ -1953,10 +2024,10 @@ void paper_new_document(Paper bg)
    * types keep their own documents. */
   paper_clear_active_pages();
   paper_clear_store(bg);
-  paper_clear_history();
+  paper_clear_history_for(bg);
   pdf_close();
 
-  tools_clear_undo();
+  tools_clear_undo_for(bg);
   page_count = 1;
   page_index = 0;
   memset(&pages[0], 0, sizeof(pages[0]));
@@ -1994,6 +2065,7 @@ void paper_reload_current(void)
   if (!doc_ready || !g.backbuf || page_index < 0 || page_index >= page_count)
     return;
   PaperPage *p = &pages[page_index];
+  paper_ensure_page(p);
   paper_clear_surface(g.backbuf);
   if (p->ann) paper_copy_surface(g.backbuf, p->ann);
   cairo_surface_mark_dirty(g.backbuf);
@@ -2179,7 +2251,6 @@ int paper_insert_page(int before)
   undo_stack[undo_depth++] = act;
   page_change_last = 1;
 
-  tools_clear_undo();
   paper_switch_index(idx, 1);
   return 1;
 }
@@ -2229,7 +2300,6 @@ int paper_delete_page(void)
   undo_stack[undo_depth++] = act;
   page_change_last = 1;
 
-  tools_clear_undo();
   paper_switch_index(new_index, 1);
   return 1;
 }
@@ -2287,7 +2357,10 @@ int paper_page_index(void)
 int paper_undo_token(void)
 {
   if (g.paper == PAPER_NONE || !doc_ready) return -1;
-  return (((int) current_type & 0xff) << 16) | (page_index & 0xffff);
+  if (page_index < 0 || page_index >= page_count) return -1;
+  paper_ensure_page(&pages[page_index]);
+  return (((int) current_type & 0xff) << 24) |
+         ((int) pages[page_index].history_id & 0x00ffffff);
 }
 
 /* Switch to the document/page encoded in an undo token, without clearing the
@@ -2295,17 +2368,22 @@ int paper_undo_token(void)
 int paper_undo_goto(int token)
 {
   Paper type;
-  int page;
+  int page = -1;
+  uint32_t history_id;
 
   if (token < 0) return 0;
-  type = (Paper) ((token >> 16) & 0xff);
-  page = token & 0xffff;
+  type = (Paper) ((token >> 24) & 0xff);
+  history_id = (uint32_t) token & 0x00ffffffu;
   if (type < PAPER_PLAIN || type > PAPER_PDF) return 0;
 
   if (g.paper == PAPER_NONE) app_set_paper(type, 0);
   if (!doc_ready) return 0;
   if (current_type != type && !paper_select_type(type)) return 0;
-  if (!doc_ready || page < 0 || page >= page_count) return 0;
+  if (!doc_ready) return 0;
+  for (int i = 0; i < page_count; i++)
+    if (pages[i].history_id == history_id)
+      { page = i; break; }
+  if (page < 0) return 0;
   if (page != page_index)
     {
       paper_sync_current();
@@ -2513,7 +2591,6 @@ int paper_page_undo(void)
   paper_push_redo(&a);
   paper_changes_pending = 1;
   paper_reload_current();
-  tools_clear_undo();
   page_change_last = 1;
   app_render_all();
   ui_refresh_tray();
@@ -2574,7 +2651,6 @@ int paper_page_redo(void)
   paper_push_undo(&a);
   paper_changes_pending = 1;
   paper_reload_current();
-  tools_clear_undo();
   page_change_last = 1;
   app_render_all();
   ui_refresh_tray();
@@ -2654,24 +2730,24 @@ void paper_resize_all(int w, int h)
         paper_resize_state_step(&vec_undo_resize[i], w, h);
       double redo_factor =
         paper_resize_state_step(&vec_redo_resize[i], w, h);
-      if (g.vec_undo[i])
+      if (vec_undo[i])
         {
-          cairo_surface_t *s = paper_scale_vector_factor(g.vec_undo[i], w, h,
+          cairo_surface_t *s = paper_scale_vector_factor(vec_undo[i], w, h,
                                                          undo_factor);
           if (s)
             {
-              cairo_surface_destroy(g.vec_undo[i]);
-              g.vec_undo[i] = s;
+              cairo_surface_destroy(vec_undo[i]);
+              vec_undo[i] = s;
             }
         }
-      if (g.vec_redo[i])
+      if (vec_redo[i])
         {
-          cairo_surface_t *s = paper_scale_vector_factor(g.vec_redo[i], w, h,
+          cairo_surface_t *s = paper_scale_vector_factor(vec_redo[i], w, h,
                                                          redo_factor);
           if (s)
             {
-              cairo_surface_destroy(g.vec_redo[i]);
-              g.vec_redo[i] = s;
+              cairo_surface_destroy(vec_redo[i]);
+              vec_redo[i] = s;
             }
         }
       if (text_undo[i])
@@ -3420,29 +3496,14 @@ void paper_save_dialog(void)
 
 int paper_open_pdf_path(const wchar_t *path, char *error, int error_size)
 {  if (!pdf_open_path(path, error, error_size)) return 0;
-
-  for (int i = 0; i < PAPER_UNDO_MAX; i++)
-    {
-      if (undo_stack[i].has_page)
-        {
-          paper_free_page(&undo_stack[i].page);
-          undo_stack[i].has_page = 0;
-        }
-      if (redo_stack[i].has_page)
-        {
-          paper_free_page(&redo_stack[i].page);
-          redo_stack[i].has_page = 0;
-        }
-    }
-  undo_depth = redo_depth = 0;
-  page_change_last = 0;
+  paper_clear_history_for(PAPER_PDF);
+  tools_clear_undo_for(PAPER_PDF);
 
   if (g.paper != PAPER_NONE)
     {
       /* The PDF may have different page proportions than the previous paper,
        * so resize the canvas and reload the current page. */
       ui_resize_canvas_for_doc();
-      tools_clear_undo();
       if (paper_continuous_active())
         {
           paper_scroll_y = paper_page_top(page_index);

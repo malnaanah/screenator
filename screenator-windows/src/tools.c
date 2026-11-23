@@ -167,44 +167,51 @@ static void copy_surface(cairo_surface_t *dst, cairo_surface_t *src)
 
 /* Document/page each undo/redo snapshot belongs to, so history can span
  * pages and paper documents. */
-static int undo_token[MAX_UNDO];
-static int redo_token[MAX_UNDO];
+DrawingHistory *tools_current_history(void)
+{
+  int type = (int) g.paper;
+  if (type < PAPER_NONE || type > PAPER_PDF) type = PAPER_NONE;
+  return &g.drawing_history[type];
+}
 
 void tools_push_undo(void)
 {
+  DrawingHistory *h = tools_current_history();
   paper_note_drawing_change();
-  ensure_surface(&g.undo[g.undo_head]);
-  copy_surface(g.undo[g.undo_head], g.backbuf);
-  paper_vector_undo_push(g.undo_head);
-  undo_token[g.undo_head] = paper_undo_token();
-  g.undo_head = (g.undo_head + 1) % MAX_UNDO;
-  if (g.undo_depth < MAX_UNDO) g.undo_depth++;
-  g.redo_depth = 0;
-  g.redo_head = 0;
+  ensure_surface(&h->undo[h->undo_head]);
+  copy_surface(h->undo[h->undo_head], g.backbuf);
+  paper_vector_undo_push(h->undo_head);
+  h->undo_token[h->undo_head] = paper_undo_token();
+  h->undo_head = (h->undo_head + 1) % MAX_UNDO;
+  if (h->undo_depth < MAX_UNDO) h->undo_depth++;
+  h->redo_depth = 0;
+  h->redo_head = 0;
+  paper_vector_redo_clear_for(g.paper);
 }
 
 void tools_undo(void)
 {
+  DrawingHistory *h = tools_current_history();
   int slot, token;
 
-  if (g.undo_depth <= 0) return;
+  if (h->undo_depth <= 0) return;
   tools_commit(0);
   paper_note_drawing_change();
 
-  slot = (g.undo_head - 1 + MAX_UNDO) % MAX_UNDO;
-  token = undo_token[slot];
+  slot = (h->undo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  token = h->undo_token[slot];
   if (token >= 0 && !paper_undo_goto(token)) return;
   /* Capture the page being undone, not the page the user was viewing. */
-  ensure_surface(&g.redo[g.redo_head]);
-  copy_surface(g.redo[g.redo_head], g.backbuf);
-  paper_vector_capture_redo(g.redo_head);
-  redo_token[g.redo_head] = token;
-  g.redo_head = (g.redo_head + 1) % MAX_UNDO;
-  if (g.redo_depth < MAX_UNDO) g.redo_depth++;
+  ensure_surface(&h->redo[h->redo_head]);
+  copy_surface(h->redo[h->redo_head], g.backbuf);
+  paper_vector_capture_redo(h->redo_head);
+  h->redo_token[h->redo_head] = token;
+  h->redo_head = (h->redo_head + 1) % MAX_UNDO;
+  if (h->redo_depth < MAX_UNDO) h->redo_depth++;
 
-  g.undo_head = slot;
-  g.undo_depth--;
-  copy_surface(g.backbuf, g.undo[slot]);
+  h->undo_head = slot;
+  h->undo_depth--;
+  copy_surface(g.backbuf, h->undo[slot]);
   paper_vector_swap_undo(slot);
   paper_sync_current();
   app_request_render();
@@ -213,26 +220,27 @@ void tools_undo(void)
 
 void tools_redo(void)
 {
+  DrawingHistory *h = tools_current_history();
   int slot, token;
 
-  if (g.redo_depth <= 0) return;
+  if (h->redo_depth <= 0) return;
   tools_commit(0);
   paper_note_drawing_change();
   /* Committing an edit can invalidate redo. */
-  if (g.redo_depth <= 0) return;
-  slot = (g.redo_head - 1 + MAX_UNDO) % MAX_UNDO;
-  token = redo_token[slot];
+  if (h->redo_depth <= 0) return;
+  slot = (h->redo_head - 1 + MAX_UNDO) % MAX_UNDO;
+  token = h->redo_token[slot];
   if (token >= 0 && !paper_undo_goto(token)) return;
-  ensure_surface(&g.undo[g.undo_head]);
-  copy_surface(g.undo[g.undo_head], g.backbuf);
-  paper_vector_undo_push(g.undo_head);
-  undo_token[g.undo_head] = token;
-  g.undo_head = (g.undo_head + 1) % MAX_UNDO;
-  if (g.undo_depth < MAX_UNDO) g.undo_depth++;
+  ensure_surface(&h->undo[h->undo_head]);
+  copy_surface(h->undo[h->undo_head], g.backbuf);
+  paper_vector_undo_push(h->undo_head);
+  h->undo_token[h->undo_head] = token;
+  h->undo_head = (h->undo_head + 1) % MAX_UNDO;
+  if (h->undo_depth < MAX_UNDO) h->undo_depth++;
 
-  g.redo_head = slot;
-  g.redo_depth--;
-  copy_surface(g.backbuf, g.redo[slot]);
+  h->redo_head = slot;
+  h->redo_depth--;
+  copy_surface(g.backbuf, h->redo[slot]);
   paper_vector_swap_redo(slot);
   paper_sync_current();
   app_request_render();
@@ -243,22 +251,34 @@ void tools_redo(void)
  * Ordinary page navigation keeps the shared history and its page tokens. */
 void tools_clear_undo(void)
 {
+  tools_clear_undo_for(g.paper);
+}
+
+void tools_clear_all_undo(void)
+{
+  for (int t = PAPER_NONE; t <= PAPER_PDF; t++) tools_clear_undo_for((Paper) t);
+}
+
+void tools_clear_undo_for(Paper type)
+{
+  if (type < PAPER_NONE || type > PAPER_PDF) return;
+  DrawingHistory *h = &g.drawing_history[type];
   for (int i = 0; i < MAX_UNDO; i++)
     {
-      if (g.undo[i])
+      if (h->undo[i])
         {
-          cairo_surface_destroy(g.undo[i]);
-          g.undo[i] = NULL;
+          cairo_surface_destroy(h->undo[i]);
+          h->undo[i] = NULL;
         }
-      if (g.redo[i])
+      if (h->redo[i])
         {
-          cairo_surface_destroy(g.redo[i]);
-          g.redo[i] = NULL;
+          cairo_surface_destroy(h->redo[i]);
+          h->redo[i] = NULL;
         }
     }
-  g.undo_head = g.undo_depth = 0;
-  g.redo_head = g.redo_depth = 0;
-  paper_vector_undo_clear();
+  h->undo_head = h->undo_depth = 0;
+  h->redo_head = h->redo_depth = 0;
+  paper_vector_undo_clear_for(type);
 }
 
 void tools_clear(void)
