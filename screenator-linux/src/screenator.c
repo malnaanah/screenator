@@ -223,6 +223,8 @@ screenator_resize_drawing_buffer (ScreenatorData *data, gint width, gint height)
 	cairo_image_surface_create (CAIRO_FORMAT_ARGB32, width, height);
     }
 
+  data->undo_history_initialized = TRUE;
+  screenator_undo_history_discard_inactive (data);
   reset_undo_history (data);
 
   paint_context_rebind (data, data->default_pen);
@@ -1928,6 +1930,9 @@ paper_undo_record_position (ScreenatorData *data, gint index)
 
 void snap_undo_state (ScreenatorData *data)
 {
+  gboolean drop_oldest_drawing =
+    data->undo_depth >= SCREENATOR_MAX_UNDO;
+
   if(data->debug)
     g_printerr ("DEBUG: Snapping undo buffer %d.\n", data->undo_head);
 
@@ -1949,6 +1954,8 @@ void snap_undo_state (ScreenatorData *data)
   // Invalidate any redo from this position
   data->redo_depth = 0;
   screenator_page_redo_clear (data);
+  screenator_undo_event_record (data, SCREENATOR_UNDO_EVENT_DRAWING,
+			       drop_oldest_drawing);
 }
 
 
@@ -2013,16 +2020,17 @@ void swap_surfaces (cairo_surface_t *a, cairo_surface_t *b)
   cairo_surface_destroy(temp);
 }
 
-/* The drawing history is document-wide while Paper mode is active.  It is
- * cleared when the document is replaced or reset, when the paper type or mode
- * changes, and when the screen or paper geometry changes, because the stored
- * snapshots no longer match the active surface.  Ordinary page navigation and
- * panning keep the history. */
+/* The drawing history is document-wide within Paper mode and stays separate
+ * from the Screen-mode history.  It is cleared when the active paper document
+ * is replaced or reset, or when screen or paper geometry changes.  Ordinary
+ * page navigation, panning, and Screen/Paper mode switches keep each mode's
+ * history. */
 void
 reset_undo_history (ScreenatorData *data)
 {
   gint i;
 
+  screenator_undo_event_remove_type (data, SCREENATOR_UNDO_EVENT_DRAWING);
   paper_vector_undo_clear (data);
   data->undo_head = 0;
   data->undo_depth = 0;
@@ -2035,6 +2043,140 @@ reset_undo_history (ScreenatorData *data)
       data->undo_view_x[i] = 0;
       data->undo_view_y[i] = 0;
       data->undo_scroll_y[i] = 0;
+    }
+}
+
+/* Remove only the requested event kind so resetting drawing snapshots does
+ * not silently discard still-valid page actions, and vice versa. */
+void
+screenator_undo_event_remove_type (ScreenatorData *data,
+				   ScreenatorUndoEvent event)
+{
+  GArray *stacks[2];
+  guint stack_index;
+
+  if (!data)
+    return;
+
+  stacks[0] = data->undo_events;
+  stacks[1] = data->redo_events;
+  for (stack_index = 0; stack_index < G_N_ELEMENTS (stacks); stack_index++)
+    {
+      GArray *stack = stacks[stack_index];
+      gint i;
+
+      if (!stack)
+	continue;
+
+      for (i = (gint) stack->len - 1; i >= 0; i--)
+	if (g_array_index (stack, ScreenatorUndoEvent, i) == event)
+	  g_array_remove_index (stack, i);
+    }
+}
+
+/* Append a chronological undo event.  Any new edit invalidates the redo
+ * sequence; when the drawing ring wraps, drop its oldest drawing event while
+ * leaving interleaved page events in their original order. */
+void
+screenator_undo_event_record (ScreenatorData *data,
+			      ScreenatorUndoEvent event,
+			      gboolean drop_oldest_drawing)
+{
+  guint i;
+
+  if (!data)
+    return;
+
+  if (!data->undo_events)
+    data->undo_events = g_array_new (FALSE, FALSE,
+				     sizeof (ScreenatorUndoEvent));
+  if (!data->redo_events)
+    data->redo_events = g_array_new (FALSE, FALSE,
+				     sizeof (ScreenatorUndoEvent));
+  g_array_set_size (data->redo_events, 0);
+
+  if (drop_oldest_drawing && event == SCREENATOR_UNDO_EVENT_DRAWING)
+    for (i = 0; i < data->undo_events->len; i++)
+      if (g_array_index (data->undo_events, ScreenatorUndoEvent, i) ==
+	  SCREENATOR_UNDO_EVENT_DRAWING)
+	{
+	  g_array_remove_index (data->undo_events, i);
+	  break;
+	}
+
+  g_array_append_val (data->undo_events, event);
+}
+
+static void
+undo_history_swap_with (ScreenatorData *data, ScreenatorUndoHistory *other)
+{
+  gint i;
+  gboolean initialized;
+
+  initialized = data->undo_history_initialized;
+  data->undo_history_initialized = other->initialized;
+  other->initialized = initialized;
+
+#define SWAP_HISTORY_FIELD(field, type) \
+  do { \
+    type temporary = data->field; \
+    data->field = other->field; \
+    other->field = temporary; \
+  } while (0)
+
+  SWAP_HISTORY_FIELD (undo_head, gint);
+  SWAP_HISTORY_FIELD (undo_depth, gint);
+  SWAP_HISTORY_FIELD (redo_depth, gint);
+  SWAP_HISTORY_FIELD (page_undo_stack, GArray *);
+  SWAP_HISTORY_FIELD (page_redo_stack, GArray *);
+  SWAP_HISTORY_FIELD (undo_events, GArray *);
+  SWAP_HISTORY_FIELD (redo_events, GArray *);
+  for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+    {
+      SWAP_HISTORY_FIELD (undobuffer[i], cairo_surface_t *);
+      SWAP_HISTORY_FIELD (page_clear_undobuffer[i], cairo_surface_t *);
+      SWAP_HISTORY_FIELD (vector_undobuffer[i], cairo_surface_t *);
+      SWAP_HISTORY_FIELD (vector_undo_valid[i], gboolean);
+      SWAP_HISTORY_FIELD (undo_paper[i], ScreenatorPaperType);
+      SWAP_HISTORY_FIELD (undo_page[i], guint);
+      SWAP_HISTORY_FIELD (undo_view_x[i], gint);
+      SWAP_HISTORY_FIELD (undo_view_y[i], gint);
+      SWAP_HISTORY_FIELD (undo_scroll_y[i], gint);
+    }
+
+#undef SWAP_HISTORY_FIELD
+}
+
+/* Keep a drawing and page-action history for each Screen/Paper type.  The
+ * active history stays in ScreenatorData and is exchanged as the visible
+ * mode changes. */
+void
+screenator_undo_history_switch (ScreenatorData *data,
+				ScreenatorPaperType target_paper)
+{
+  ScreenatorPaperType current_paper;
+  gint i;
+
+  if (!data || target_paper < SCREENATOR_PAPER_NONE ||
+      target_paper > SCREENATOR_PAPER_PDF || data->paper == target_paper)
+    return;
+
+  current_paper = data->paper;
+  /* The current slot is empty while that mode is active; save it first, then
+   * restore the target mode's previously saved history. */
+  undo_history_swap_with (data, &data->undo_histories[current_paper]);
+  undo_history_swap_with (data, &data->undo_histories[target_paper]);
+
+  /* A never-used mode has no ring yet.  Allocate it at the current canvas
+   * size before it starts recording edits. */
+  if (!data->undo_history_initialized)
+    {
+      for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+	data->undobuffer[i] =
+	  cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+				      data->width, data->height);
+      data->undo_history_initialized = TRUE;
+      reset_undo_history (data);
     }
 }
 
@@ -5608,6 +5750,7 @@ void setup_main_app (ScreenatorData *data, int argc, char ** argv)
       cairo_surface_destroy(data->undobuffer[i]);
       data->undobuffer[i] = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, data->width, data->height);
     }
+  data->undo_history_initialized = TRUE;
   
 
 

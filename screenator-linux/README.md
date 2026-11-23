@@ -470,9 +470,9 @@ tools and runtime, and skips files already downloaded. Both scripts use
 
 The script builds the project and produces all three packages in `../build-linux/`:
 
-- `screenator_9.1_amd64.deb`
-- `screenator-9.1-1.x86_64.rpm`
-- `Screenator-9.1-x86_64.AppImage`
+- `screenator_9.2_amd64.deb`
+- `screenator-9.2-1.x86_64.rpm`
+- `Screenator-9.2-x86_64.AppImage`
 
 The `.deb` can be installed with `sudo dpkg -i` (or `sudo apt install ./…`).
 The AppImage is portable: make it executable and run it.

@@ -1395,6 +1395,8 @@ void on_monitors_changed ( GdkScreen *screen,
 	  cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
 				      data->width, data->height);
       }
+    data->undo_history_initialized = TRUE;
+    screenator_undo_history_discard_inactive (data);
     data->undo_head = 0;
     data->undo_depth = 0;
     data->redo_depth = 0;
@@ -9344,6 +9346,47 @@ screenator_page_history_clear (ScreenatorData *data)
 
   paper_page_action_stack_clear (data->page_undo_stack);
   paper_page_action_stack_clear (data->page_redo_stack);
+  screenator_undo_event_remove_type (data, SCREENATOR_UNDO_EVENT_PAGE);
+}
+
+/* Discard saved undo rings after a screen geometry change.  The detached page
+ * actions own page surfaces too, so release those before dropping each saved
+ * history slot. */
+void
+screenator_undo_history_discard_inactive (ScreenatorData *data)
+{
+  gint type, i;
+
+  if (!data)
+    return;
+
+  for (type = SCREENATOR_PAPER_NONE; type <= SCREENATOR_PAPER_PDF; type++)
+    {
+      ScreenatorUndoHistory *history = &data->undo_histories[type];
+
+      for (i = 0; i < SCREENATOR_MAX_UNDO; i++)
+	{
+	  if (history->undobuffer[i])
+	    cairo_surface_destroy (history->undobuffer[i]);
+	  if (history->page_clear_undobuffer[i])
+	    cairo_surface_destroy (history->page_clear_undobuffer[i]);
+	  if (history->vector_undobuffer[i])
+	    cairo_surface_destroy (history->vector_undobuffer[i]);
+	}
+
+      paper_page_action_stack_clear (history->page_undo_stack);
+      paper_page_action_stack_clear (history->page_redo_stack);
+      if (history->page_undo_stack)
+	g_array_free (history->page_undo_stack, TRUE);
+      if (history->page_redo_stack)
+	g_array_free (history->page_redo_stack, TRUE);
+      if (history->undo_events)
+	g_array_free (history->undo_events, TRUE);
+      if (history->redo_events)
+	g_array_free (history->redo_events, TRUE);
+    }
+
+  memset (data->undo_histories, 0, sizeof (data->undo_histories));
 }
 
 /* A new drawing action branches the timeline, so a pending page redo can no
@@ -9352,7 +9395,11 @@ void
 screenator_page_redo_clear (ScreenatorData *data)
 {
   if (data)
-    paper_page_action_stack_clear (data->page_redo_stack);
+    {
+      paper_page_action_stack_clear (data->page_redo_stack);
+      if (data->redo_events)
+	g_array_set_size (data->redo_events, 0);
+    }
 }
 
 static void
@@ -12506,8 +12553,8 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
   screenator_paper_pan_end (data);
   paper_commit_pending (data);
   paper_store_active_page (data);
-  screenator_page_history_clear (data);
 
+  screenator_undo_history_switch (data, type);
   data->paper = type;
   data->paper_selected = type;
 
@@ -12537,7 +12584,6 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
 					  paper_view_height (data)));
 	  paper_pdf_prepare_active (data, doc);
 	  paper_window_fit_screen_paper (data);
-	  reset_undo_history (data);
 	  paper_repaint (data);
 	  paper_bring_to_front (data);
 	  schedule_tray_menu_refresh (data);
@@ -12551,7 +12597,6 @@ paper_switch_to (ScreenatorData *data, ScreenatorPaperType type)
 
   paper_load_page (data, page);
   paper_window_fit_screen_paper (data);
-  reset_undo_history (data);
   paper_refresh_active_cursor (data);
   paper_repaint (data);
   reactivate_selected_tool (data);
@@ -12990,6 +13035,7 @@ screenator_enter_paper_drawing (ScreenatorData *data,
   copy_surface (data->screen_annotations, data->backbuffer);
   data->screen_annotations_painted = data->painted;
 
+  screenator_undo_history_switch (data, paper);
   data->paper = paper;
   data->paper_selected = paper;
 
@@ -13017,7 +13063,6 @@ screenator_enter_paper_drawing (ScreenatorData *data,
   screenator_use_paper_window (data, TRUE);
   paper_top_bar_restore (data);
   paper_top_bar_update_active_tool (data);
-  reset_undo_history (data);
 
   /* A tool selected before leaving Paper mode is activated again when the
    * paper is reopened. */
@@ -13082,6 +13127,7 @@ screenator_exit_paper_drawing (ScreenatorData *data)
     }
 
   data->painted = data->screen_annotations_painted;
+  screenator_undo_history_switch (data, SCREENATOR_PAPER_NONE);
   data->paper = SCREENATOR_PAPER_NONE;
   {
     guint i;
@@ -13094,7 +13140,6 @@ screenator_exit_paper_drawing (ScreenatorData *data)
   paper_top_bar_update_active_tool (data);
   paper_finish_temporary_eraser (data);
   screenator_paper_pan_end (data);
-  reset_undo_history (data);
   screenator_use_paper_window (data, FALSE);
 
   /* Cursor mode has no forced context or drawing grab. */
@@ -13469,8 +13514,10 @@ paper_page_action_push (ScreenatorData *data, gboolean redo,
 static void
 paper_page_action_record (ScreenatorData *data, ScreenatorPageAction action)
 {
-  paper_page_action_stack_clear (data->page_redo_stack);
+  screenator_page_redo_clear (data);
+  data->redo_depth = 0;
   paper_page_action_push (data, FALSE, action);
+  screenator_undo_event_record (data, SCREENATOR_UNDO_EVENT_PAGE, FALSE);
 }
 
 static gboolean
@@ -13519,7 +13566,6 @@ paper_page_action_refresh (ScreenatorData *data,
   else
     paper_load_page (data, paper_current_page (doc));
 
-  reset_undo_history (data);
   paper_top_bar_update_active_tool (data);
   paper_repaint (data);
   schedule_tray_menu_refresh (data);
@@ -13602,19 +13648,68 @@ paper_page_action_apply (ScreenatorData *data, gboolean undo)
   paper_page_action_refresh (data, doc, index);
 }
 
+static gboolean
+paper_undo_sequence_apply (ScreenatorData *data, gboolean undo)
+{
+  GArray *from = undo ? data->undo_events : data->redo_events;
+  GArray **to = undo ? &data->redo_events : &data->undo_events;
+  GArray *page_stack = undo ? data->page_undo_stack : data->page_redo_stack;
+  ScreenatorUndoEvent event;
+
+  if (!from || from->len == 0)
+    return FALSE;
+
+  event = g_array_index (from, ScreenatorUndoEvent, from->len - 1);
+  if (event == SCREENATOR_UNDO_EVENT_DRAWING)
+    {
+      if (undo ? data->undo_depth <= 0 : data->redo_depth <= 0)
+	return FALSE;
+
+      if (undo)
+	undo_drawing (data);
+      else
+	redo_drawing (data);
+    }
+  else
+    {
+      ScreenatorPaperDocument *doc = paper_active_document (data);
+      ScreenatorPageAction *action;
+
+      if (!doc || !doc->pages || doc->type == SCREENATOR_PAPER_PDF ||
+	  !page_stack || page_stack->len == 0)
+	return FALSE;
+      action = &g_array_index (page_stack, ScreenatorPageAction,
+			       page_stack->len - 1);
+      if (action->document != doc->type)
+	return FALSE;
+
+      paper_page_action_apply (data, undo);
+    }
+
+  g_array_set_size (from, from->len - 1);
+  if (!*to)
+    *to = g_array_new (FALSE, FALSE, sizeof (ScreenatorUndoEvent));
+  g_array_append_val (*to, event);
+  return TRUE;
+}
+
 void
 screenator_undo (ScreenatorData *data)
 {
   if (!data)
     return;
 
-  if (data->undo_depth > 0)
+  if (data->undo_events && data->undo_events->len > 0)
     {
-      undo_drawing (data);
+      paper_undo_sequence_apply (data, TRUE);
       return;
     }
 
-  paper_page_action_apply (data, TRUE);
+  /* Compatibility fallback for histories created without a sequence entry. */
+  if (data->undo_depth > 0)
+    undo_drawing (data);
+  else
+    paper_page_action_apply (data, TRUE);
 }
 
 void
@@ -13623,13 +13718,17 @@ screenator_redo (ScreenatorData *data)
   if (!data)
     return;
 
-  if (data->redo_depth > 0)
+  if (data->redo_events && data->redo_events->len > 0)
     {
-      redo_drawing (data);
+      paper_undo_sequence_apply (data, FALSE);
       return;
     }
 
-  paper_page_action_apply (data, FALSE);
+  /* Compatibility fallback for histories created without a sequence entry. */
+  if (data->redo_depth > 0)
+    redo_drawing (data);
+  else
+    paper_page_action_apply (data, FALSE);
 }
 
 /* Insert a new page before or after the current one. */
@@ -13672,7 +13771,6 @@ screenator_paper_insert_page (ScreenatorData *data, gboolean before)
   else
     paper_load_page (data, paper_current_page (doc));
 
-  reset_undo_history (data);
   paper_top_bar_update_active_tool (data);
   paper_repaint (data);
   schedule_tray_menu_refresh (data);
@@ -13729,7 +13827,6 @@ screenator_paper_delete_page (ScreenatorData *data)
   else
     paper_load_page (data, paper_current_page (doc));
 
-  reset_undo_history (data);
   paper_top_bar_update_active_tool (data);
   paper_repaint (data);
   schedule_tray_menu_refresh (data);

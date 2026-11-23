@@ -17,9 +17,9 @@ SHARED_ASSETS="$ROOT/../assets"
 LINUX_ASSETS="$SHARED_ASSETS/linux"
 LINUX_ICONS="$SHARED_ASSETS/icons-linux"
 BUILD="$ROOT/../build-linux"
-DEB="$BUILD/screenator_9.1_amd64.deb"
-RPM="$BUILD/screenator-9.1-1.x86_64.rpm"
-APPIMAGE="$BUILD/Screenator-9.1-x86_64.AppImage"
+DEB="$BUILD/screenator_9.2_amd64.deb"
+RPM="$BUILD/screenator-9.2-1.x86_64.rpm"
+APPIMAGE="$BUILD/Screenator-9.2-x86_64.AppImage"
 
 STAGE="${SCREENATOR_BUILD_STAGE:-/tmp/opencode/screenator-build-stage}"
 DL="$STAGE/dl"
@@ -186,9 +186,9 @@ EOF
 chmod 0644 "$PKROOT"/usr/share/doc/screenator/copyright
 
 cat > "$PKROOT"/usr/share/doc/screenator/changelog <<EOF
-screenator (9.1) unstable; urgency=medium
+screenator (9.2) unstable; urgency=medium
 
-  * Add precise PDF text selection and copy feedback in Cursor mode.
+  * Keep drawing and page operations in one undo/redo sequence.
 
  -- Mahmoud Alnaanah <malnaanah@gmail.com>  $(date -R)
 EOF
@@ -203,7 +203,7 @@ EOF
 
 cat > "$PKROOT"/DEBIAN/control <<'EOF'
 Package: screenator
-Version: 9.1
+Version: 9.2
 Section: x11
 Priority: optional
 Architecture: amd64
@@ -293,7 +293,7 @@ cat > "$RPMTOP/SPECS/screenator.spec" <<EOF
 %define _build_id_links none
 %global __os_install_post %{nil}
 Name:           screenator
-Version:        9.1
+Version:        9.2
 Release:        1
 Summary:        Vibe-coded screen annotation tool based on Gromit-MPX
 License:        GPL-2.0-or-later
@@ -345,6 +345,8 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 
 %changelog
+* Tue Nov 24 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 9.2-1
+- Keep drawing and page operations in one undo/redo sequence
 * Sat Nov 21 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 9.1-1
 - Add precise PDF text selection and copy feedback in Cursor mode
 * Wed Nov 18 2026 Mahmoud Alnaanah <malnaanah@gmail.com> - 9.0-1
@@ -368,7 +370,7 @@ else
   "$RPMBUILD" -bb --define "_topdir $RPMTOP" \
     --define "_tmppath $RPMTMP" "$RPMTOP/SPECS/screenator.spec"
 fi
-cp "$RPMTOP/RPMS/x86_64/screenator-9.1-1.x86_64.rpm" "$RPM"
+cp "$RPMTOP/RPMS/x86_64/screenator-9.2-1.x86_64.rpm" "$RPM"
 echo "==> Built: $RPM"
 
 # ---------------------------------------------------------------------------
@@ -436,7 +438,7 @@ done
 export ARCH=x86_64
 export PATH="$TOOLS:$PATH"
 export APPIMAGE_EXTRACT_AND_RUN=1
-export LINUXDEPLOY_OUTPUT_VERSION=9.1
+export LINUXDEPLOY_OUTPUT_VERSION=9.2
 
 # Let the GTK plugin bundle GTK, gdk-pixbuf and the theme engine when the
 # helper tools it needs are available.  Otherwise fall back to the host GTK.

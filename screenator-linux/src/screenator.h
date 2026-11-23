@@ -180,6 +180,12 @@ typedef struct
   ScreenatorPaperPage      page;
 } ScreenatorPageAction;
 
+typedef enum
+{
+  SCREENATOR_UNDO_EVENT_DRAWING = 0,
+  SCREENATOR_UNDO_EVENT_PAGE
+} ScreenatorUndoEvent;
+
 /* One selected paper type and its pages.  Plain, Ruled, Graph and PDF each
  * keep their own pages and drawings. */
 typedef struct
@@ -603,6 +609,25 @@ typedef struct
 
 typedef struct
 {
+  gboolean         initialized;
+  cairo_surface_t *undobuffer[SCREENATOR_MAX_UNDO];
+  gint             undo_head, undo_depth, redo_depth;
+  cairo_surface_t *page_clear_undobuffer[SCREENATOR_MAX_UNDO];
+  cairo_surface_t *vector_undobuffer[SCREENATOR_MAX_UNDO];
+  gboolean         vector_undo_valid[SCREENATOR_MAX_UNDO];
+  ScreenatorPaperType undo_paper[SCREENATOR_MAX_UNDO];
+  guint              undo_page[SCREENATOR_MAX_UNDO];
+  gint               undo_view_x[SCREENATOR_MAX_UNDO];
+  gint               undo_view_y[SCREENATOR_MAX_UNDO];
+  gint               undo_scroll_y[SCREENATOR_MAX_UNDO];
+  GArray            *page_undo_stack;
+  GArray            *page_redo_stack;
+  GArray            *undo_events;
+  GArray            *redo_events;
+} ScreenatorUndoHistory;
+
+typedef struct
+{
   GtkWidget   *win;
   GtkWidget   *quick_menu;
   ScreenatorStylusMode stylus_mode;
@@ -966,11 +991,16 @@ typedef struct
   gint               undo_view_x[SCREENATOR_MAX_UNDO];
   gint               undo_view_y[SCREENATOR_MAX_UNDO];
   gint               undo_scroll_y[SCREENATOR_MAX_UNDO];
+  gboolean           undo_history_initialized;
+  ScreenatorUndoHistory undo_histories[SCREENATOR_PAPER_PDF + 1];
 
-  /* Undo/redo for page insertion and deletion.  Drawing undo takes
-   * precedence while its own history is non-empty. */
+  /* Undo/redo payloads for page insertion and deletion.  undo_events and
+   * redo_events above interleave these with drawing snapshots chronologically. */
   GArray         *page_undo_stack;
   GArray         *page_redo_stack;
+  /* Chronological event order shared by drawing and page actions. */
+  GArray         *undo_events;
+  GArray         *redo_events;
 
 
 } ScreenatorData;
@@ -1040,6 +1070,14 @@ gboolean screenator_paper_save (ScreenatorData *data);
 gboolean screenator_has_annotations (cairo_surface_t *surface);
 void screenator_save_screenshot (ScreenatorData *data);
 void reset_undo_history (ScreenatorData *data);
+void screenator_undo_history_switch (ScreenatorData *data,
+				     ScreenatorPaperType target_paper);
+void screenator_undo_history_discard_inactive (ScreenatorData *data);
+void screenator_undo_event_record (ScreenatorData *data,
+				   ScreenatorUndoEvent event,
+				   gboolean drop_oldest_drawing);
+void screenator_undo_event_remove_type (ScreenatorData *data,
+					ScreenatorUndoEvent event);
 void screenator_marker_prepare (ScreenatorData *data);
 void screenator_marker_leave (ScreenatorData *data);
 void screenator_schedule_tool (ScreenatorData *data, gint pen_tool,

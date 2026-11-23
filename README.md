@@ -5,7 +5,8 @@ https://github.com/user-attachments/assets/3b77de2f-f812-4c95-aa48-a5df7c2da130
 
 
 Screenator is a screen annotation tool for Linux and Windows, based on
-[Gromit-MPX](https://github.com/bk138/gromit-mpx) 1.4.2. Version 9.1 adds
+[Gromit-MPX](https://github.com/bk138/gromit-mpx) 1.4.2. Version 9.2 adds
+unified Linux undo ordering for drawing and paper page operations. Version 9.1 adds
 PDF text selection, improved Windows multiline text editing, and a Linux
 stylus tip input fix. It builds on the Paper-mode navigation and shortcut
 refinements from 9.0. Linux and Windows use separate native implementations.
@@ -21,6 +22,7 @@ updated input controls are available on both platforms.
 - [Linux guide](screenator-linux/README.md)
 - [Windows guide](screenator-windows/README.md)
 - [Screenator 9.1 release notes](release-notes-9.1.md)
+- [Screenator 9.2 release notes](release-notes-9.2.md)
 - [Screenator 9.0 release notes](release-notes-9.0.md)
 - [Windows release notes](screenator-windows/RELEASE_NOTES.md)
 
@@ -39,9 +41,9 @@ cd screenator-linux
 The script creates the DEB, RPM and AppImage packages in `build-linux/` at the
 repository root:
 
-- `screenator_9.1_amd64.deb`
-- `screenator-9.1-1.x86_64.rpm`
-- `Screenator-9.1-x86_64.AppImage`
+- `screenator_9.2_amd64.deb`
+- `screenator-9.2-1.x86_64.rpm`
+- `Screenator-9.2-x86_64.AppImage`
 
 See [the Windows guide](screenator-windows/README.md) for building the native
 Windows application with MSYS2.
