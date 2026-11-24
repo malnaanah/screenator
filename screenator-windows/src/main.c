@@ -1512,18 +1512,7 @@ static int paper_shortcut_dispatch(UINT vk, UINT mods)
     { paper_insert_page(0); config_save(); }
   else if (ctrl && vk == 'Z')
     {
-      if (shift)
-        {
-          if (paper_page_change_is_last() && paper_page_can_redo())
-            { paper_page_redo(); config_save(); }
-          else tools_redo();
-        }
-      else
-        {
-          if (paper_page_change_is_last() && paper_page_can_undo())
-            { paper_page_undo(); config_save(); }
-          else tools_undo();
-        }
+      paper_undo_sequence(shift);
     }
   else if (vk == VK_PRIOR)
     {
@@ -4969,11 +4958,11 @@ static LRESULT CALLBACK msg_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
           }
         else if (id == HK_UNDO)
           {
-            tools_undo();
+            paper_undo_sequence(0);
           }
         else if (id == HK_REDO)
           {
-            tools_redo();
+            paper_undo_sequence(1);
           }
         else if (id == HK_PAPER_Q)
           {

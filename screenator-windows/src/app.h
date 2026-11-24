@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #define APP_NAME     "Screenator"
 #define APP_VERSION  "9.2"
@@ -168,6 +169,9 @@ typedef struct
   cairo_surface_t *redo[MAX_UNDO];
   int undo_token[MAX_UNDO];
   int redo_token[MAX_UNDO];
+  uint64_t undo_order[MAX_UNDO];
+  uint64_t redo_order[MAX_UNDO];
+  uint64_t sequence;
   int undo_head, undo_depth, redo_head, redo_depth;
 } DrawingHistory;
 
@@ -618,7 +622,10 @@ void tools_undo(void);
 void tools_redo(void);
 void tools_push_undo(void);
 DrawingHistory *tools_current_history(void);
+uint64_t tools_history_next_order(Paper type);
+uint64_t tools_history_peek_order(Paper type, int redo);
 void tools_clear_undo_for(Paper type);
+void tools_clear_redo_for(Paper type);
 void tools_clear_all_undo(void);
 void tools_set_frame_color(void);
 void tools_text_commit(const char *text, int cancelled);
@@ -699,7 +706,9 @@ void paper_reset(void);
 void paper_note_drawing_change(void);
 void paper_note_erase(void);
 void paper_clear_erase(void);
-int  paper_page_change_is_last(void);
+int  paper_page_change_is_last(int redo);
+void paper_undo_sequence(int redo);
+void paper_clear_page_redo(void);
 int  paper_page_undo(void);
 int  paper_page_redo(void);
 int  paper_page_can_undo(void);

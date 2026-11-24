@@ -315,8 +315,8 @@ below lists the defaults; menu labels show the currently configured keys.
   `Ctrl+B` inserts a page before the current page, `Ctrl+A` inserts a page
   after it, `Page Up`/`Page Down` move one page, and `Home`/`End` jump to the
   first/last page. `Ctrl+Z`/`Ctrl+Shift+Z` undo/redo drawing changes across all
-  pages and documents (50 steps); structural page changes use the same keys and
-  clear the drawing history.
+  pages and documents (50 steps). Structural page changes use the same
+  chronological undo/redo sequence as drawing actions.
 - `Ctrl+D` in Paper mode shows the Windows taskbar by stopping the paper at the
   work area; pressing it again covers the taskbar again.
 - Paper shortcuts also work while the pointer is over the toolbar or floating

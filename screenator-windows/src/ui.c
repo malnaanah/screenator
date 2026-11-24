@@ -943,8 +943,8 @@ static void menu_command(int id)
 
   switch (id)
     {
-    case CMD_UNDO: tools_undo(); break;
-    case CMD_REDO: tools_redo(); break;
+    case CMD_UNDO: paper_undo_sequence(0); break;
+    case CMD_REDO: paper_undo_sequence(1); break;
     case CMD_CLEAR: tools_clear(); break;
     case CMD_VISIBILITY: ui_toggle_visibility(); break;
     case CMD_SHOW_ICON: ui_set_icon_visible(!g.show_icon); break;

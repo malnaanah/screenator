@@ -6,8 +6,9 @@ based on Screenator 6.0 by Mahmoud Alnaanah.
 ## Windows 9.2 changes
 
 - Kept drawing undo and redo histories independent for Screen and each Paper
-  type, including across mode and document switches. Page insertion and
-  deletion histories remain separate and are retained per Paper type.
+  type, including across mode and document switches. Paper drawing and page
+  insertion/deletion actions now follow the same chronological undo/redo
+  sequence, retained per Paper type.
 - Tied drawing history snapshots to stable Paper page identities so page
   insertion and deletion do not redirect an undo step to a different page.
 

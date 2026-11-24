@@ -66,6 +66,7 @@ typedef struct
   int kind;                    /* 1 = insert, 2 = delete */
   int index;                   /* page index the action applies to */
   int prev_index, new_index;   /* current page before/after the action */
+  uint64_t order;              /* shared drawing/page-action chronology */
   PaperPage page;              /* owned off-document page image, if any */
   int has_page;
 } PaperAction;
@@ -112,7 +113,7 @@ typedef struct
   wchar_t pdf_path[MAX_PATH];
   PaperVectorHistory drawing;
   PaperAction page_undo[PAPER_UNDO_MAX], page_redo[PAPER_UNDO_MAX];
-  int page_undo_depth, page_redo_depth, page_change_last;
+  int page_undo_depth, page_redo_depth;
 } PaperDocStore;
 
 static PaperDocStore doc_store[PAPER_PDF + 1];
@@ -159,7 +160,6 @@ static ULONGLONG paper_scroll_paint_at;
 #define redo_stack (doc_store[current_type].page_redo)
 #define undo_depth (doc_store[current_type].page_undo_depth)
 #define redo_depth (doc_store[current_type].page_redo_depth)
-#define page_change_last (doc_store[current_type].page_change_last)
 
 static uint32_t next_page_history_id = 1;
 
@@ -1999,7 +1999,6 @@ static void paper_clear_history_for(Paper type)
         }
     }
   undo_depth = redo_depth = 0;
-  page_change_last = 0;
   current_type = saved;
 }
 
@@ -2201,6 +2200,9 @@ int paper_insert_page(int before)
   if (page_count >= PAPER_MAX_PAGES) return 0;
 
   tools_commit(0);
+  /* In continuous mode page_index can lag behind the page in the viewport.
+   * Make the visible page the target of page-wide structural actions. */
+  if (paper_continuous_active()) paper_select_view_page();
   paper_sync_current();
 
   int idx = before ? page_index : page_index + 1;
@@ -2228,6 +2230,7 @@ int paper_insert_page(int before)
   act.index = idx;
   act.prev_index = old_index;
   act.new_index = idx;
+  act.order = tools_history_next_order(current_type);
 
   /* A new action invalidates redo. */
   for (int i = 0; i < PAPER_UNDO_MAX; i++)
@@ -2237,6 +2240,7 @@ int paper_insert_page(int before)
         redo_stack[i].has_page = 0;
       }
   redo_depth = 0;
+  tools_clear_redo_for(current_type);
   if (undo_depth >= PAPER_UNDO_MAX)
     {
       if (undo_stack[0].has_page)
@@ -2249,8 +2253,6 @@ int paper_insert_page(int before)
       undo_depth = PAPER_UNDO_MAX - 1;
     }
   undo_stack[undo_depth++] = act;
-  page_change_last = 1;
-
   paper_switch_index(idx, 1);
   return 1;
 }
@@ -2259,6 +2261,9 @@ int paper_delete_page(void)
 {
   if (!doc_ready || page_count <= 1) return 0;
   tools_commit(0);
+  /* Delete the page the user is looking at, not the last page previously
+   * selected by a click while scrolling the continuous page strip. */
+  if (paper_continuous_active()) paper_select_view_page();
   paper_sync_current();
 
   int old_index = page_index;
@@ -2278,6 +2283,7 @@ int paper_delete_page(void)
   act.new_index = new_index;
   act.page = removed;
   act.has_page = 1;
+  act.order = tools_history_next_order(current_type);
 
   for (int i = 0; i < PAPER_UNDO_MAX; i++)
     if (redo_stack[i].has_page)
@@ -2286,6 +2292,7 @@ int paper_delete_page(void)
         redo_stack[i].has_page = 0;
       }
   redo_depth = 0;
+  tools_clear_redo_for(current_type);
   if (undo_depth >= PAPER_UNDO_MAX)
     {
       if (undo_stack[0].has_page)
@@ -2298,8 +2305,6 @@ int paper_delete_page(void)
       undo_depth = PAPER_UNDO_MAX - 1;
     }
   undo_stack[undo_depth++] = act;
-  page_change_last = 1;
-
   paper_switch_index(new_index, 1);
   return 1;
 }
@@ -2451,7 +2456,6 @@ int paper_doc_has_annotations(void)
 void paper_note_drawing_change(void)
 {
   if (doc_ready) paper_changes_pending = 1;
-  page_change_last = 0;
 }
 
 void paper_note_erase(void)
@@ -2500,9 +2504,47 @@ void paper_reset_current_page(void)
   ui_refresh_tray();
 }
 
-int paper_page_change_is_last(void)
+int paper_page_change_is_last(int redo)
 {
-  return page_change_last;
+  if (g.paper == PAPER_NONE) return 0;
+  Paper type = current_type;
+  int page_n = redo ? doc_store[type].page_redo_depth
+                    : doc_store[type].page_undo_depth;
+  uint64_t page_order = 0;
+  uint64_t draw_order = tools_history_peek_order(type, redo);
+  if (page_n > 0)
+    page_order = redo ? doc_store[type].page_redo[page_n - 1].order
+                      : doc_store[type].page_undo[page_n - 1].order;
+  if (!page_order) return 0;
+  if (!draw_order) return 1;
+  return redo ? page_order < draw_order : page_order > draw_order;
+}
+
+void paper_undo_sequence(int redo)
+{
+  if (g.paper != PAPER_NONE && paper_page_change_is_last(redo))
+    {
+      if (redo && paper_page_can_redo())
+        { paper_page_redo(); config_save(); return; }
+      if (!redo && paper_page_can_undo())
+        { paper_page_undo(); config_save(); return; }
+    }
+  if (redo) tools_redo();
+  else tools_undo();
+}
+
+void paper_clear_page_redo(void)
+{
+  if (g.paper == PAPER_NONE || current_type < PAPER_PLAIN ||
+      current_type > PAPER_PDF)
+    return;
+  for (int i = 0; i < PAPER_UNDO_MAX; i++)
+    if (redo_stack[i].has_page)
+      {
+        paper_free_page(&redo_stack[i].page);
+        redo_stack[i].has_page = 0;
+      }
+  redo_depth = 0;
 }
 
 int paper_page_can_undo(void)
@@ -2554,7 +2596,11 @@ int paper_page_undo(void)
   if (!doc_ready || undo_depth <= 0) return 0;
   tools_commit(0);
   paper_sync_current();
-  PaperAction a = undo_stack[--undo_depth];
+  int source = --undo_depth;
+  PaperAction a = undo_stack[source];
+  /* The action now belongs to this local value.  Leaving its owning bit in
+   * the vacated stack slot would make shutdown free the page twice. */
+  memset(&undo_stack[source], 0, sizeof(undo_stack[source]));
 
   if (a.kind == 1)
     {
@@ -2591,7 +2637,6 @@ int paper_page_undo(void)
   paper_push_redo(&a);
   paper_changes_pending = 1;
   paper_reload_current();
-  page_change_last = 1;
   app_render_all();
   ui_refresh_tray();
   return 1;
@@ -2602,7 +2647,9 @@ int paper_page_redo(void)
   if (!doc_ready || redo_depth <= 0) return 0;
   tools_commit(0);
   paper_sync_current();
-  PaperAction a = redo_stack[--redo_depth];
+  int source = --redo_depth;
+  PaperAction a = redo_stack[source];
+  memset(&redo_stack[source], 0, sizeof(redo_stack[source]));
 
   if (a.kind == 1)
     {
@@ -2651,7 +2698,6 @@ int paper_page_redo(void)
   paper_push_undo(&a);
   paper_changes_pending = 1;
   paper_reload_current();
-  page_change_last = 1;
   app_render_all();
   ui_refresh_tray();
   return 1;
@@ -3759,7 +3805,6 @@ void paper_reset(void)
   restored_pdf_path[0] = 0;
   pdf_history_count = 0;
   pdf_history_loaded = 1;
-  page_change_last = 0;
   g.paper = PAPER_NONE;
 }
 

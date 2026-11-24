@@ -174,6 +174,23 @@ DrawingHistory *tools_current_history(void)
   return &g.drawing_history[type];
 }
 
+uint64_t tools_history_next_order(Paper type)
+{
+  if (type < PAPER_NONE || type > PAPER_PDF) return 0;
+  return ++g.drawing_history[type].sequence;
+}
+
+uint64_t tools_history_peek_order(Paper type, int redo)
+{
+  if (type < PAPER_NONE || type > PAPER_PDF) return 0;
+  DrawingHistory *h = &g.drawing_history[type];
+  if (redo)
+    return h->redo_depth > 0
+      ? h->redo_order[(h->redo_head - 1 + MAX_UNDO) % MAX_UNDO] : 0;
+  return h->undo_depth > 0
+    ? h->undo_order[(h->undo_head - 1 + MAX_UNDO) % MAX_UNDO] : 0;
+}
+
 void tools_push_undo(void)
 {
   DrawingHistory *h = tools_current_history();
@@ -182,10 +199,12 @@ void tools_push_undo(void)
   copy_surface(h->undo[h->undo_head], g.backbuf);
   paper_vector_undo_push(h->undo_head);
   h->undo_token[h->undo_head] = paper_undo_token();
+  h->undo_order[h->undo_head] = tools_history_next_order(g.paper);
   h->undo_head = (h->undo_head + 1) % MAX_UNDO;
   if (h->undo_depth < MAX_UNDO) h->undo_depth++;
   h->redo_depth = 0;
   h->redo_head = 0;
+  paper_clear_page_redo();
   paper_vector_redo_clear_for(g.paper);
 }
 
@@ -206,6 +225,7 @@ void tools_undo(void)
   copy_surface(h->redo[h->redo_head], g.backbuf);
   paper_vector_capture_redo(h->redo_head);
   h->redo_token[h->redo_head] = token;
+  h->redo_order[h->redo_head] = h->undo_order[slot];
   h->redo_head = (h->redo_head + 1) % MAX_UNDO;
   if (h->redo_depth < MAX_UNDO) h->redo_depth++;
 
@@ -235,6 +255,7 @@ void tools_redo(void)
   copy_surface(h->undo[h->undo_head], g.backbuf);
   paper_vector_undo_push(h->undo_head);
   h->undo_token[h->undo_head] = token;
+  h->undo_order[h->undo_head] = h->redo_order[slot];
   h->undo_head = (h->undo_head + 1) % MAX_UNDO;
   if (h->undo_depth < MAX_UNDO) h->undo_depth++;
 
@@ -257,6 +278,15 @@ void tools_clear_undo(void)
 void tools_clear_all_undo(void)
 {
   for (int t = PAPER_NONE; t <= PAPER_PDF; t++) tools_clear_undo_for((Paper) t);
+}
+
+void tools_clear_redo_for(Paper type)
+{
+  if (type < PAPER_NONE || type > PAPER_PDF) return;
+  DrawingHistory *h = &g.drawing_history[type];
+  h->redo_depth = 0;
+  h->redo_head = 0;
+  paper_vector_redo_clear_for(type);
 }
 
 void tools_clear_undo_for(Paper type)
@@ -1929,8 +1959,7 @@ void tools_key(int vk, int ctrl, int shift)
     }
   if (ctrl && (vk == 'Z' || vk == 'z'))
     {
-      if (shift) tools_redo();
-      else tools_undo();
+      paper_undo_sequence(shift);
     }
 }
 
